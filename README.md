@@ -132,6 +132,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_KEEPALIVE_INTERVAL_MS` | `15000` | SSE keepalive comment interval |
 | `MIMO2API_REPLAY_CAP` | `20` | Max replayed user turns per request |
 | `MIMO2API_PROBE_INTERVAL_S` | `60` | Cooldown recovery probe sweep |
+| `MIMO2API_EGRESS_<LABEL>` | — | Endpoint for an egress **label** (`hk1` → `MIMO2API_EGRESS_HK1`, dashes become underscores). Accounts name labels in `accounts.json` (`"egress": "hk1"`) and the endpoint plus any credentials live only here. A label with no endpoint is a startup error naming it — never a silent direct connection. `http`, `https`, `socks5` and `socks5h` are accepted |
 | `MIMO2API_COOLDOWN_TRANSPORT_S` | `15` | Base cooldown for the transport class (connection error, timeout, SSE stall, EOF mid-body) |
 | `MIMO2API_COOLDOWN_TRANSPORT_CAP_S` | `300` | Cap for the transport ladder — a dead connection is less likely to be the account's fault, so it escalates less far than 5xx/429 |
 | `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window inside which risk-control signals are correlated across accounts behind one egress |

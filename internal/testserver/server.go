@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,10 @@ type TestServerOptions struct {
 	SessionWait  time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
 	ForkPolicy   string        // "wait" (default) or "fork"
 	LogSink      io.Writer     // nil = discard-free default logger; set to capture trace lines
+	// Egress maps an egress label to a proxy, exactly as the real startup does
+	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
+	// httptest proxy and watch what leaves through it.
+	Egress map[string]*url.URL
 
 	// Audio surface (M18). Tests keep the poll interval tiny so the
 	// generate → poll → download loop does not cost real seconds.
@@ -127,6 +132,7 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 	sessions := session.New(session.Options{Now: nowFn})
 
 	client := mimo.New(mimo.Options{
+		Egress:      opts.Egress,
 		Base:        up.URL(),
 		IdleTimeout: opts.IdleTimeout,
 	})

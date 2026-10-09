@@ -268,6 +268,17 @@ func (s *Server) validKey(token string) bool {
 
 // handleHealthz: liveness + pool summary — states only, no credentials
 // (SDD §5.1, TDD API-018).
+// clientFor returns the upstream client whose traffic leaves through an egress
+// label. Every upstream call is made through it, so an account's egress is a
+// property of the account rather than of the caller (REQ-16, SDD §4.8).
+func (s *Server) clientFor(egress string) *mimo.Client { return s.client.For(egress) }
+
+// clientForAccount is clientFor for callers that hold an account id rather than a
+// lease (the OTP and consent admin paths).
+func (s *Server) clientForAccount(accountID string) *mimo.Client {
+	return s.client.For(s.pool.EgressOf(accountID))
+}
+
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	sum := s.pool.Summarize()
 	body := struct {

@@ -296,6 +296,9 @@ var errBusy = errors.New("pool: all in-flight slots busy")
 type Lease struct {
 	Pool *Pool
 	ID   string
+	// Egress is the label of the egress this account's traffic must leave
+	// through (SDD §4.8). Every upstream call made for this lease uses it.
+	Egress string
 }
 
 // Release frees the in-flight slot and wakes one Acquire waiter.
@@ -373,7 +376,7 @@ func (p *Pool) AcquireSticky(ctx context.Context, accountID string) (*Lease, boo
 	if a != nil && !a.disabled && a.state == StateAvailable && len(a.sem) < cap(a.sem) {
 		select {
 		case a.sem <- struct{}{}:
-			lease = &Lease{Pool: p, ID: a.id}
+			lease = &Lease{Pool: p, ID: a.id, Egress: a.egress}
 		default:
 		}
 	}
@@ -457,7 +460,7 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 	default:
 		return nil, errBusy
 	}
-	return &Lease{Pool: p, ID: pick.id}, nil
+	return &Lease{Pool: p, ID: pick.id, Egress: pick.egress}, nil
 }
 
 // RecordFirstByte feeds first-byte latency into the EWMA selection term

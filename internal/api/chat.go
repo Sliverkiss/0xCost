@@ -568,7 +568,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			}
 		}
 
-		res, err := s.client.Chat(ctx, cookie, ph, chatReq)
+		res, err := s.clientFor(lease.Egress).Chat(ctx, cookie, ph, chatReq)
 		if err != nil {
 			if ctx.Err() != nil {
 				// Client disconnect (SDD §7.3, TDD API-024/STICKY-010):
@@ -721,7 +721,7 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 	// with no user interaction, while the password path re-runs the whole
 	// verification chain (new-device OTP = a human, SDD §2.3 / TDD LIVE-006).
 	if acct.UserID != "" && acct.PassToken != "" {
-		sess, rerr := s.client.Renew(ctx, acct.UserID, acct.PassToken)
+		sess, rerr := s.clientFor(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
 		if rerr == nil {
 			acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
 			if uerr := s.store.Update(acct); uerr != nil {
@@ -731,7 +731,7 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 		}
 		s.logger.Printf("accounts: renewal for %s failed (%v), falling back to password login", accountID, rerr)
 	}
-	sess, err := s.client.Login(ctx, acct.Phone, acct.Password)
+	sess, err := s.clientFor(acct.Egress).Login(ctx, acct.Phone, acct.Password)
 	if err != nil {
 		// New-device OTP demand auto-started a challenge: register it for
 		// the admin submit endpoint (SDD §2.2 amendment). The request
@@ -768,7 +768,7 @@ func (s *Server) refreshSession(ctx context.Context, accountID string) error {
 	if acct.UserID == "" || acct.PassToken == "" {
 		return fmt.Errorf("account %s has no stored passToken to renew", accountID)
 	}
-	sess, err := s.client.Renew(ctx, acct.UserID, acct.PassToken)
+	sess, err := s.clientFor(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
 	if err != nil {
 		return err
 	}

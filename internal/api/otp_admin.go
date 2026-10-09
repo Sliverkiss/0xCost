@@ -146,7 +146,7 @@ func (s *Server) handleOTPSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.client.SubmitOTP(r.Context(), p.Challenge, body.Code)
+	sess, err := s.clientForAccount(p.AccountID).SubmitOTP(r.Context(), p.Challenge, body.Code)
 	if err != nil {
 		// Wrong code / expired: the challenge stays live for a retry (the
 		// real flow allows re-entry of the code within the window).

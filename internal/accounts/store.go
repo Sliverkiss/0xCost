@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/yg/mimo2api/internal/egress"
 )
 
 // Session is the derived, refreshable upstream session (absent = login on
@@ -91,6 +93,13 @@ func Load(path string) (*Store, error) {
 func validate(accounts []Account) error {
 	seen := map[string]bool{}
 	for i, a := range accounts {
+		// The egress LABEL is validated for every entry, enabled or not: a typo
+		// in a disabled account should not wait for the day it is enabled to
+		// surface, and the label charset is what makes its env name derivable
+		// (SDD §4.8).
+		if err := egress.Validate(a.Egress); err != nil && a.Egress != "" {
+			return fmt.Errorf("accounts[%d] (%s): %w", i, a.ID, err)
+		}
 		if !a.Enabled {
 			continue
 		}

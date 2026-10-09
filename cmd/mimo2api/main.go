@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/api"
 	"github.com/yg/mimo2api/internal/config"
+	"github.com/yg/mimo2api/internal/egress"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/session"
@@ -50,8 +52,26 @@ func run() error {
 		return err
 	}
 
+	// Egress labels: accounts.json names them, the environment carries the
+	// endpoints and their credentials. An account whose label has no endpoint is
+	// a startup error naming it — a silent fallback would put that account's
+	// traffic on the host's own IP, which is what the label exists to prevent
+	// (SDD §4.8, REQ-16).
+	labels := []string{}
+	for _, a := range store.Accounts() {
+		labels = append(labels, a.Egress)
+	}
+	egressProxies, err := egress.Resolve(egress.Labels(labels), os.Getenv)
+	if err != nil {
+		return err
+	}
+	if len(egressProxies) > 0 {
+		log.Printf("egress: %d labelled egress(es) configured: %s", len(egressProxies), strings.Join(egress.Labels(labels), ", "))
+	}
+
 	client := mimo.New(mimo.Options{
 		Base:                    cfg.UpstreamBase(),
+		Egress:                  egressProxies,
 		UserAgent:               cfg.UserAgent(),
 		SecChUA:                 cfg.SecChUA(),
 		Timezone:                cfg.Timezone(),
@@ -70,7 +90,7 @@ func run() error {
 		if acct.Session == nil || acct.Session.Cookie == "" {
 			return pool.AuthError(fmt.Errorf("account %s has no cached session", accountID))
 		}
-		return client.Validate(ctx, acct.Session.Cookie)
+		return client.For(acct.Egress).Validate(ctx, acct.Session.Cookie)
 	}
 	renew := func(ctx context.Context, accountID string) error {
 		acct, ok := store.Get(accountID)
@@ -80,7 +100,7 @@ func run() error {
 		if acct.UserID == "" || acct.PassToken == "" {
 			return fmt.Errorf("account %s has no passToken to renew", accountID)
 		}
-		sess, rerr := client.Renew(ctx, acct.UserID, acct.PassToken)
+		sess, rerr := client.For(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
 		if rerr != nil {
 			return rerr
 		}
@@ -214,7 +234,7 @@ func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client) {
 		if acct.Session == nil {
 			continue
 		}
-		sess, err := client.Renew(ctx, acct.UserID, acct.PassToken)
+		sess, err := client.For(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
 		if err != nil {
 			log.Printf("accounts: STS keepalive for %s: %v", acct.ID, err)
 			continue

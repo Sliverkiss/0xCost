@@ -85,7 +85,7 @@ func (s *Server) botConfigFor(ctx context.Context, accountID, cookie, ph string)
 	}
 	s.botCfg.mu.Unlock()
 
-	cfg, err := s.client.FetchBotConfig(ctx, cookie, ph)
+	cfg, err := s.clientForAccount(accountID).FetchBotConfig(ctx, cookie, ph)
 	if err != nil {
 		return nil, err
 	}
@@ -255,20 +255,20 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 // the upstream answers that case with a business error rather than 404).
 func (s *Server) synthesize(ctx context.Context, cookie, ph, accountID string, req mimo.TTSRequest) (*mimo.TTSResult, error) {
 	const kind = mimo.ConversationKindTTS
-	conv, err := s.client.EnsureConversation(ctx, cookie, ph, s.audioConvs, accountID, kind)
+	conv, err := s.clientForAccount(accountID).EnsureConversation(ctx, cookie, ph, s.audioConvs, accountID, kind)
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.client.Synthesize(ctx, cookie, ph, conv, req)
+	res, err := s.clientForAccount(accountID).Synthesize(ctx, cookie, ph, conv, req)
 	if err == nil || !mimo.IsConversationMissing(err) {
 		return res, err
 	}
 	s.audioConvs.Invalidate(accountID + "/" + kind)
-	conv, err = s.client.EnsureConversation(ctx, cookie, ph, s.audioConvs, accountID, kind)
+	conv, err = s.clientForAccount(accountID).EnsureConversation(ctx, cookie, ph, s.audioConvs, accountID, kind)
 	if err != nil {
 		return nil, err
 	}
-	return s.client.Synthesize(ctx, cookie, ph, conv, req)
+	return s.clientForAccount(accountID).Synthesize(ctx, cookie, ph, conv, req)
 }
 
 // handleTranscriptions implements POST /v1/audio/transcriptions (multipart).
@@ -327,7 +327,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	var text string
 	err = s.withAccount(r.Context(), func(cookie, ph, accountID string) error {
 		const kind = mimo.ConversationKindASR
-		conv, cerr := s.client.EnsureConversation(r.Context(), cookie, ph, s.audioConvs, accountID, kind)
+		conv, cerr := s.clientForAccount(accountID).EnsureConversation(r.Context(), cookie, ph, s.audioConvs, accountID, kind)
 		if cerr != nil {
 			return cerr
 		}
@@ -339,14 +339,14 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 			PollEvery:   s.audioPoll,
 			PollTimeout: s.asrTimeout,
 		}
-		out, terr := s.client.Transcribe(r.Context(), cookie, ph, conv, req)
+		out, terr := s.clientForAccount(accountID).Transcribe(r.Context(), cookie, ph, conv, req)
 		if terr != nil && mimo.IsConversationMissing(terr) {
 			s.audioConvs.Invalidate(accountID + "/" + kind)
-			conv, cerr = s.client.EnsureConversation(r.Context(), cookie, ph, s.audioConvs, accountID, kind)
+			conv, cerr = s.clientForAccount(accountID).EnsureConversation(r.Context(), cookie, ph, s.audioConvs, accountID, kind)
 			if cerr != nil {
 				return cerr
 			}
-			out, terr = s.client.Transcribe(r.Context(), cookie, ph, conv, req)
+			out, terr = s.clientForAccount(accountID).Transcribe(r.Context(), cookie, ph, conv, req)
 		}
 		if terr != nil {
 			return terr

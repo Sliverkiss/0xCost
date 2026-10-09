@@ -19,7 +19,10 @@ import (
 // Client is the upstream MiMo AI Studio client (SDD §2.4). Construct via
 // New; the zero value is unusable.
 type Client struct {
-	http          *http.Client
+	http *http.Client
+	// egressHTTP: one http.Client per egress label, identical to http except for
+	// the proxy it dials through (SDD §4.8). Read-only after New.
+	egressHTTP    map[string]*http.Client
 	base          string // upstream base URL, no trailing slash
 	upstreamHost  string
 	userAgent     string
@@ -55,6 +58,10 @@ type Options struct {
 	// personal-data-transfer demand (env MIMO2API_CROSS_REGION_AGREE=false).
 	// With it set, such a login fails with ErrCrossRegionConsent instead.
 	DisableCrossRegionAgree bool
+	// Egress maps an egress LABEL to the proxy its requests leave through
+	// (SDD §4.8). Every call made through For(label) dials through it; the
+	// empty label is the shared, unlabelled egress and uses HTTP as given.
+	Egress map[string]*url.URL
 }
 
 // New builds a client.
@@ -79,6 +86,19 @@ func New(opts Options) *Client {
 		hc = &http.Client{Timeout: 30 * time.Minute}
 	}
 	u, _ := url.Parse(opts.Base)
+	// One http.Client per egress label. They share every setting with the base
+	// client and differ only in the proxy they dial through, so a labelled
+	// account behaves identically except for where its traffic leaves from
+	// (SDD §4.8). Built once: no proxy pool, no switching (owner decision).
+	egressHTTP := map[string]*http.Client{}
+	for label, proxy := range opts.Egress {
+		if proxy == nil {
+			continue
+		}
+		clone := *hc
+		clone.Transport = proxyTransport(hc.Transport, proxy)
+		egressHTTP[label] = &clone
+	}
 	hosts := opts.PassportHosts
 	if len(hosts) == 0 {
 		hosts = []string{"account.xiaomi.com"}
@@ -89,6 +109,7 @@ func New(opts Options) *Client {
 	}
 	return &Client{
 		http:                    hc,
+		egressHTTP:              egressHTTP,
 		base:                    opts.Base,
 		upstreamHost:            u.Hostname(),
 		userAgent:               opts.UserAgent,
@@ -99,6 +120,48 @@ func New(opts Options) *Client {
 		disableOTPAuto:          opts.DisableOTPAuto,
 		disableCrossRegionAgree: opts.DisableCrossRegionAgree,
 	}
+}
+
+// EgressDirect is the label of the shared, unlabelled egress.
+const EgressDirect = "direct"
+
+// For returns the client whose requests leave through an egress label. Every
+// upstream call an account makes must go through its own egress — chat on both
+// channels, audio, the catalog, renewal and the probe alike (REQ-16) — so callers
+// pass the account's label rather than choosing a transport themselves.
+//
+// An unknown label returns the client unchanged *only* because a label without an
+// endpoint is rejected at startup (internal/egress.Resolve): by the time a request
+// is in flight there is nothing sensible left to do, and failing here would turn a
+// configuration mistake into a per-request error storm.
+func (c *Client) For(egress string) *Client {
+	if egress == "" || egress == EgressDirect {
+		return c
+	}
+	hc, ok := c.egressHTTP[egress]
+	if !ok {
+		return c
+	}
+	clone := *c
+	clone.http = hc
+	return &clone
+}
+
+// proxyTransport returns a transport that dials through proxy while keeping the
+// base transport's settings (connection pooling, TLS, timeouts).
+func proxyTransport(base http.RoundTripper, proxy *url.URL) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var t *http.Transport
+	if bt, ok := base.(*http.Transport); ok {
+		t = bt.Clone()
+	} else {
+		t = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	p := *proxy
+	t.Proxy = http.ProxyURL(&p)
+	return t
 }
 
 // ErrIdleStall: the upstream stream produced no SSE event for the
