@@ -49,8 +49,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.MapError(w, err)
 		return
 	}
-	// Image parts (IMG-*): counted before any account work, because an image is
-	// the most expensive thing a request can carry (three upstream calls each).
+	// Image parts (IMG-*): the level and the count are checked before any account
+	// work, because an image is the most expensive thing a request can carry
+	// (three upstream calls each).
+	if err := req.imageDetailErr(); err != nil {
+		s.MapError(w, err)
+		return
+	}
 	if err := req.mediaErr(s.maxImages); err != nil {
 		s.MapError(w, err)
 		return
@@ -732,7 +737,8 @@ func isContentErr(err error) bool {
 		errors.Is(err, errImageFetch) ||
 		errors.Is(err, errUnsupportedImageType) ||
 		errors.Is(err, errImageTooLarge) ||
-		asTooManyImages(err) != nil
+		asTooManyImages(err) != nil ||
+		asImageDetail(err) != nil
 }
 
 // onlineSuffix is the model-id shorthand for web_search_status=enabled

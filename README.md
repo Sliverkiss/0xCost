@@ -121,8 +121,11 @@ vision models (`mimo-v2.6-pro`, `-flash`, `-pro-ultraspeed-studio`); a verified 
 call reads text out of a PNG. `MIMO2API_MAX_IMAGES` (default 10) and
 `MIMO2API_MAX_IMAGE_BYTES` (default 20 MiB) bound a request; a bad URL, a non-image
 body or an oversized file is a named 400 (`image_fetch_failed`,
-`unsupported_image_type`, `image_too_large`, `too_many_images`) and never cools an
-account down. A message with images and no text is sent with a neutral query
+`unsupported_image_type`, `image_too_large`, `too_many_images`,
+`unsupported_image_detail`) and never cools an account down. OpenAI's
+`image_url.detail` (`auto`/`low`/`high`) is accepted and reported in
+`X-Mimo-Warnings` as dropped: the channel's parse surface has no level knob, and a
+field that looks applied but is not is worse than one that says so. A message with images and no text is sent with a neutral query
 (`请描述这张图片。`).
 
 **Web search**: with `web_search_options` present, `web_search_status: enabled`

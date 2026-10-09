@@ -1027,7 +1027,11 @@ query — upload (`resource/genUploadInfo` → signed PUT) → parse
 transient business-code failure under load) → one `multiMedias` entry per image on
 **the turn whose message carried it** (`mediaType: "image"`, plus the parse result's
 `id` and `tokenUsage`). The media item carries the full field set, because the probe
-showed a stripped item is refused. Limits are client-facing guards, documented as
+showed a stripped item is refused. **`image_url.detail` is validated
+(`auto`/`low`/`high`) and then reported in `X-Mimo-Warnings`**: the channel's parse
+call takes only `fileUrl`/`objectName`/`model` (the verified shape, and the sibling
+client sends nothing else), so the level has nowhere to go — the one thing it must
+never do is look applied. Limits are client-facing guards, documented as
 guards: `MIMO2API_MAX_IMAGES` (default 10) and `MIMO2API_MAX_IMAGE_BYTES` (default
 20 MiB — OpenAI's own vision-input limit). The channel itself advertises 100 MB per
 file and 50 files per message. Failures are named 400s — `unsupported_image_url`,

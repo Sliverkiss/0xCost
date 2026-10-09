@@ -18,6 +18,12 @@ type contentPart struct {
 	// not a bare string.
 	ImageURL struct {
 		URL string `json:"url"`
+		// Detail is OpenAI's level knob for an image ("auto"|"low"|"high"). The
+		// channel's parse call takes fileUrl/objectName/model only (verified shape,
+		// and the sibling client sends nothing else), so the level has nowhere to
+		// go: it is validated, then reported as dropped (IMG-009/010), never
+		// silently ignored.
+		Detail string `json:"detail"`
 	} `json:"image_url"`
 }
 
@@ -191,6 +197,40 @@ func (req *chatRequest) toAdapterMsgs() ([]adapter.Msg, error) {
 	return out, nil
 }
 
+// imageDetails returns the non-empty image_url.detail values in one message
+// content, in order.
+func imageDetails(raw json.RawMessage) []string {
+	var parts []contentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range parts {
+		if p.Type == "image_url" {
+			if d := strings.TrimSpace(p.ImageURL.Detail); d != "" {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// imageDetailErr validates OpenAI's image_url.detail (auto|low|high). A value
+// outside that set is a 400 naming the field: the level cannot be honoured, but a
+// typo must not look like it was.
+func (req *chatRequest) imageDetailErr() error {
+	for _, m := range req.Messages {
+		for _, d := range imageDetails(m.Content) {
+			switch strings.ToLower(d) {
+			case "auto", "low", "high":
+			default:
+				return &unsupportedImageDetailError{Detail: d}
+			}
+		}
+	}
+	return nil
+}
+
 // mediaErr bounds how many images one request may carry. It runs before any
 // account work, because an over-limit request must not cost a lease — and an
 // image is the expensive part of a request (three upstream calls each).
@@ -298,6 +338,15 @@ func (req *chatRequest) droppedFields() []string {
 	// the granularity was not honoured instead of assuming it was.
 	if req.WebSearchOptions != nil && strings.TrimSpace(req.WebSearchOptions.SearchContextSize) != "" {
 		dropped = append(dropped, "web_search_options.search_context_size")
+	}
+	// OpenAI's image_url.detail has no counterpart on the channel's parse surface,
+	// so the image is processed at the channel's own level and the client is told
+	// the level was not applied.
+	for _, m := range req.Messages {
+		if len(imageDetails(m.Content)) > 0 {
+			dropped = append(dropped, "image_url.detail")
+			break
+		}
 	}
 	return append(dropped, req.Other...)
 }

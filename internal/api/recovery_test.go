@@ -108,9 +108,21 @@ func TestRecoveryHealsRevokedCredential(t *testing.T) {
 		t.Error("a second recovery started while one was in flight — one IP, two password logins, is what risk control reacts to")
 	}
 
+	// Poll for what this test asserts, not for a proxy of it: the session is
+	// persisted inside the login, while the attempt counter and the cooldown move
+	// when the attempt is released. Waiting only on the session left a window where
+	// the store said "recovered" and the counter still said 0 — a flake under load,
+	// never a real failure. REC-003 already polls the counter; this does the same.
 	acct := s.waitForSession(3 * time.Second)
 	if acct == nil {
 		t.Fatal("recovery did not persist a session")
+	}
+	attemptDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(attemptDeadline) {
+		if n, _ := s.srv.recovery.Snapshot()["attempts"].(map[string]int)["acc-recovery-1"]; n == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if acct.PassToken == "" || acct.PassToken == "V1:revoked-1" {
 		t.Errorf("passToken = %q, want the rotated credential the login returned", acct.PassToken)

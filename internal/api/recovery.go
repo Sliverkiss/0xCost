@@ -117,6 +117,9 @@ func (r *recoveryState) release(accountID, errMsg string, now time.Time) {
 	defer r.mu.Unlock()
 	r.inflight[accountID] = false
 	r.lastAtom[accountID] = now
+	// The counter and the cooldown both move on release: an "attempt" here means a
+	// finished attempt (REC-002/003 rely on that), and the cooldown measures the gap
+	// between finished ones.
 	r.attempts[accountID]++
 	r.lastErr[accountID] = errMsg
 }

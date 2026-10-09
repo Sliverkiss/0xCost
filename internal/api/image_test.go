@@ -281,6 +281,57 @@ func TestIMG007ImageOnlyMessageGetsNeutralQuery(t *testing.T) {
 	}
 }
 
+// IMG-009: OpenAI's image_url.detail is accepted and — because the channel's
+// parse surface has no level knob — reported as dropped instead of silently
+// ignored.
+func TestIMG009ImageDetailReportedAsDropped(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := fmt.Sprintf(`{"model":"mimo-v2.6-pro","stream":false,"messages":[{"role":"user","content":[
+		{"type":"text","text":"看这张"},
+		{"type":"image_url","image_url":{"url":%q,"detail":"high"}}]}]}`, pngDataURL())
+	resp, err := ts.Chat(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 (a supported detail must not be refused)", resp.StatusCode, raw)
+	}
+	warn := resp.Header.Get("X-Mimo-Warnings")
+	if !strings.Contains(warn, "image_url.detail") {
+		t.Errorf("X-Mimo-Warnings = %q, want the unhonoured detail level named", warn)
+	}
+	if media := mediaOf(t, ts, 0); len(media) != 1 {
+		t.Errorf("multiMedias = %v, want the image still sent", media)
+	}
+}
+
+// IMG-010: an image_url.detail outside auto|low|high is a 400 before any account
+// work — a typo must not look like it was applied.
+func TestIMG010InvalidImageDetailRejected(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := fmt.Sprintf(`{"model":"mimo-v2.6-pro","stream":false,"messages":[{"role":"user","content":[
+		{"type":"text","text":"看这张"},
+		{"type":"image_url","image_url":{"url":%q,"detail":"ultra"}}]}]}`, pngDataURL())
+	status, raw := chatOnce(t, ts, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", status, raw)
+	}
+	if !strings.Contains(raw, "unsupported_image_detail") {
+		t.Errorf("body = %s, want unsupported_image_detail", raw)
+	}
+	if n := len(ts.Upstream.Requests()); n != 0 {
+		t.Errorf("upstream calls = %d, want 0 (validated before the pool)", n)
+	}
+}
+
 // IMG-008: the parse step is retried — the platform answers a transient failure
 // under load, and the upload bytes are already spent by then.
 func TestIMG008ParseRetriedThenSucceeds(t *testing.T) {

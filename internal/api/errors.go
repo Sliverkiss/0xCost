@@ -70,6 +70,25 @@ var (
 	errImageTooLarge        = errors.New("image too large")
 )
 
+// unsupportedImageDetailError is an image_url.detail outside auto|low|high
+// (IMG-010). A type because the message names the offending value.
+type unsupportedImageDetailError struct {
+	Detail string
+}
+
+func (e *unsupportedImageDetailError) Error() string {
+	return fmt.Sprintf("image_url.detail %q is not one of: auto, low, high", e.Detail)
+}
+
+// asImageDetail extracts *unsupportedImageDetailError from a wrapped error.
+func asImageDetail(err error) *unsupportedImageDetailError {
+	var e *unsupportedImageDetailError
+	if errors.As(err, &e) {
+		return e
+	}
+	return nil
+}
+
 // tooManyImagesError is more image parts in one request than the client-facing
 // cap (IMG-003). A type rather than a sentinel because the message has to carry
 // the numbers.
@@ -240,6 +259,9 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errUnsupportedImageType):
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_type",
 			"the fetched URL did not answer an image (content-type must be image/*)", 0)
+	case asImageDetail(err) != nil:
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_detail",
+			asImageDetail(err).Error(), 0)
 	case errors.Is(err, errImageTooLarge):
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_too_large", err.Error(), 0)
 	case asTooManyImages(err) != nil:
