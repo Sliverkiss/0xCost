@@ -268,7 +268,7 @@ data:{"type":null,"content":"[DONE]","usage":null}
 | `dialogId` | This turn's dialogue id | Store → next turn's `previousDialogueId` |
 | `message` | Text delta (`type:"text"`) | Split thinking markers, emit deltas |
 | `usage` | Token counts; **emitted multiple times, last one wins** (`mimo-web-proxy/internal/handler/chat.go:156-159`) | Keep last |
-| `error` | Upstream error, `content` = message | Fail turn |
+| `error` | Upstream error, `content` = message | **Classified** (see §7.1): transient throttle → one retry after 800ms; model-name rejection → 400, never retried; anything else → fail turn |
 | `sensitive_query` / `sensitive_title` | Content-moderation block | Fail turn with content-filter error |
 | `web_search`, `doc`, `tip_ratio`, `tip_truncate` | Search/parse progress | Ignore (web search disabled in v1) |
 | `finish` | `content:"[DONE]"` | End of turn |
@@ -564,7 +564,9 @@ from first-byte latency. (simple-chat implemented the EWMA term but never wired 
 | 451 | disabled with reason (account restricted) |
 | 461 | disabled, permanent flag (never auto-recovers) |
 | 5xx / transport / stream stall > 180s (`chat.go:62,112-120`) | cooldown from 30s |
-| `event:error` / `sensitive_query` mid-stream | fail the request; no pool action (content-level, not account-level) |
+| `event:error` "服务器繁忙，请稍后再试" (transient upstream throttle) | one retry after an 800ms pause; account stays available (platform load, not an account fault); still busy → 503 `upstream_busy` + `Retry-After: 2` |
+| `event:error` "模型名称错误" (channel refuses the model id) | 400 `model_not_available_on_channel`, no retry, log a warning (our routing/catalog disagree with upstream) |
+| `event:error` (other) / `sensitive_query` mid-stream | fail the request; no pool action (content-level, not account-level) |
 | Empty response, no error | one retry with fresh `msgId` + fresh `conversationId` (`mimo-web-proxy/internal/handler/chat.go:283-324` empty-response rotation) |
 
 ### 4.7 Accounts file format
@@ -860,7 +862,9 @@ the source-tree `data/` — same file, container-native path.
 | Rate-limited | 429 | no (this request) | cooldown ladder 60s→10min |
 | Upstream sick | 5xx, transport, non-SSE 200 body (`upstream.js:208-223`), stall > 180s | 1 retry, another account, pre-first-byte only | cooldown from 30s |
 | Account dead | 451/461, STS 70016, login captcha/OTP demand | no | disabled (+permanent flag for 461) |
-| Content-level | `event:error`, `sensitive_query` | no | none — fail request |
+| Upstream busy (transient) | `event:error` "服务器繁忙，请稍后再试" | 1 retry after 800ms, pre-first-byte only | none — the account is healthy |
+| Model rejected | `event:error` "模型名称错误" | no | none — 400 to the client, warn |
+| Content-level | other `event:error`, `sensitive_query` | no | none — fail request |
 | Empty response | SSE completes, zero text, no error | 1 retry, fresh `msgId` + fresh `conversationId`, full replay (`chat.go:283-324`) | none |
 
 ### 7.2 Retry policy

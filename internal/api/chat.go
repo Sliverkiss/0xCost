@@ -261,6 +261,40 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			s.MapError(w, err)
 			return
 
+		case errors.Is(err, mimo.ErrUpstreamModelRejected):
+			// Deterministic: the channel refuses this model id, so a retry
+			// can only fail again. Surface it as a client error instead of
+			// spending another upstream call; the log line matters because
+			// the gateway routes channels itself, so this means the catalog
+			// disagrees with upstream (docs/web-surface-reverse.md §11).
+			lease.Release()
+			s.logger.Printf("chat: upstream rejected model %q on the %s channel: %v",
+				p.model, channelName(p.fastchat), err)
+			s.MapError(w, err)
+			return
+
+		case errors.Is(err, mimo.ErrUpstreamBusy):
+			// Transient throttle ("服务器繁忙，请稍后再试"): live-observed to
+			// clear within seconds, so retry once after a short pause
+			// rather than failing a request that would succeed a moment
+			// later. The account stays healthy — this is platform load,
+			// not a dead account.
+			lease.Release()
+			if attempts > 0 {
+				s.MapError(w, err)
+				return
+			}
+			s.debugf("chat: upstream busy, retrying in %s (account=%s)", busyRetryBackoff, lease.ID)
+			stickyEntry = nil
+			attempts++
+			select {
+			case <-time.After(busyRetryBackoff):
+			case <-ctx.Done():
+				s.MapError(w, ctx.Err())
+				return
+			}
+			continue
+
 		case isContentErr(err):
 			// Content-level: fail the request, no pool action (SDD §7.1).
 			lease.Release()
@@ -627,6 +661,24 @@ func (p *chatPipeline) isPermanentDead(err error) bool {
 
 func (p *chatPipeline) isEmptyResponse(err error) bool {
 	return errors.Is(err, mimo.ErrEmptyResponse)
+}
+
+// busyRetryAfterSeconds is the Retry-After handed to the client when the
+// upstream is still busy after the in-request retry.
+const busyRetryAfterSeconds = 2
+
+// busyRetryBackoff is how long the gateway waits before retrying a request the
+// upstream answered with the transient "服务器繁忙" frame. It is deliberately
+// short: the live observation is that the condition clears within a couple of
+// seconds, and the client is already waiting on this request.
+const busyRetryBackoff = 800 * time.Millisecond
+
+// channelName names the upstream chat channel for logs (SDD §2.4).
+func channelName(fastchat bool) string {
+	if fastchat {
+		return "fastchat/ultraspeed"
+	}
+	return "normal"
 }
 
 func isContentErr(err error) bool {

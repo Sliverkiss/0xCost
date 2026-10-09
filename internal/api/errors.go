@@ -100,6 +100,17 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Malformed JSON body (SDD §7.4, TDD ERRMAP-002).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
 			"malformed request body", 0)
+	case errors.Is(err, mimo.ErrUpstreamModelRejected):
+		// The upstream channel refuses this model id (docs/web-surface-reverse.md
+		// §11.1). Surfaced as 400: the request cannot succeed as written, and
+		// retrying it is pointless.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_available_on_channel",
+			"upstream rejected the model name for this channel: "+err.Error(), 0)
+	case errors.Is(err, mimo.ErrUpstreamBusy):
+		// Transient platform throttle that outlived the retry (SDD §7.1).
+		// 503 + a short Retry-After, not a 502: the request is fine.
+		writeError(w, http.StatusServiceUnavailable, "api_error", "upstream_busy",
+			"upstream is busy; retry shortly", busyRetryAfterSeconds)
 	case isAuthErr(err):
 		// Upstream 401 surviving the refresh retry (SDD §7.4 row 8, TDD
 		// ERRMAP-007/RENEW-006).

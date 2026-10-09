@@ -262,3 +262,66 @@ func TestSSEOnFirstByte(t *testing.T) {
 		t.Errorf("onFirstByte calls = %d, want 1", calls)
 	}
 }
+
+// SSE-014: in-band `event:error` frames are classified, not lumped together.
+// Live behaviour (docs/web-surface-reverse.md §11.6): "服务器繁忙，请稍后再试" is a
+// transient throttle that clears within seconds and MUST be retried, while
+// "模型名称错误" is deterministic and MUST NOT be. Treating both as a generic
+// content error (the previous behaviour) turned a blip into a client-visible
+// 502 and re-sent a request that could never succeed.
+func TestSSEErrorFrameClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		frame string
+		busy  bool
+		model bool
+		want  string
+	}{
+		{
+			name:  "transient throttle",
+			frame: "服务器繁忙，请稍后再试",
+			busy:  true,
+			want:  "服务器繁忙，请稍后再试",
+		},
+		{
+			name:  "throttle phrased differently",
+			frame: "系统繁忙，请稍后再试",
+			busy:  true,
+			want:  "系统繁忙，请稍后再试",
+		},
+		{
+			name:  "model rejected by this channel",
+			frame: "模型名称错误",
+			model: true,
+			want:  "模型名称错误",
+		},
+		{
+			name:  "unknown failure keeps the generic type",
+			frame: "upstream exploded",
+			want:  "upstream exploded",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "event:error\ndata:{\"type\":\"text\",\"content\":\"" + tc.frame + "\"}\n\n"
+			_, err := runFixture(t, body)
+			if err == nil {
+				t.Fatal("error frame must fail the turn")
+			}
+			if got := errors.Is(err, ErrUpstreamBusy); got != tc.busy {
+				t.Errorf("errors.Is(ErrUpstreamBusy) = %v, want %v (err = %v)", got, tc.busy, err)
+			}
+			if got := errors.Is(err, ErrUpstreamModelRejected); got != tc.model {
+				t.Errorf("errors.Is(ErrUpstreamModelRejected) = %v, want %v (err = %v)", got, tc.model, err)
+			}
+			if !tc.busy && !tc.model {
+				var ue *ErrUpstreamStream
+				if !errors.As(err, &ue) {
+					t.Errorf("err = %T, want *ErrUpstreamStream for an unknown message", err)
+				}
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q, want the upstream text %q preserved", err, tc.want)
+			}
+		})
+	}
+}

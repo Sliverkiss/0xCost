@@ -250,3 +250,16 @@
 
 `/v1/chat/completions` 对 ultraspeed 模型自动路由 `/fastchat/...`；6 轮对话（流式）
 第 6 轮仍能取回第 1 轮植入的事实（脚本 `gw_ultra_e2e.py`）。
+
+### 11.6 上游 in-band 错误分类（`event:error` 的 content）
+
+上游把两种性质完全不同的情况都塞在同一个 `event:error` 帧里，必须**按内容分类**处理：
+
+| `content` | 性质 | 实测 | 正确处置 |
+|---|---|---|---|
+| `服务器繁忙，请稍后再试` | **瞬时**平台限流 | 第 4/5 轮繁忙，第 6 轮即恢复正常；同一段测试里延迟在 0.7s–126s 抖动 | 800ms 后有界重试一次；仍繁忙 → 503 `upstream_busy` + `Retry-After: 2`；**账号保持 available**（是平台负载，不是账号故障） |
+| `模型名称错误` | **确定性**：该通道拒绝此模型 id | ultraspeed 模型打到普通通道必现 | 400 `model_not_available_on_channel`，**不重试**，并打 warn（说明网关路由/目录与上游不一致） |
+| 其他 | 该轮失败 | — | 失败并透出（历史行为） |
+
+回归：`internal/mimo/sse_test.go` SSE-014（分类）、`internal/api/upstream_errors_test.go`
+BUSY-001/BUSY-002/MODEL-001（重试与映射，含"账号不被降温"）。

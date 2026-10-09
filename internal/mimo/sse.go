@@ -30,6 +30,48 @@ func (e *ErrContentFilter) Error() string {
 	return "content filtered by upstream: " + e.Reason
 }
 
+// In-band `event:error` frames are NOT interchangeable. Two of the messages
+// seen in production need opposite handling:
+//
+//   - "服务器繁忙，请稍后再试" is a transient platform throttle. Observed live on
+//     both channels to clear within seconds (busy on two consecutive turns,
+//     answered normally on the next). Retrying is correct.
+//   - "模型名称错误" is deterministic: the channel refuses that model id (an
+//     ultraspeed model sent to the normal channel). Retrying burns upstream
+//     calls on a request that can never succeed.
+//
+// Everything else keeps the historical behaviour (a failed turn, no retry).
+var (
+	// ErrUpstreamBusy is a transient upstream throttle: retry with backoff.
+	ErrUpstreamBusy = errors.New("upstream busy")
+	// ErrUpstreamModelRejected is a model this channel refuses: never retry.
+	ErrUpstreamModelRejected = errors.New("upstream rejected the model name")
+)
+
+// upstreamFrameError carries the upstream's own text while still matching a
+// sentinel with errors.Is, so callers classify without string matching.
+type upstreamFrameError struct {
+	sentinel error
+	message  string
+}
+
+func (e *upstreamFrameError) Error() string { return e.sentinel.Error() + ": " + e.message }
+func (e *upstreamFrameError) Unwrap() error { return e.sentinel }
+
+// classifyInBandError maps an `event:error` payload onto a sentinel. The
+// upstream sends a human-readable Chinese message, so this is pattern-based;
+// unknown messages fall back to the generic stream error.
+func classifyInBandError(msg string) error {
+	switch {
+	case strings.Contains(msg, "繁忙"), strings.Contains(msg, "稍后再试"):
+		return &upstreamFrameError{sentinel: ErrUpstreamBusy, message: msg}
+	case strings.Contains(msg, "模型名称"), strings.Contains(msg, "模型不存在"):
+		return &upstreamFrameError{sentinel: ErrUpstreamModelRejected, message: msg}
+	default:
+		return &ErrUpstreamStream{Message: msg}
+	}
+}
+
 // ErrUpstreamStream marks an `error` event mid-stream (SDD §2.5).
 type ErrUpstreamStream struct{ Message string }
 
@@ -121,7 +163,7 @@ func (s *streamer) handleEvent(ev Event) (bool, error) {
 	case "error":
 		var p msgPayload
 		_ = json.Unmarshal([]byte(ev.Data), &p)
-		return false, &ErrUpstreamStream{Message: p.Content}
+		return false, classifyInBandError(p.Content)
 	case "sensitive_query", "sensitive_title":
 		return false, &ErrContentFilter{Reason: ev.Name}
 	case "web_search", "doc", "tip_ratio", "tip_truncate":
