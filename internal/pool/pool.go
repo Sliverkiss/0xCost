@@ -98,6 +98,11 @@ const (
 	ClassTransport FailureClass = "transport"
 	// ClassUpstream5xx: the upstream answered 5xx (or a non-SSE 200 body).
 	ClassUpstream5xx FailureClass = "upstream-5xx"
+	// ClassRiskControl: a 451/461. Deliberately NOT a ladder class — it disables
+	// the account instead of cooling it (SDD §4.5.2) — and it exists so the
+	// snapshot can say what the account last hit. ReportFailure with this class
+	// would fall back to the 5xx ladder, so nothing may report it as a failure.
+	ClassRiskControl FailureClass = "risk-control"
 	// ClassThrottle429: the upstream answered 429.
 	ClassThrottle429 FailureClass = "throttle-429"
 )
@@ -171,8 +176,14 @@ type account struct {
 	cooldownClass  FailureClass
 	cooldownStatus int
 	cooldownSince  time.Time
-	sem            chan struct{} // in-flight semaphore; len() is the inflight count
-	ewmaLatency    float64       // seconds, EWMA alpha 0.2 (SDD §4.4)
+	// lastError* record the most recent failure of any kind, whether or not it
+	// entered a cooldown: "which error did this account last hit, and when" is
+	// the first question asked when reading a pool (REQ-12).
+	lastErrorClass  FailureClass
+	lastErrorStatus int
+	lastErrorAt     time.Time
+	sem             chan struct{} // in-flight semaphore; len() is the inflight count
+	ewmaLatency     float64       // seconds, EWMA alpha 0.2 (SDD §4.4)
 }
 
 // Pool is the account pool. One mutex guards selection and state; in-flight
@@ -494,6 +505,9 @@ func (p *Pool) ReportFailure(accountID string, class FailureClass, status int) {
 	a.cooldownClass = class
 	a.cooldownStatus = status
 	a.cooldownSince = p.now()
+	a.lastErrorClass = class
+	a.lastErrorStatus = status
+	a.lastErrorAt = a.cooldownSince
 }
 
 // ReportTransport records a transport-class failure (connection error, timeout,
@@ -599,6 +613,9 @@ func (p *Pool) ReportRiskControl(accountID, reason string, ev RiskEvent) int {
 	a.reason = reason
 	a.state = StateDisabled
 	a.cooldownUntil = time.Time{}
+	a.lastErrorClass = ClassRiskControl
+	a.lastErrorStatus = ev.Status
+	a.lastErrorAt = p.now()
 	p.recordRiskLocked(RiskEvent{
 		AccountID:  a.id,
 		Egress:     a.egress,
@@ -641,6 +658,64 @@ func (p *Pool) RiskEvents() []RiskEvent {
 	defer p.mu.Unlock()
 	out := make([]RiskEvent, len(p.riskEvents))
 	copy(out, p.riskEvents)
+	return out
+}
+
+// AccountSnapshot is one account's runtime view for the operator endpoint
+// (SDD §4.9). It carries no credential material of any kind: an account id, its
+// egress LABEL, and counters/state. Masking and credential age are the API
+// layer's business (it owns the store).
+type AccountSnapshot struct {
+	ID               string         `json:"id"`
+	Egress           string         `json:"egress"`
+	State            State          `json:"state"`
+	Permanent        bool           `json:"permanent"`
+	Reason           string         `json:"reason,omitempty"`
+	InFlight         int            `json:"in_flight"`
+	MaxInFlight      int            `json:"max_in_flight"`
+	EWMALatencyMS    int64          `json:"ewma_latency_ms"`
+	CooldownUntil    time.Time      `json:"cooldown_until,omitempty"`
+	CooldownClass    FailureClass   `json:"cooldown_class,omitempty"`
+	CooldownSince    time.Time      `json:"cooldown_since,omitempty"`
+	CooldownCausedBy int            `json:"cooldown_status,omitempty"`
+	Failures         map[string]int `json:"failures"`
+	LastErrorClass   FailureClass   `json:"last_error_class,omitempty"`
+	LastErrorStatus  int            `json:"last_error_status,omitempty"`
+	LastErrorAt      time.Time      `json:"last_error_at,omitempty"`
+}
+
+// Snapshot returns every account's runtime view, ordered as the pool holds them
+// (SDD §4.9). It is a copy: callers cannot reach pool internals through it.
+func (p *Pool) Snapshot() []AccountSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]AccountSnapshot, 0, len(p.accounts))
+	for _, a := range p.accounts {
+		failures := make(map[string]int, len(a.failures))
+		for class, n := range a.failures {
+			if n > 0 {
+				failures[string(class)] = n
+			}
+		}
+		out = append(out, AccountSnapshot{
+			ID:               a.id,
+			Egress:           a.egress,
+			State:            a.state,
+			Permanent:        a.permanent,
+			Reason:           a.reason,
+			InFlight:         len(a.sem),
+			MaxInFlight:      cap(a.sem),
+			EWMALatencyMS:    int64(a.ewmaLatency * 1000),
+			CooldownUntil:    a.cooldownUntil,
+			CooldownClass:    a.cooldownClass,
+			CooldownSince:    a.cooldownSince,
+			CooldownCausedBy: a.cooldownStatus,
+			Failures:         failures,
+			LastErrorClass:   a.lastErrorClass,
+			LastErrorStatus:  a.lastErrorStatus,
+			LastErrorAt:      a.lastErrorAt,
+		})
+	}
 	return out
 }
 

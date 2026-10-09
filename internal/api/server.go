@@ -182,6 +182,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/audio/transcriptions", s.auth(s.handleTranscriptions))
 	mux.HandleFunc("GET /v1/audio/voices", s.auth(s.handleVoices))
 	// Admin OTP endpoints (SDD §2.2 amendment) — same Bearer auth.
+	// The pool view (SDD §4.9). /healthz stays as it is: the Docker healthcheck
+	// parses it (REQ-13).
+	mux.HandleFunc("GET /v1/admin/pool", s.auth(s.handlePoolView))
 	mux.HandleFunc("GET /v1/admin/otp/pending", s.auth(s.handleOTPPending))
 	mux.HandleFunc("POST /v1/admin/otp/submit", s.auth(s.handleOTPSubmit))
 	// Cross-region consent override (docs/login-chain-reverse.md §1) — the

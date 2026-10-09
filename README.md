@@ -43,6 +43,7 @@ performs `GET /healthz` for the container healthcheck.
 | POST | `/v1/audio/transcriptions` | Bearer | Speech-to-text (multipart: `file`, `model?`, `language?`, `response_format?`) → `{text}` / plain text / `verbose_json` |
 | GET | `/v1/audio/voices` | Bearer | The account's TTS voice catalog (`{data:[{id,name,description,avatar,preview_audio}]}`) |
 | GET | `/healthz` | none | Liveness + pool state summary (no credentials) |
+| GET | `/v1/admin/pool` | Bearer | The pool as an operator sees it: state, in-flight, EWMA latency, cooldown end **and its cause**, disabled reason, per-class failure counters, last error, egress label, credential age, plus the recorded risk-control events and per-egress signal counts. Masked ids; no credential material ever (SDD §4.9) |
 | GET | `/v1/admin/otp/pending` | Bearer | In-flight new-device OTP challenges (id, method, masked notify, account, expiry) |
 | POST | `/v1/admin/otp/submit` | Bearer | Complete a login with `{id, code}` — persists the session, re-enables the account |
 | POST | `/v1/admin/consent/agree` | Bearer | Agree to the cross-region transfer demand for one account (`{account_id}`) and continue its login — the operator override for `MIMO2API_CROSS_REGION_AGREE=false` (ADR 0001) |
@@ -131,6 +132,9 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_KEEPALIVE_INTERVAL_MS` | `15000` | SSE keepalive comment interval |
 | `MIMO2API_REPLAY_CAP` | `20` | Max replayed user turns per request |
 | `MIMO2API_PROBE_INTERVAL_S` | `60` | Cooldown recovery probe sweep |
+| `MIMO2API_COOLDOWN_TRANSPORT_S` | `15` | Base cooldown for the transport class (connection error, timeout, SSE stall, EOF mid-body) |
+| `MIMO2API_COOLDOWN_TRANSPORT_CAP_S` | `300` | Cap for the transport ladder — a dead connection is less likely to be the account's fault, so it escalates less far than 5xx/429 |
+| `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window inside which risk-control signals are correlated across accounts behind one egress |
 | `MIMO2API_OTP_AUTO` | `true` | Auto-start the new-device OTP challenge on login demands (complete via `/v1/admin/otp/submit`) |
 | `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` refuses automatically and leaves the account for an operator, who can still approve one login with `POST /v1/admin/consent/agree` (ADR 0001) |
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
