@@ -5,7 +5,7 @@ for the env switches). Credentials come from the operator's
 `data/accounts.json`; the suite works on a **copy** in a temp dir, so a run
 never mutates the live session.
 
-Last run: **2026-10-09 12:10 CST**, account `182******16`, egress IP outside
+Last run: **2026-10-09 14:29 CST**, account `182******16`, egress IP outside
 mainland China (which is why the login chain traverses the cross-region
 consent page — see `docs/login-chain-reverse.md`).
 
@@ -23,6 +23,8 @@ consent page — see `docs/login-chain-reverse.md`).
 | LIVE-008 | Captcha probability | **SKIP** | Needs 5 one-time codes (`MIMO2API_LIVE_OTP_CODES`); each cold login sends an SMS, so the run refuses to start without them. |
 | LIVE-009 | Fastchat usage merge | **PASS (recorded)** | See below. |
 | LIVE-010 | Conversation GC | **phase 1 PASS** | Phase-1 snapshot written (24 h gap required); phase 2 runs with `MIMO2API_LIVE_PHASE=2`. |
+| LIVE-SESS-001 | Session chaining vs replay | **PASS** | See below — pinned turn chained in 8.2 s, replay control 47.4 s, context preserved across turns. |
+| LIVE-SESS-002 | One-shot stays stateless | **PASS** | `stream:false` with a live session id: 200, no session headers, store untouched (`sessions 1→1`, `lookups 1→1`). |
 
 ## LIVE-007 — does the upstream 429 carry a structured deadline?
 
@@ -76,3 +78,34 @@ checks whether the answer still carries the fact from phase 1:
   24 h wait).
 - The suite paces upstream calls by 2 s; the burst case is the only exception
   and is opt-in.
+
+## LIVE-SESS-001 — the chained session is real, and it is the cheaper path
+
+```
+turn 1 (fresh, 3 messages replayed) → mode=replay elapsed=26.1s session=60dd9a45f6d0fc9190b684be519a3756
+turn 2 (pinned, 1 delta message)   → mode=chain  elapsed=8.2s
+turn 3 (control: same 4-message history, own session) → mode=replay elapsed=47.4s
+
+chained frontier advanced: msgs 3 → 4, dialog anchor "16075414" → "16075443", same upstream conversation=true
+chained answer: 海水很蓝
+control answer: 海水很蓝
+delta (control - chained) = 39.3s
+```
+
+What this proves, and what it does not:
+
+- The pin is honoured across processes without stored state on the client's
+  side: turn 2 sent only the new message (`deltaQueries=1`) and the upstream
+  answered with the fact from turn 1 ("海水很蓝"), so the server-side
+  conversation really was continued rather than reconstructed from replay.
+- The frontier and the dialog anchor advanced on the chained entry, and the
+  upstream `conversationId` was reused — the store, the header and the answer
+  agree with each other.
+- The control turn replayed the same history into a session of its own and paid
+  47.4 s against 8.2 s. Latency on this service is noisy (turn 1's own replay
+  cost 26.1 s), so read the delta as "the replay path pays for the whole history
+  and the chain does not", not as a fixed speed-up factor.
+- **Not covered live**: account migration (SESS-040, covered by the integration
+  test) and the concurrent-fork race (SESS-020/021, covered by the integration
+  tests) — both need either a second account or two simultaneous streams, which
+  the live suite deliberately does not do against the operator's single account.
