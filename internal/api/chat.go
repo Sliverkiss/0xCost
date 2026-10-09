@@ -75,6 +75,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The cap the platform enforces is on the query text it receives, and the
+	// turn planner splices every system message into the first user query — so
+	// a client's system prompt — or the protocol prompt a tool layer injects in
+	// front of us — spends the same budget as the user's own message. Checked
+	// here so the failure is ours (fast, free, with numbers) instead of the
+	// platform's, which costs an account call and returns prose (ADR 0015).
+	if composed, overhead := adapter.ComposedFirstQueryLen(am); composed > cap {
+		s.logger.Printf("chat: rejected request from %s: composed first query of %d chars (incl. %d chars of system/injected preamble) over the %d-char cap (model %s, %d messages)",
+			r.RemoteAddr, composed, overhead, cap, model, len(msgs))
+		s.MapError(w, &queryTooLongError{Limit: cap, Actual: composed, Model: model, Overhead: overhead})
+		return
+	}
 
 	// Dropped-field warning header (SDD §5.2, TDD API-008/009).
 	if dropped := req.droppedFields(); len(dropped) > 0 {

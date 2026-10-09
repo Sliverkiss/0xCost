@@ -66,6 +66,39 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 	return plan, nil
 }
 
+// ComposedFirstQueryLen returns the length of the query the planner would send
+// first, plus how much of it is preamble rather than the client's own text.
+//
+// The platform's ceiling applies to the query text it receives, and the planner
+// splices every system message into the first user query (API-017) — so a tool
+// layer that injects a protocol prompt, or a client with a large system prompt,
+// spends the same 102,400-char budget the user's message needs (ADR 0015). This
+// is the worst case for the first turn, and the exact text a miss-path replay
+// sends.
+func ComposedFirstQueryLen(msgs []Msg) (composed, overhead int) {
+	var systemParts []string
+	first := ""
+	for _, m := range msgs {
+		switch m.Role {
+		case "system":
+			if t := strings.TrimSpace(m.Content); t != "" {
+				systemParts = append(systemParts, t)
+			}
+		case "user":
+			if first == "" && m.Content != "" {
+				first = m.Content
+			}
+		}
+	}
+	composed = len([]rune(first))
+	if len(systemParts) > 0 {
+		preamble := strings.Join(systemParts, "\n\n") + "\n\n---\n\n"
+		overhead = len([]rune(preamble))
+		composed += overhead
+	}
+	return composed, overhead
+}
+
 // PlanDelta builds the sticky-hit turn plan: only the user messages after the
 // stored frontier (storedMsgCount = non-system message count at the time the
 // entry was stored). System messages appearing in the delta tail splice into

@@ -417,3 +417,34 @@ func TestShapeCompletion(t *testing.T) {
 		t.Errorf("shape = %v", m)
 	}
 }
+
+// The composed-length helper must mirror what the planner sends: the preamble
+// counts, and it is exactly the systems joined plus the "\n\n---\n\n"
+// separator the planner uses (ADR 0015).
+func TestComposedFirstQueryLen(t *testing.T) {
+	msgs := []Msg{
+		{Role: "system", Content: "abc"},
+		{Role: "system", Content: "def"},
+		{Role: "user", Content: "hello"},
+		{Role: "user", Content: "second"},
+	}
+	composed, overhead := ComposedFirstQueryLen(msgs)
+	// "abc" + "\n\n" + "def" + "\n\n---\n\n" + "hello"
+	wantOverhead := len([]rune("abc\n\ndef\n\n---\n\n"))
+	if overhead != wantOverhead {
+		t.Fatalf("overhead = %d, want %d", overhead, wantOverhead)
+	}
+	if composed != wantOverhead+5 {
+		t.Fatalf("composed = %d, want %d (preamble + first user message)", composed, wantOverhead+5)
+	}
+
+	// No system preamble: composed is just the first user message.
+	if composed, overhead := ComposedFirstQueryLen([]Msg{{Role: "user", Content: "hey"}}); composed != 3 || overhead != 0 {
+		t.Fatalf("composed = %d overhead = %d, want 3/0", composed, overhead)
+	}
+
+	// Blank system messages are dropped, exactly as the planner drops them.
+	if composed, overhead := ComposedFirstQueryLen([]Msg{{Role: "system", Content: "   "}, {Role: "user", Content: "hey"}}); composed != 3 || overhead != 0 {
+		t.Fatalf("composed = %d overhead = %d, want 3/0 (a blank system message is not a preamble)", composed, overhead)
+	}
+}

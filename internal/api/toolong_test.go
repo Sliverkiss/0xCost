@@ -10,6 +10,7 @@ package api_test
 // in a 5xx envelope) into the client's own 400 with something to act on.
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,5 +151,66 @@ func TestTooLongRefusalDoesNotPenalizeAccount(t *testing.T) {
 	}
 	if state := ts.Pool.StateOf("acc1"); state != pool.StateAvailable {
 		t.Errorf("account state = %v, want available (a client-side limit is not an account fault)", state)
+	}
+}
+
+// TOOLONG-008: the ceiling applies to the query text the platform receives, not
+// to each message on its own — the planner splices system messages into the
+// first user query, so a preamble (a client system prompt, or the protocol
+// prompt a tool layer injects in front of us) spends the same budget. Live
+// measurement: 1,760 chars of injected protocol + a 100,000-char message is
+// served, the same protocol with 101,000 chars is refused by the platform. Both
+// halves are under the cap here, so only the composed check can catch it — and
+// it must catch it locally, without spending an account call.
+func TestComposedQueryOverCapIsRejectedLocally(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := testutil.ChatBody("mimo-v2.6-pro", false,
+		[2]string{"system", strings.Repeat("p", 2000)},
+		[2]string{"user", strings.Repeat("a", 101000)})
+	resp, err := ts.Chat(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (each message fits, the composed query does not)", resp.StatusCode)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	text := string(got)
+	if !strings.Contains(text, `"code":"context_too_long"`) {
+		t.Errorf("body = %s, want code context_too_long", text)
+	}
+	// The caller must be able to see where the characters went: 2000 of them are
+	// preamble it may not realise it is paying for.
+	if !strings.Contains(text, "preamble") {
+		t.Errorf("body = %s, want the preamble size named", text)
+	}
+	if ts.Upstream.ChatHits() != 0 {
+		t.Errorf("upstream hits = %d, want 0 (the platform would have refused this too)", ts.Upstream.ChatHits())
+	}
+}
+
+// TOOLONG-009: the same shape just under the ceiling is still served — the
+// composed check must not become a blanket ban on system prompts.
+func TestComposedQueryUnderCapIsServed(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := testutil.ChatBody("mimo-v2.6-pro", false,
+		[2]string{"system", strings.Repeat("p", 2000)},
+		[2]string{"user", strings.Repeat("a", 100000)})
+	resp, err := ts.Chat(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (composed 102,007 chars is under the 102,400 ceiling): %s", resp.StatusCode, raw)
+	}
+	if ts.Upstream.ChatHits() != 1 {
+		t.Errorf("upstream hits = %d, want 1", ts.Upstream.ChatHits())
 	}
 }

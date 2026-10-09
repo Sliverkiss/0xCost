@@ -124,6 +124,24 @@ func (m *MockUpstream) AudioRequests() []AudioRequest {
 	return out
 }
 
+// SetParseResult overrides what /open-apis/resource/parse reports: the token
+// usage of the parsed file, or an empty parse (the platform's `code 6002` case).
+func (m *MockUpstream) SetParseResult(tokenUsage int, empty bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parseTokens = tokenUsage
+	m.parseEmpty = empty
+}
+
+// ParseRequests returns the recorded parse calls' query parameters, in order.
+func (m *MockUpstream) ParseRequests() [][3]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][3]string, len(m.parseReqs))
+	copy(out, m.parseReqs)
+	return out
+}
+
 // LastUpload returns the bytes of the most recent PUT upload (nil if none).
 func (m *MockUpstream) LastUpload() []byte {
 	m.mu.Lock()
@@ -136,6 +154,10 @@ func (m *MockUpstream) LastUpload() []byte {
 func (m *MockUpstream) WAVBytes() []byte { return m.wav }
 
 func (m *MockUpstream) recordAudio(r *http.Request, body []byte) {
+	if r.URL.Path == "/open-apis/resource/parse" {
+		q := r.URL.Query()
+		m.parseReqs = append(m.parseReqs, [3]string{q.Get("fileUrl"), q.Get("objectName"), q.Get("model")})
+	}
 	m.audioReqs = append(m.audioReqs, AudioRequest{
 		Method: r.Method,
 		Path:   r.URL.Path,
@@ -278,6 +300,26 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 			"uploadUrl":   m.URL() + "/mock-upload/audio.wav",
 			"resourceUrl": m.URL() + "/mock-cdn/audio.wav",
 			"objectName":  "multimedia/1000000001/audio.wav",
+		})
+
+	case r.URL.Path == "/open-apis/resource/parse":
+		// The parse call puts its parameters in the QUERY STRING with an empty
+		// JSON body (reverse doc, attachments-reverse.md) — a mock that reads a
+		// body here would pass while the real client sends nothing.
+		m.mu.Lock()
+		tokens := m.parseTokens
+		empty := m.parseEmpty
+		m.mu.Unlock()
+		if empty {
+			writeJSONEnvelope(w, 0, "成功", map[string]any{})
+			return
+		}
+		writeJSONEnvelope(w, 0, "成功", map[string]any{
+			"id":         "parse-result-1",
+			"tokenUsage": tokens,
+			"fileUrl":    r.URL.Query().Get("fileUrl"),
+			"objectName": r.URL.Query().Get("objectName"),
+			"model":      r.URL.Query().Get("model"),
 		})
 
 	case strings.HasPrefix(r.URL.Path, "/mock-upload/"):

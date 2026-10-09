@@ -18,9 +18,12 @@ services:
     image: mimo2api
     container_name: mimo2api
     # Not published: reachable as mimo2api:8080 on the compose network, and by
-    # clients through the tool layer's port below. Uncomment for direct access.
+    # clients through the tool layer's port below. Uncomment for direct access —
+    # it is how the raw chat path was compared with the tool layer's (ADR 0015:
+    # 102,000 chars with 30 tools is served here and refused through the tool
+    # layer, because the injected protocol prompt spends the same budget).
     # ports:
-    #   - "8080:8080"
+    #   - "127.0.0.1:21224:8080"
     volumes:
       - ./data:/data # accounts.json + runtime state (SDD §4.7)
     environment:

@@ -312,6 +312,12 @@ type ChatRequest struct {
 	ConversationID   string // 32-hex; empty = mint fresh in Chat
 	PreviousDialogID string // chaining anchor; empty = null (first turn)
 	EnableThinking   bool
+	// MultiMedias are the attachment handles to send with this turn (a parsed
+	// resource's id and coordinates, docs/attachments-reverse.md). nil sends the
+	// empty array every chat request carries (SDD §2.4). Attachments are
+	// accounted separately from the query text, so they are the one input path
+	// that does not spend the 102,400-character ceiling (ADR 0015).
+	MultiMedias []any
 	// WebSearchStatus is the upstream search switch; empty = "disabled".
 	WebSearchStatus string
 	Temperature     *float64
@@ -392,6 +398,16 @@ func IsAuthExpiredErr(err error) bool {
 // re-enter Chat rather than resend (SDD §2.4). No retry logic lives here:
 // account switch / auth refresh / empty-response retries are the API
 // layer's job (SDD §7.1/§7.2).
+// mediaOrEmpty keeps multiMedias an ARRAY even when the caller sends no
+// attachments: the upstream reads the field's type, and null breaks it
+// (SDD §2.4).
+func mediaOrEmpty(m []any) []any {
+	if m == nil {
+		return []any{}
+	}
+	return m
+}
+
 func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (*ChatResult, error) {
 	if req.ConversationID == "" {
 		req.ConversationID = adapter.RandomHex32()
@@ -415,7 +431,7 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 			Temperature:     req.Temperature,
 			TopP:            req.TopP,
 		},
-		MultiMedias: []any{}, // MUST be an array, never null (SDD §2.4)
+		MultiMedias: mediaOrEmpty(req.MultiMedias),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

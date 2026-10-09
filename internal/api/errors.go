@@ -60,11 +60,20 @@ type queryTooLongError struct {
 	Limit  int
 	Actual int
 	Model  string
+	// Overhead is how much of Actual is preamble the client did not write —
+	// the system prompt it sent plus any protocol prompt a tool layer injected
+	// before us (ADR 0015). Zero for a plain user message.
+	Overhead int
 }
 
 func (e *queryTooLongError) Error() string {
-	return fmt.Sprintf("query is too long for this model channel: %d chars, limit %d (model %q); send fewer or shorter messages",
-		e.Actual, e.Limit, e.Model)
+	suffix := ""
+	if e.Overhead > 0 {
+		suffix = fmt.Sprintf(" (of which %d chars are the injected/system preamble, %d are the message)",
+			e.Overhead, e.Actual-e.Overhead)
+	}
+	return fmt.Sprintf("query is too long for this model channel: %d chars, limit %d (model %q);%s send fewer or shorter messages",
+		e.Actual, e.Limit, e.Model, suffix)
 }
 
 // upstreamTooLong reports whether an upstream refusal is about the request
@@ -85,13 +94,15 @@ func upstreamTooLong(s string) bool {
 		strings.Contains(s, "文本过长")
 }
 
-// upstreamTooLongMessage is the client-facing translation. It says what to do
-// and which channel cap applies, without inventing a number for the channel
-// whose real ceiling is content-dependent (see adapter.MaxQueryChars).
+// upstreamTooLongMessage is the client-facing translation, with the measured
+// ceilings (ADR 0015): 50,000 characters on the ultraspeed/fastchat channel and
+// 102,400 elsewhere, counted on the query text the platform receives — preamble
+// included.
 func upstreamTooLongMessage() string {
 	return "the upstream refused this request as too long; send fewer or shorter messages " +
-		"(the ultraspeed channel caps a request at 50000 characters, other models are refused " +
-		"by the platform above roughly 100000 characters)"
+		"(measured ceilings: 50000 characters on the ultraspeed channel, 102400 on other models, " +
+		"counted on the composed query text — a system prompt or injected tool-protocol prompt " +
+		"uses the same budget)"
 }
 
 // MapError translates a chat-pipeline error into the §7.4 HTTP response.

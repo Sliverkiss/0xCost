@@ -416,6 +416,13 @@ Live-verified protocol (`docs/web-surface-reverse.md` §3/§4):
     The previous 90,000 was an unmeasured guess and rejected work the platform
     serves. Because the platform refuses anything above 102,400 as well, mirroring
     it locally saves a wasted account call without risking a false rejection.
+    The ceiling counts the **query text the platform receives**: the planner
+    splices system messages into the first user query (API-017), so a client
+    system prompt — or the protocol prompt the tool layer injects (1,355 chars
+    for one tool, 5,222 for thirty) — spends the same budget. The pre-flight
+    check therefore validates the composed first query
+    (`adapter.ComposedFirstQueryLen`) and the error names how much of it was
+    preamble.
     Refusals that still come from upstream (its wording `too long`,
     `query is too long`, `长度不能超过`) are **translated** into
     `400 context_too_long` with an actionable message, whether they arrive as an

@@ -77,3 +77,62 @@ The upstream's refusal is also useless to a client: English prose wrapped in our
   long *history* locally would break working traffic.
 - A chat body is still unbounded in the handler; the 150,000 guard is the only
   bound short of adding a body limit. Worth revisiting if abuse appears.
+
+## What the ceiling actually counts (measured 2026-10-09, round 2)
+
+The boundary is a character count, but not of the client's message: it is the
+**query text the platform receives**. The planner splices every system message
+into the first user query (API-017), so a system prompt — or the protocol prompt
+a tool layer injects in front of us — spends the same budget.
+
+| experiment | result |
+| --- | --- |
+| system 1,000 + user 101,900 (= 102,900 composed) | refused |
+| system 2,000 + user 100,000 (= 102,007 composed) | served |
+| gateway's raw chat path, 102,000 chars, no tools | served |
+| gateway's raw chat path, 102,000 chars, **30 tools** | served (the gateway ignores `tools`; nothing is injected) |
+| tool layer, 102,000 chars, no tools | served (no tools = straight passthrough) |
+| tool layer, 100,000 chars, 3 tools | served |
+| tool layer, 101,000 chars, 3 tools | refused |
+| tool layer, 102,000 chars, 30 tools | refused |
+
+The refusal body even names both numbers: `chars=102402, limit=102400`.
+
+The injected XYML protocol prompt costs, measured by calling
+`app.engine.xyml.build_tool_instructions` directly (no guessing):
+
+| tools | injected chars |
+| --- | --- |
+| 1 | 1,355 |
+| 3 | 1,760 |
+| 5 | 2,012 |
+| 10 | 2,642 |
+| 30 | 5,222 |
+
+So the tool path's effective client budget is `102,400 − injected`, and the pair
+of tool-layer rows above is exactly the arithmetic: 100,000 + 1,760 = 101,767
+(served), 101,000 + 1,760 = 102,767 (refused).
+
+### Consequence in our code
+
+The pre-flight check validates the **composed first query**, not each message in
+isolation (`adapter.ComposedFirstQueryLen`), and the error names how much of it
+is preamble. Before this, a client message that fitted on its own but not once
+the protocol prompt was spliced in passed our check and was refused by the
+platform — one wasted account call, and a much less useful message.
+
+### Ways to go beyond the ceiling
+
+1. **Send it in parts** — the upstream's own suggestion in its refusal text, and
+   the shape our planner already uses: one upstream query per client user
+   message, chained through `previousDialogueId`, so only the *per-query* ceiling
+   applies. Verified: 20 × 6,000 chars (120,000 total) is accepted.
+2. **Spend less of the budget on preamble** — on the tool path the injected
+   protocol is 1,355 characters for a single tool; trimming it buys the client
+   real room.
+3. **Attachments** — the live catalog advertises `fileUpload.enabled = true` with
+   `maxFileSize: 100` (MB) and `maxFileCount: 50` for every model, and
+   `POST /open-apis/resource/parse` answers with a `tokenUsage`, i.e. attachments
+   are accounted for separately from the query text. This is the only path that
+   plausibly lifts the ceiling by orders of magnitude; it is **not yet verified
+   end to end** (see docs/attachments-reverse.md).

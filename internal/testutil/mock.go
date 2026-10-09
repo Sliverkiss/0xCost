@@ -74,6 +74,9 @@ type MockUpstream struct {
 	asrText      string
 	wav          []byte
 	uploaded     []byte
+	parseTokens  int
+	parseEmpty   bool
+	parseReqs    [][3]string
 	saveErrors   []string
 	botConfigErr string
 	// audioHTTPStatus/audioHTTPBody: when status > 0 the TTS endpoint answers
