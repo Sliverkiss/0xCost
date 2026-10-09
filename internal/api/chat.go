@@ -194,8 +194,12 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			sessionKey = ident.Key
 			w.Header().Set("X-Mimo-Session-Id", ident.PublicID)
 			s.sessions.Acquire(ctx, sessionKey, 0)
-		} else {
-			defer s.sessions.Release(sessionKey)
+		}
+		// Exactly one release per claim — including a forked session, or its
+		// in-flight count would never return to zero and every later turn on
+		// that id would fork again.
+		defer s.sessions.Release(sessionKey)
+		if !forkedSession {
 			if e, ok := s.sessions.Lookup(sessionKey, p.msgs); ok {
 				stickyEntry = &e
 			}

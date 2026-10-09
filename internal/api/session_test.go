@@ -245,6 +245,16 @@ func TestSess020BusySessionForks(t *testing.T) {
 	if id2 == publicID {
 		t.Error("the forked request kept the busy session's id")
 	}
+	// The fork must release its own claim: pinning the forked id on a later
+	// turn has to reuse that session, not fork away from it again.
+	time.Sleep(50 * time.Millisecond)
+	body3 := testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}, [2]string{"assistant", "hi"}, [2]string{"user", "after the fork"})
+	resp3, _, mode3 := chatWith(t, ts, body3, "", map[string]string{"X-Mimo-Session-Id": id2})
+	testutil.ReadSSE(t, resp3)
+	if mode3 == "fork" {
+		t.Error("the forked session stayed claimed after its request finished")
+	}
+
 	if got.id != publicID || got.mode != "replay" {
 		// The first request may legitimately have advanced the chain; what must
 		// hold is that it kept its own id.
