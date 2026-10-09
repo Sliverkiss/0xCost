@@ -582,6 +582,20 @@ type BotModel struct {
 	RedirectTo string `json:"redirectTo,omitempty"`
 }
 
+// ChatModel is one row of bot/config `modelConfigList` — the chat-capable
+// catalog entries, which is where the capability DEFAULTS live
+// (`modelConfigListNg` carries only ids, names and page types). Pointers keep
+// "the upstream did not say" distinguishable from a real false (M19 §3).
+type ChatModel struct {
+	Model                  string  `json:"model"`
+	Name                   string  `json:"name"`
+	ThinkingDefaultOn      *bool   `json:"thinkingDefaultOn"`
+	WebSearchDefaultStatus *string `json:"webSearchDefaultStatus"`
+	ShowWebSearch          *bool   `json:"showWebSearch"`
+	ShowThinking           *bool   `json:"showThinking"`
+	NToken                 string  `json:"nToken"`
+}
+
 // BotExt are the account-level capability switches.
 type BotExt struct {
 	EnableVoice       bool `json:"enableVoice"`
@@ -595,8 +609,10 @@ type BotExt struct {
 // BotConfig is the Studio's per-account configuration (reverse doc §7).
 type BotConfig struct {
 	Models []BotModel `json:"modelConfigListNg"`
-	Voices []Voice    `json:"ttsVoices"`
-	Ext    BotExt     `json:"ext"`
+	// ChatModels is modelConfigList: the chat rows with capability defaults.
+	ChatModels []ChatModel `json:"modelConfigList"`
+	Voices     []Voice     `json:"ttsVoices"`
+	Ext        BotExt      `json:"ext"`
 }
 
 // FetchBotConfig reads the account configuration (needs cookie + ph).
