@@ -304,9 +304,21 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// Explicit non-loopback host with empty keys still forces local bind.
+	// Explicit non-loopback host with empty keys still forces local bind — safe
+	// on a laptop, and instantly diagnosable there ("listening on 127.0.0.1").
 	if len(c.apiKeys) == 0 && c.host != "127.0.0.1" && c.host != "localhost" {
 		c.host = "127.0.0.1"
+	}
+	// On a hosted platform that is a trap instead: the proxy connects from
+	// outside the container, so a loopback bind is unreachable and the platform
+	// answers its own "service starting up" page forever — the deploy looks like
+	// a build that never finishes (found on Belmo, ADR 0021). PORT is the
+	// platform's own signal (MIMO2API_PORT was not set), which makes this the one
+	// case where the fallback cannot help anyone: refuse loudly instead.
+	if len(c.apiKeys) == 0 && platformSuppliesPort() {
+		return nil, fmt.Errorf("MIMO2API_API_KEYS is required when the platform supplies PORT (got PORT=%d): "+
+			"without a key the gateway would bind 127.0.0.1 behind the platform's proxy, where nothing can reach it "+
+			"(every request a 503 and no hint in the logs). Set MIMO2API_API_KEYS to the key your clients use", c.port)
 	}
 
 	if u, err := url.Parse(c.upstreamBase); err != nil || u.Scheme == "" || u.Host == "" {
@@ -441,6 +453,18 @@ func getenv(name, def string) string {
 		return strings.TrimSpace(v)
 	}
 	return def
+}
+
+// platformSuppliesPort reports whether the listen port came from the platform's
+// own PORT variable rather than MIMO2API_PORT — the signal that we are running
+// under a PaaS router rather than on a laptop or a compose deployment (which
+// sets MIMO2API_PORT and would otherwise look identical).
+func platformSuppliesPort() bool {
+	if v, ok := os.LookupEnv("MIMO2API_PORT"); ok && strings.TrimSpace(v) != "" {
+		return false
+	}
+	v, ok := os.LookupEnv("PORT")
+	return ok && strings.TrimSpace(v) != ""
 }
 
 // portFromEnv resolves the listen port: MIMO2API_PORT, else the platform's

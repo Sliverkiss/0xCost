@@ -891,3 +891,16 @@ fake accounts only).
 | MGMT-010 | Empty store | `verify` | Non-zero exit with a message: an empty pool cannot serve a single request |
 | MGMT-011 | — | `-accounts` with no command, with an unknown command, or `rm` with no id | Each fails with a message instead of doing something arbitrary |
 | MGMT-012 | argv containing `-accounts list`, `-accounts=show <id>`, or no `-accounts` at all | `accountsFlagValue` | The command and its trailing arguments are extracted for both spellings; a server start without the flag is untouched |
+
+## 10. ADR 0021 — a hosted `PORT` requires a key (CONF-056)
+
+| Case | Precondition | Stimulus | Observable expectation |
+| --- | --- | --- | --- |
+| CONF-056 | `PORT=4567`, `MIMO2API_PORT` unset, `MIMO2API_API_KEYS` empty | `config.Load()` | **Error naming `MIMO2API_API_KEYS`**, not a config that binds `127.0.0.1` where the platform's proxy cannot reach it (the observed symptom: the platform serves its own "starting up" page indefinitely) |
+| CONF-056b | `PORT=4567`, keys set | `config.Load()` | Port 4567, host `0.0.0.0` — a hosted deploy with a key listens on every interface |
+| CONF-056c | `MIMO2API_PORT=4567`, keys empty | `config.Load()` | Host `127.0.0.1`, no error: an explicit `MIMO2API_PORT` is a compose/local deployment, where the loopback fallback is the documented behaviour |
+
+The regression that matters: the old code made all three collapse into "listening on
+127.0.0.1", which on a platform is invisible from outside. Verified live that the port
+itself was never the problem: the exact nixpacks build command from a clean checkout,
+started with only `PORT=8123`, logged `listening on [::]:8123`.

@@ -387,13 +387,45 @@ func TestPortResolution(t *testing.T) {
 	})
 
 	t.Run("PORT is honoured when MIMO2API_PORT is unset", func(t *testing.T) {
-		testEnv(t, map[string]string{"PORT": "4567"})
+		testEnv(t, map[string]string{"PORT": "4567", "MIMO2API_API_KEYS": "k"})
 		c, err := Load()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if c.Port() != 4567 {
 			t.Errorf("port = %d, want the platform's PORT", c.Port())
+		}
+		if c.Host() != "0.0.0.0" {
+			t.Errorf("host = %q: a hosted deploy with a key must listen on every interface", c.Host())
+		}
+	})
+
+	// CONF-056 (ADR 0021): the platform's PORT with no API key is a trap. The
+	// empty-key rule would bind 127.0.0.1, which nothing outside the container
+	// can reach, so the platform serves its own "starting up" page forever and
+	// the logs say nothing is wrong. Refuse to start instead, naming the fix.
+	t.Run("platform PORT without keys is refused, not silently made unreachable", func(t *testing.T) {
+		testEnv(t, map[string]string{"PORT": "4567"})
+		_, err := Load()
+		if err == nil {
+			t.Fatal("expected a startup error: a loopback bind behind a platform proxy is unreachable")
+		}
+		if !strings.Contains(err.Error(), "MIMO2API_API_KEYS") {
+			t.Errorf("error must name the variable to set, got: %v", err)
+		}
+	})
+
+	// The same empty-key rule must stay harmless where it works: a compose
+	// deployment sets MIMO2API_PORT, not PORT, and there a loopback bind is the
+	// documented local behaviour.
+	t.Run("MIMO2API_PORT without keys keeps the local loopback fallback", func(t *testing.T) {
+		testEnv(t, map[string]string{"MIMO2API_PORT": "4567"})
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("an explicit MIMO2API_PORT must not be treated as a hosted deploy: %v", err)
+		}
+		if c.Host() != "127.0.0.1" {
+			t.Errorf("host = %q, want the loopback fallback with no keys", c.Host())
 		}
 	})
 

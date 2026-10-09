@@ -221,6 +221,25 @@ MIMO2API_OTP_AUTO=false                    # never spend an SMS automatically (A
   container deployment on this host does exactly that with `./data` mounted.
 - **Health**: `GET /healthz` for the platform's HTTP check, or
   `mimo2api healthcheck` on a host without curl.
+- **Root directory must be the repository root.** The Go module, the `cmd/`
+  packages and `nixpacks.toml` all live at the top of this repository, so a
+  platform configured with a subdirectory (e.g. the `app/` layout a multi-language
+  project uses) finds no `go.mod` and never builds. Build command, if the platform
+  asks for one instead of reading `nixpacks.toml`:
+  `CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o mimo2api ./cmd/mimo2api`;
+  start command: `./mimo2api`; port: leave it to the platform (the binary listens on
+  `$PORT` when `MIMO2API_PORT` is unset, and on 3000 when neither is set).
+- **`MIMO2API_API_KEYS` is mandatory here, not optional.** With the platform's own
+  `PORT` supplied and no key, startup **fails with an error naming the variable**
+  instead of quietly binding `127.0.0.1` — a loopback bind is unreachable behind the
+  platform's proxy, which is what makes a misconfigured deploy look like a build that
+  never finishes (ADR 0021).
+- **If the platform keeps showing its own "starting up" page**, read its runtime log
+  and look for one of two lines: the `MIMO2API_API_KEYS is required when the platform
+  supplies PORT` error, or `DS_REDIS_HOST is set but the store is unusable — refusing
+  to start on a stale file fallback` (a store that cannot be reached is fatal by
+  design, ADR 0018). Both are deliberate; a build failure instead means the root
+  directory or the build command is wrong.
 
 ## Managing accounts (file or Upstash)
 
