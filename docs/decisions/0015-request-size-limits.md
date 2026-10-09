@@ -92,8 +92,9 @@ a tool layer injects in front of us — spends the same budget.
 | gateway's raw chat path, 102,000 chars, no tools | served |
 | gateway's raw chat path, 102,000 chars, **30 tools** | served (the gateway ignores `tools`; nothing is injected) |
 | tool layer, 102,000 chars, no tools | served (no tools = straight passthrough) |
-| tool layer, 100,000 chars, 3 tools | served |
-| tool layer, 101,000 chars, 3 tools | refused |
+| tool layer, 100,000 chars, 1 tool | served (100,000 + 1,355 + 7 = 101,362) |
+| tool layer, 100,000 chars, 3 tools | served (100,000 + 1,760 + 7 = 101,767) |
+| tool layer, 101,000 chars, 3 tools | refused (101,000 + 1,760 + 7 = 102,767) |
 | tool layer, 102,000 chars, 30 tools | refused |
 
 The refusal body even names both numbers: `chars=102402, limit=102400`.
