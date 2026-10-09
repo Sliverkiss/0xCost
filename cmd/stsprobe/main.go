@@ -3,9 +3,11 @@
 // regression-test the landing-chain walk (docs/login-chain-reverse.md §1)
 // without burning an SMS: `go run ./cmd/stsprobe <accounts.json>`.
 //
-// Evidence contract: it prints the hop chain (status + host only, no query
-// values), how many cookies the chain planted, and whether the composed
-// session validates against the upstream.
+// Evidence contract: how many cookies the chain planted, the identity fields
+// it yielded, and whether the composed session validates against the upstream.
+// With PERSIST=1 it writes the renewed session back into the accounts file
+// (the operator escape hatch when a login attempt burned an OTP and the
+// gateway has no session left).
 package main
 
 import (
@@ -44,11 +46,13 @@ func main() {
 		fmt.Println("parse accounts:", err)
 		os.Exit(1)
 	}
-	var userID, passToken string
+	var userID, passToken, acctID string
 	for _, a := range af.Accounts {
-		if a.Enabled && a.PassToken != "" {
-			userID, passToken = a.UserID, a.PassToken
-			break
+		if a.PassToken != "" && (userID == "" || a.Enabled) {
+			userID, passToken, acctID = a.UserID, a.PassToken, a.ID
+			if a.Enabled {
+				break
+			}
 		}
 	}
 	if passToken == "" {
@@ -80,4 +84,43 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("VALIDATE-OK")
+
+	if os.Getenv("PERSIST") != "1" {
+		return
+	}
+	// Persist surgically: touch only this account's session/identity fields so
+	// unrelated keys (label, enabled, cooldown) survive.
+	var rawDoc map[string]any
+	if err := json.Unmarshal(raw, &rawDoc); err != nil {
+		fmt.Println("persist: parse:", err)
+		os.Exit(1)
+	}
+	list, _ := rawDoc["accounts"].([]any)
+	wrote := false
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok || m["id"] != acctID {
+			continue
+		}
+		m["session"] = map[string]any{"cookie": sess.Cookie, "ph": sess.PH, "fetched_at": time.Now().Unix()}
+		m["user_id"] = sess.UserID
+		m["pass_token"] = sess.PassToken
+		m["state"] = "available"
+		wrote = true
+	}
+	if !wrote {
+		fmt.Println("persist: account not found in file")
+		os.Exit(1)
+	}
+	out, _ := json.MarshalIndent(rawDoc, "", "  ")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		fmt.Println("persist:", err)
+		os.Exit(1)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		fmt.Println("persist:", err)
+		os.Exit(1)
+	}
+	fmt.Println("PERSISTED session to", path)
 }
