@@ -13,7 +13,7 @@ consent page — see `docs/login-chain-reverse.md`).
 
 | ID | Case | Result | Evidence |
 |---|---|---|---|
-| LIVE-001 | Cold-start login | **SKIP** (human gate) | With `MIMO2API_OTP_AUTO=false` the cold login reaches the new-device verification demand in 1.6 s, is reported as an operator action and leaves the account out of rotation. Completing it needs an SMS code (`MIMO2API_LIVE_OTP_CODE`) — the code was already burned twice on login bugs that are now fixed (`cfc286c`), so the run skips instead of dispatching another SMS. |
+| LIVE-001 | Cold-start login | **PASS** (2026-10-09) | The full from-zero login ran end to end: with the device anchor on file the password login answers the new-device demand, the operator's single SMS code completes the challenge, and the rotated passToken + session + device identity are persisted. Second login for the same device: `LOGIN-OK in 3.058s`, no demand (DEVICE-003). |
 | LIVE-002 | Model catalog | **PASS** | `GET /v1/models` → 200, contains `mimo-v2.6-pro` and `mimo-v2.6-pro-ultraspeed-studio`; no upstream call. |
 | LIVE-003 | Non-streaming echo | **PASS** | 4.4 s, `content="pong"`, `finish_reason="stop"`, `usage={prompt:2230 completion:11 total:2241}`. |
 | LIVE-004 | Streaming | **PASS** | 5.0 s, 5 frames: role-only delta → 2 content deltas (`"1\n2\n3\n4\n"`,`"5"`) → finish frame → usage frame (`choices:[]`) → `[DONE]` — the documented SDD §5.4 order. |
@@ -357,3 +357,62 @@ send with `code=20024` (SMS rate limit). Hence ADR 0013: the dispatch defaults t
 off, the harvested device identity is persisted even on an aborted login, and a
 code is only useful if the challenge survives to the operator's submit —
 upcoming, if the challenge should also survive a restart.
+
+
+## DEVICE-003 — the OTP login completed, the credential healed, the device is remembered (2026-10-09)
+
+The first real completion of the new-device flow on this deployment, run against a copy of
+the account file and merged back afterwards.
+
+| Step | Result |
+|---|---|
+| Login attempt (session-less copy, `MIMO2API_OTP_AUTO=true`) | demand at 16:59:13, `code sent to +86 182******16`; challenge `otp-dbe010705a092a2fb9774bd4746c5ad3` registered (10-minute window) |
+| Device identity after that **aborted** attempt | persisted anyway: `deviceId=wb_63a194b2-…`, `pass_ua=web`, `uLocale=zh_CN` — the fix that makes the next attempt the same device |
+| Code submitted 16:59:43 (operator, via `/v1/admin/otp/submit`) | `{"account":"18278724616","status":"ok"}`; log: `otp: account 18278724616 logged in via OTP (Phone)` |
+| Credential | **passToken rotated** (`cea93425…` → `ad551ba2…`), session cookie replaced (886 → 923 chars), `cUserId` harvested |
+| `cmd/stsprobe` (probe → renew → validate) | `RENEW-OK in 2.389s` / `2.447s` / `2.488s`, `VALIDATE-OK` — renewal works again |
+| **Second password login, no SMS** (`cmd/loginprobe`, `DisableOTPAuto`) | `LOGIN-OK in 3.058s: userID=2652042633 session_cookies=6 ph=true` — **no new-device verification demanded**; device identity unchanged |
+| Deployment on the real account file | `/healthz` 1 available; `/v1/models` 7 models, `source=account` (live catalog read); `/v1/admin/pool` `invariant_ok: true` |
+
+Two semantics confirmed live, both previously only inferred: a **full login issues a new
+passToken** (renewal never does), and **one completed verification makes later logins on the
+same device verification-free** — the deployment therefore self-heals as long as the stored
+device identity is kept.
+
+Cost note: this used exactly one SMS. The attempt before it spent one accidentally (startup
+catalog warm-up with the old `MIMO2API_OTP_AUTO=true` default) and then hit `code=20024`,
+which is why ADR 0013 flipped that default and why an aborted login now persists its device
+identity.
+
+
+## DEVICE-004 — credential lifetimes, and which flow actually rotates the passToken (2026-10-09)
+
+Asked directly ("can the login result show the validity?"), so measured instead of quoted.
+Live `Set-Cookie` attributes from the login/renewal chain (values never printed):
+
+| Cookie | Max-Age | Expires | Notes |
+|---|---|---|---|
+| `passToken` | 2592000 = **30 d** | 2026-11-08 | `Domain=.account.xiaomi.com; Secure; HttpOnly` |
+| `cUserId`, `userId`, `ptn_count` | 2592000 = 30 d | 2026-11-08 | the account-scoped set |
+| `deviceId` | 33696000 = **390 d** | 2027-11-03 | the device anchor |
+| `pass_ua` | 7689600 = 89 d | 2027-01-06 | |
+| `uLocale` | 1296000 = 15 d | 2026-10-24 | `Domain=.xiaomi.com` |
+| `passInfo` | — | — | session cookie |
+| `theme`, aistudio `userId` | 0 | 1970 | deletions |
+
+Which flow rotates the credential, measured rather than inferred:
+
+| Flow | Body `passToken` | Verdict |
+|---|---|---|
+| `serviceLogin&_json=true` (renewal) | byte-identical to the one sent (same sha256 prefix `ad551ba2bf45`, 347 chars) | **echo, no rotation** |
+| password login + OTP (16:59) | `cea93425…` → `ad551ba2…` | **rotation** |
+
+So: a passToken lives 30 days, renewal keeps it and never mints a new one, and only a real
+login replaces it — which is why an account that dies at 3.5 hours (70016) was revoked by
+risk control, not expired. Also note the renewal body carries `ssecurity`, `psecurity`,
+`cUserId`, `nonce` and `securityStatus: 0` alongside the echoed token.
+
+The gateway currently **discards both signals**: `collectCookies` keeps only `name=value`
+(attributes dropped) and the account file has no expiry field. Recording them
+(`credential_expires_at`) and showing the TTL in `/v1/admin/pool` is the obvious next
+small change: `credential_age_s` says how old the credential is, never when it dies.

@@ -225,11 +225,12 @@ the landing chain rotates in now replaces the stored one instead of being overwr
 by it. The probes are device-aware and SMS-safe: `cmd/loginprobe` reads the accounts
 file, never argv, and is built with `DisableOTPAuto` so it can never burn a code.
 
-**Still untested (needs one SMS).** Whether a completed verification — `trust=true`,
-same device — makes the *next* login verification-free. Recipe: finish one OTP login
-(`POST /v1/admin/otp/submit`), then run `go run ./cmd/loginprobe data/accounts.json`:
-exit 0 = the device is remembered (renewal can then re-login hands-free), exit 2 =
-verification is still demanded and the trust must be carried some other way.
+**Answered live (2026-10-09).** One completed verification — the operator's single code,
+submitted through `POST /v1/admin/otp/submit` — attached the trust to the device the chain
+had been tracking, and the next password login on that device completed with
+`LOGIN-OK in 3.058s — no new-device verification demanded`. Continuity was the whole
+mechanism: the anchor is issued on the login-page navigation, it must be stored, and a
+login that aborts must still keep it. Evidence: `docs/live-findings.md` DEVICE-003.
 
 ## 6. Correction to `docs/usercross-reverse.md`
 
