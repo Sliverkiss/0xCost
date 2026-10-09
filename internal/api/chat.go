@@ -246,14 +246,14 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			s.MapError(w, lastErr)
 			return
 
-		case p.isAccountDead(err):
+		case isAccountDead(err):
 			// 451/461/70016/captcha: disabled, no retry (SDD §7.1).
-			s.pool.ReportDisabled(lease.ID, err.Error(), p.isPermanentDead(err))
+			s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
 			lease.Release()
 			s.MapError(w, err)
 			return
 
-		case p.isUpstream429(err):
+		case isUpstream429(err):
 			// No retry for this request; cooldown ladder (SDD §7.1, TDD
 			// ERRMAP-006).
 			s.pool.Report429(lease.ID)
@@ -624,13 +624,14 @@ func (s *Server) refreshSession(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// Classification helpers (SDD §7.1).
-func (p *chatPipeline) isUpstream429(err error) bool {
+// Classification helpers (SDD §7.1). These depend on the error alone, so the
+// chat pipeline and the audio endpoints share them.
+func isUpstream429(err error) bool {
 	var ue *mimo.UpstreamError
 	return errors.As(err, &ue) && ue.StatusCode == http.StatusTooManyRequests
 }
 
-func (p *chatPipeline) isAccountDead(err error) bool {
+func isAccountDead(err error) bool {
 	var ue *mimo.UpstreamError
 	if errors.As(err, &ue) && (ue.StatusCode == 451 || ue.StatusCode == 461) {
 		return true
@@ -650,7 +651,7 @@ func (p *chatPipeline) isAccountDead(err error) bool {
 }
 
 // isPermanentDead: 461 and a dead passToken never auto-recover (SDD §4.6).
-func (p *chatPipeline) isPermanentDead(err error) bool {
+func isPermanentDead(err error) bool {
 	var ue *mimo.UpstreamError
 	if errors.As(err, &ue) && ue.StatusCode == 461 {
 		return true

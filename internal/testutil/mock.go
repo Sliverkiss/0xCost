@@ -63,6 +63,15 @@ type MockUpstream struct {
 	byCookie map[string]*mockAccount // serviceToken value → account
 	requests []*RecordedRequest
 	loginURL string // 401-probe loginUrl override (OTP login tests)
+
+	// Web-surface audio/catalog state (mock_audio.go).
+	audioReqs   []AudioRequest
+	ttsStatuses []string
+	asrStatuses []string
+	asrText     string
+	wav         []byte
+	uploaded    []byte
+	saveErrors  []string
 }
 
 // SetLoginURL overrides the loginUrl in the /open-apis/user/mi/get 401
@@ -86,6 +95,12 @@ func NewMockUpstream() *MockUpstream {
 	m := &MockUpstream{
 		accounts: map[string]*mockAccount{},
 		byCookie: map[string]*mockAccount{},
+		// Defaults mirror the real flows: one intermediate status then
+		// success, the transcript a live run produced, and real WAV bytes.
+		ttsStatuses: []string{"generating", "success"},
+		asrStatuses: []string{"generating", "success"},
+		asrText:     "你好，这是一次语音合成测试。",
+		wav:         testWAV(),
 	}
 	m.server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
@@ -193,6 +208,10 @@ func (m *MockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(r.URL.Path, "/bot/chat") {
 		m.serveChat(w, r)
+		return
+	}
+	if audioPath(r.URL.Path) {
+		m.serveAudio(w, r)
 		return
 	}
 	http.NotFound(w, r)

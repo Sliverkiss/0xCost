@@ -121,6 +121,13 @@ func run() error {
 		ReplayCap:    cfg.ReplayCap(),
 		Keepalive:    cfg.Keepalive(),
 		Debug:        cfg.Debug(),
+
+		// Audio surface (M18).
+		AudioPoll:      cfg.AudioPoll(),
+		TTSTimeout:     cfg.TTSTimeout(),
+		ASRTimeout:     cfg.ASRTimeout(),
+		SpeechMaxChars: cfg.SpeechMaxChars(),
+		DefaultVoice:   cfg.TTSVoice(),
 	})
 
 	// Background janitors (SDD §3): recovery probes every probeInterval,

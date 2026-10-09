@@ -54,6 +54,14 @@ type TestServerOptions struct {
 	Renew        pool.RenewFunc
 	Debug        bool      // MIMO2API_LOG_LEVEL=debug equivalent
 	LogSink      io.Writer // nil = discard-free default logger; set to capture trace lines
+
+	// Audio surface (M18). Tests keep the poll interval tiny so the
+	// generate → poll → download loop does not cost real seconds.
+	AudioPoll      time.Duration
+	TTSTimeout     time.Duration
+	ASRTimeout     time.Duration
+	SpeechMaxChars int
+	DefaultVoice   string
 }
 
 // NewTestServer wires N scripted accounts into the full stack. Keepalive
@@ -132,6 +140,12 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Keepalive:    keepalive,
 		Logger:       logger,
 		Debug:        opts.Debug,
+
+		AudioPoll:      opts.AudioPoll,
+		TTSTimeout:     opts.TTSTimeout,
+		ASRTimeout:     opts.ASRTimeout,
+		SpeechMaxChars: opts.SpeechMaxChars,
+		DefaultVoice:   opts.DefaultVoice,
 	})
 
 	hs := httptest.NewServer(apiSrv.Handler())

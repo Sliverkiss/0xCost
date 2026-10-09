@@ -33,6 +33,15 @@ type Server struct {
 	keepalive    time.Duration
 	logger       *log.Logger
 	debug        bool
+
+	// Web-surface audio + catalog (audio.go).
+	audioConvs     *mimo.ConversationCache
+	botCfg         botConfigCache
+	audioPoll      time.Duration
+	ttsTimeout     time.Duration
+	asrTimeout     time.Duration
+	speechMaxChars int
+	defaultVoice   string
 }
 
 // debugf logs only when the server was built with Options.Debug
@@ -58,6 +67,13 @@ type Options struct {
 	Keepalive    time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
 	Logger       *log.Logger
 	Debug        bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
+
+	// Audio surface (M18): poll cadence and per-flow deadlines.
+	AudioPoll      time.Duration // TTS/ASR status poll interval (default 1s)
+	TTSTimeout     time.Duration // synthesis deadline (default 60s)
+	ASRTimeout     time.Duration // transcription deadline (default 120s)
+	SpeechMaxChars int           // /v1/audio/speech input cap (default 10000)
+	DefaultVoice   string        // upstream voice id/name; empty = first in the catalog
 }
 
 // New builds a Server. All collaborators must be wired (real or test
@@ -72,6 +88,18 @@ func New(opts Options) *Server {
 	if opts.Keepalive <= 0 {
 		opts.Keepalive = 15 * time.Second
 	}
+	if opts.AudioPoll <= 0 {
+		opts.AudioPoll = time.Second
+	}
+	if opts.TTSTimeout <= 0 {
+		opts.TTSTimeout = 60 * time.Second
+	}
+	if opts.ASRTimeout <= 0 {
+		opts.ASRTimeout = 120 * time.Second
+	}
+	if opts.SpeechMaxChars <= 0 {
+		opts.SpeechMaxChars = 10000
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = log.Default()
@@ -83,17 +111,23 @@ func New(opts Options) *Server {
 		}
 	}
 	return &Server{
-		pool:         opts.Pool,
-		store:        opts.Accounts,
-		sessions:     opts.Sessions,
-		client:       opts.Client,
-		otp:          newOTPStore(),
-		apiKeys:      keys,
-		defaultModel: opts.DefaultModel,
-		replayCap:    opts.ReplayCap,
-		keepalive:    opts.Keepalive,
-		logger:       logger,
-		debug:        opts.Debug,
+		pool:           opts.Pool,
+		store:          opts.Accounts,
+		sessions:       opts.Sessions,
+		client:         opts.Client,
+		otp:            newOTPStore(),
+		apiKeys:        keys,
+		defaultModel:   opts.DefaultModel,
+		replayCap:      opts.ReplayCap,
+		keepalive:      opts.Keepalive,
+		logger:         logger,
+		debug:          opts.Debug,
+		audioConvs:     mimo.NewConversationCache(0),
+		audioPoll:      opts.AudioPoll,
+		ttsTimeout:     opts.TTSTimeout,
+		asrTimeout:     opts.ASRTimeout,
+		speechMaxChars: opts.SpeechMaxChars,
+		defaultVoice:   opts.DefaultVoice,
 	}
 }
 
@@ -105,6 +139,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.auth(s.handleModels))
 	mux.HandleFunc("GET /v1/models/{id}", s.auth(s.handleModelByID))
 	mux.HandleFunc("POST /v1/chat/completions", s.auth(s.handleChat))
+	// Web-surface audio (M18) — OpenAI-compatible shapes.
+	mux.HandleFunc("POST /v1/audio/speech", s.auth(s.handleSpeech))
+	mux.HandleFunc("POST /v1/audio/transcriptions", s.auth(s.handleTranscriptions))
+	mux.HandleFunc("GET /v1/audio/voices", s.auth(s.handleVoices))
 	// Admin OTP endpoints (SDD §2.2 amendment) — same Bearer auth.
 	mux.HandleFunc("GET /v1/admin/otp/pending", s.auth(s.handleOTPPending))
 	mux.HandleFunc("POST /v1/admin/otp/submit", s.auth(s.handleOTPSubmit))

@@ -34,6 +34,13 @@ const (
 	DefaultMaxInflight    = 2
 	DefaultQueueWait      = 15 * time.Second
 	DefaultKeepalive      = 15 * time.Second
+
+	// Audio surface (M18): the Studio's own poll cadence is 1s and its task
+	// deadlines are tens of seconds, so these are the honest defaults.
+	DefaultAudioPoll      = time.Second
+	DefaultTTSTimeout     = 60 * time.Second
+	DefaultASRTimeout     = 120 * time.Second
+	DefaultSpeechMaxChars = 10000
 	DefaultReplayCap      = 20
 	DefaultCooldown429    = 60 * time.Second
 	DefaultCooldown5xx    = 30 * time.Second
@@ -58,6 +65,11 @@ type Config struct {
 	maxInflight      int
 	queueWait        time.Duration
 	keepalive        time.Duration
+	audioPoll        time.Duration
+	ttsTimeout       time.Duration
+	asrTimeout       time.Duration
+	speechMaxChars   int
+	ttsVoice         string
 	timezone         string
 	userAgent        string
 	secChUA          string
@@ -94,6 +106,11 @@ func Load() (*Config, error) {
 		maxInflight:      DefaultMaxInflight,
 		queueWait:        DefaultQueueWait,
 		keepalive:        DefaultKeepalive,
+		audioPoll:        DefaultAudioPoll,
+		ttsTimeout:       DefaultTTSTimeout,
+		asrTimeout:       DefaultASRTimeout,
+		speechMaxChars:   DefaultSpeechMaxChars,
+		ttsVoice:         getenv("MIMO2API_TTS_VOICE", ""),
 		replayCap:        DefaultReplayCap,
 		cooldown429:      DefaultCooldown429,
 		cooldown5xx:      DefaultCooldown5xx,
@@ -144,6 +161,18 @@ func Load() (*Config, error) {
 	if c.probeInterval, err = getenvSeconds("MIMO2API_PROBE_INTERVAL_S", DefaultProbeInterval); err != nil {
 		return nil, err
 	}
+	if c.audioPoll, err = getenvMillis("MIMO2API_AUDIO_POLL_MS", DefaultAudioPoll); err != nil {
+		return nil, err
+	}
+	if c.ttsTimeout, err = getenvSeconds("MIMO2API_AUDIO_TTS_TIMEOUT_S", DefaultTTSTimeout); err != nil {
+		return nil, err
+	}
+	if c.asrTimeout, err = getenvSeconds("MIMO2API_AUDIO_ASR_TIMEOUT_S", DefaultASRTimeout); err != nil {
+		return nil, err
+	}
+	if c.speechMaxChars, err = getenvInt("MIMO2API_SPEECH_MAX_CHARS", DefaultSpeechMaxChars); err != nil {
+		return nil, err
+	}
 
 	// Explicit non-loopback host with empty keys still forces local bind.
 	if len(c.apiKeys) == 0 && c.host != "127.0.0.1" && c.host != "localhost" {
@@ -172,6 +201,11 @@ func (c *Config) StickyMax() int                { return c.stickyMax }
 func (c *Config) MaxInflight() int              { return c.maxInflight }
 func (c *Config) QueueWait() time.Duration      { return c.queueWait }
 func (c *Config) Keepalive() time.Duration      { return c.keepalive }
+func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
+func (c *Config) TTSTimeout() time.Duration     { return c.ttsTimeout }
+func (c *Config) ASRTimeout() time.Duration     { return c.asrTimeout }
+func (c *Config) SpeechMaxChars() int           { return c.speechMaxChars }
+func (c *Config) TTSVoice() string              { return c.ttsVoice }
 func (c *Config) Timezone() string              { return c.timezone }
 func (c *Config) UserAgent() string             { return c.userAgent }
 func (c *Config) SecChUA() string               { return c.secChUA }

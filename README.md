@@ -39,6 +39,9 @@ performs `GET /healthz` for the container healthcheck.
 | POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming) |
 | GET | `/v1/models` | Bearer | Model catalog |
 | GET | `/v1/models/{id}` | Bearer | One model entry |
+| POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
+| POST | `/v1/audio/transcriptions` | Bearer | Speech-to-text (multipart: `file`, `model?`, `language?`, `response_format?`) → `{text}` / plain text / `verbose_json` |
+| GET | `/v1/audio/voices` | Bearer | The account's TTS voice catalog (`{data:[{id,name,description,avatar,preview_audio}]}`) |
 | GET | `/healthz` | none | Liveness + pool state summary (no credentials) |
 | GET | `/v1/admin/otp/pending` | Bearer | In-flight new-device OTP challenges (id, method, masked notify, account, expiry) |
 | POST | `/v1/admin/otp/submit` | Bearer | Complete a login with `{id, code}` — persists the session, re-enables the account |
@@ -49,6 +52,19 @@ channel), plus alias resolution (`mimo`, `ultraspeed`, missing model →
 configured default). Reasoning streams when `enable_thinking: true` or
 `reasoning: {"type": "enabled"}` (reasoning deltas carry
 `reasoning_content`).
+
+Audio: `input` is required; `response_format` is `wav` (default) or `mp3` —
+the upstream produces no other container. `voice` takes a Studio voice id/name
+(`冰糖`, `茉莉`, `Chloe`, … from `/v1/audio/voices`); the OpenAI voice names
+(`alloy`, `nova`, …) have no Studio equivalent, so they resolve to the account's
+default voice (first catalog entry, or `MIMO2API_TTS_VOICE`) and any other
+unknown name is a `400 unknown_voice` listing the alternatives. `speed` is
+accepted and ignored (the upstream has no rate control). Transcriptions accept
+files up to 25 MB (gateway-side limit), `language` is passed through
+(upstream accepts `auto|zh|en`), and `verbose_json` reports only what the
+upstream actually returns (`text`, plus `language`) — no invented durations.
+Upstream task kinds are cached per account, so a steady stream of audio requests
+does not create a conversation row per request.
 
 ## Configuration (environment)
 
@@ -77,6 +93,11 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
+| `MIMO2API_AUDIO_POLL_MS` | `1000` | TTS/ASR task status poll interval (the Studio's own cadence is 1s) |
+| `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | Synthesis task deadline |
+| `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
+| `MIMO2API_SPEECH_MAX_CHARS` | `10000` | `/v1/audio/speech` input cap (gateway-side guard; the upstream publishes no number) |
+| `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (sticky continuation with conversation/dialog id and delta size, or full replay with the replay cap) — the first thing to look at when a conversation seems to lose context. |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —

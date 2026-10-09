@@ -53,6 +53,7 @@ var (
 // stream failures take the SSE error-frame path instead (TDD API-021,
 // ERRMAP-012).
 func (s *Server) MapError(w http.ResponseWriter, err error) {
+	var uv *unknownVoiceError
 	var (
 		parked  *pool.ErrParked
 		busy    *pool.ErrBusy
@@ -106,6 +107,15 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// retrying it is pointless.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_available_on_channel",
 			"upstream rejected the model name for this channel: "+err.Error(), 0)
+	case errors.As(err, &uv):
+		// The client named a voice this account does not have (audio.go).
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unknown_voice", uv.Error(), 0)
+	case errors.Is(err, mimo.ErrAudioTimeout):
+		writeError(w, http.StatusGatewayTimeout, "api_error", "upstream_audio_timeout",
+			"the upstream audio task did not finish in time: "+err.Error(), 0)
+	case errors.Is(err, mimo.ErrAudioFailed):
+		writeError(w, http.StatusBadGateway, "api_error", "upstream_audio_failed",
+			"the upstream audio task failed: "+err.Error(), 0)
 	case errors.Is(err, mimo.ErrUpstreamBusy):
 		// Transient platform throttle that outlived the retry (SDD §7.1).
 		// 503 + a short Retry-After, not a 502: the request is fine.

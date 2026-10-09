@@ -124,7 +124,34 @@ GET /open-apis/asr/recognizeStatus?taskId=<n>&xiaomichatbot_ph=<ph>
 最后打印：新增/修改文件清单、测试用例数、`make` 各门禁的真实输出、真机用例是否跑通（含耗时与字节数）、
 以及任何未能验证的事项（明确写"未验证"，不要含糊）。
 
-## Implementation status (updated)
+## Implementation status: DONE (endpoints, client, tests, live run)
+
+Implemented and live-verified on 2026-10-09 through the gateway with the real
+account:
+
+```
+GET  /v1/audio/voices          → 200, 8 voices (冰糖/Mia/茉莉/Chloe…)
+POST /v1/audio/speech          → 200, audio/wav, 138,284 bytes, RIFF header, 5.0s
+POST /v1/audio/transcriptions  → 200, text "你好，这是一次语音合成测试。", 2.9s
+                                 (fed back the bytes from the speech call — the
+                                  spoken sentence came back verbatim)
+```
+
+Regression coverage: `internal/mimo/audio_test.go` AUDIO-001…011,
+`internal/api/audio_test.go` (TTS/ASR/voices + validation + auth),
+`internal/live/audio_live_test.go` LIVE-TTS-001/LIVE-ASR-001.
+
+Two real-shape bugs were found by comparing the draft client against captured
+upstream responses and are fixed: `taskId` arrives as a JSON **number** while the
+struct declared a string (every TTS/ASR call would have failed against the real
+upstream), and `bot/config` carries both `modelConfigList` (15 chat entries) and
+`modelConfigListNg` (24 all-model entries) — the parser reads the latter, as the
+Studio does.
+
+Note: this account reports `ext.enableVoice = false`, which is the Studio's UI
+switch, not an access check — the endpoints work with it false.
+
+## Historical note (draft parked outside the repo)
 
 A first draft of the upstream audio client (`internal/mimo/audio.go`, ~600 lines:
 conversation creation, `tts/v2/generate` + `generateStatus`, `genUploadInfo` →
