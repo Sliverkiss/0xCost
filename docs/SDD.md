@@ -1275,7 +1275,7 @@ protocol and parses the tool call out of the model's text. It is vendored in thi
 repository (`deploy/toolforge/`, PROVENANCE.md) and sits **in front of** chat:
 
 ```
-client :8081 --(Bearer KEY)--> middleware
+client :21223 --(Bearer KEY)--> middleware:8080
                               ├── /v1/chat/completions, /v1/responses → handled here,
                               │   the model call then runs on /v1/chat/completions
                               └── every other path → relayed verbatim to the gateway
@@ -1295,7 +1295,8 @@ client :8081 --(Bearer KEY)--> middleware
   does not implement (`/v1/models`, `/v1/audio/*`, `/v1/admin/*`) to the gateway
   verbatim — method, query, body, headers — so a client keeps one base_url and one
   key; `/healthz` on that port reports the gateway's health as well.
-* **Failure**: the middleware is a separate process, so a caller pointed at :8081
+* **Failure**: the middleware is a separate process, so a caller pointed at the
+  published entry point (:21223 on the host, :8080 inside the container)
   sees a connection error when it is down; a tool request sent to :8080 keeps
   today's behaviour (tools reported as dropped in `X-Mimo-Warnings`). Neither ever
   answers as if the model had ignored its tools.

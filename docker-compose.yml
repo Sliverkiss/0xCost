@@ -1,9 +1,9 @@
 # mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
 # in-binary healthcheck (distroless has no curl/wget).
 #
-# 8081 is the deployment's single entry point (ADR 0012):
+# The deployment's single entry point (ADR 0012) is published on host port 21223:
 #
-#   client :8081 --(Bearer $MIMO2API_TOOL_KEY)--> toolforge
+#   client :21223 --(Bearer $MIMO2API_TOOL_KEY)--> toolforge:8080
 #                 ├── /v1/chat/completions → tools stripped, XYML injected, call
 #                 │   parsed back; the model call runs on the gateway's own path
 #                 └── every other path → proxied to mimo2api verbatim
@@ -30,12 +30,23 @@ services:
       - MIMO2API_API_KEYS=${MIMO2API_TOOL_KEY:-}
       - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
       - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
+      # Pinned policy, not left to a default that could drift:
+      #   a revoked credential heals in the background (ADR 0014) instead of
+      #   stopping the deployment, and starting a re-login must never spend an
+      #   SMS on its own — the operator finishes a human gate (ADR 0013).
+      - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
+      - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      # Generous on purpose: `toolforge` waits for this container to be healthy,
+      # and a cold start (module-less distroless image, live catalog warm-up that
+      # talks to the upstream) can take longer than the first probe window. A
+      # short start_period makes a first `up` report a failed dependency while the
+      # gateway is in fact still coming up.
+      start_period: 30s
     restart: unless-stopped
 
   # The tool layer: chat with tools (and, if you point everything here, plain chat
@@ -50,7 +61,8 @@ services:
     image: mimo2api-toolforge
     container_name: mimo2api-toolforge
     ports:
-      - "8081:8080" # the deployment's single entry point
+      # the deployment's single entry point: host 21223 -> the tool layer's 8080
+      - "21223:8080"
     environment:
       - MIMO2API_TOOL_KEY=${MIMO2API_TOOL_KEY:-}
       - MIMO2API_UPSTREAM_URL=http://mimo2api:8080/v1

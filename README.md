@@ -13,12 +13,22 @@ routing.
 mkdir -p data
 $EDITOR data/accounts.json   # mode 0600; never commit it
 
-# 2. run
-MIMO2API_API_KEYS=sk-your-key docker compose up -d
+# 2. one key, one address (ADR 0012). The key lives in an untracked env file —
+#    data/ is gitignored, and the mirror scan fails on a key inside the repo.
+printf 'MIMO2API_TOOL_KEY=%s\n' "your-key" > data/deploy.env
 
-# 3. use
-curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-your-key" \
+# The runtime is distroless `nonroot` (uid 65532): hand it the accounts file
+# without making it world-readable. Skipping this is the classic first-boot
+# failure — `open /data/accounts.json: permission denied`, restart loop.
+chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/accounts.json
+
+# 3. run — publishes host 21223 → the tool layer, which serves /v1/chat/completions
+#    with function calling, and proxies every other path to the gateway verbatim
+docker compose --env-file data/deploy.env up -d --build
+
+# 4. use — same key and same base_url for chat, audio and the admin surface
+curl http://localhost:21223/v1/chat/completions \
+  -H "Authorization: Bearer your-key" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mimo-v2.6-pro",
@@ -26,6 +36,12 @@ curl http://localhost:8080/v1/chat/completions \
     "messages": [{"role": "user", "content": "hello"}]
   }'
 ```
+
+If the very first `up` prints `dependency failed to start: container mimo2api
+is unhealthy`, run `up -d` once more: the gateway's health window (30 s
+`start_period`) can outlast the dependency wait on a cold start. The gateway's
+own 8080 is deliberately **not** published — the compose network is its only
+route, and 21223 is the deployment's single entry point.
 
 The image is a multi-stage build: `golang:1.25-alpine` compile
 (`CGO_ENABLED=0`, static) into `distroless/static-debian12:nonroot` (~10 MB).
@@ -128,14 +144,15 @@ protocol, parses the call back out of the model's text, and calls this gateway's
 ordinary chat surface. Everything it does not implement is relayed to us verbatim:
 
 ```
-client :8081 --(Bearer KEY)--> toolforge
+client :21223 --(Bearer KEY)--> toolforge:8080
                               ├── /v1/chat/completions → tools handled here, then
                               │   the model call runs on the gateway's own path
                               └── anything else (/v1/models, /v1/audio/*, /v1/admin/*)
                                   → relayed unchanged, same key
 ```
 
-- **One address, one key.** Clients keep a single `base_url` (`:8081`) and a single
+- **One address, one key.** Clients keep a single `base_url` (published host port
+  `21223`; the container's own 8080 stays on the compose network) and a single
   key; audio, models and admin behave exactly as if the gateway were called
   directly, because they are — the relay passes method, query, body (multipart
   uploads, binary audio) and the caller's headers through, and `/healthz` there
