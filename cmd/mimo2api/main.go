@@ -99,11 +99,15 @@ func run() error {
 		}
 	}
 	p := pool.New(poolAccts, pool.Options{
-		MaxInflight: cfg.MaxInflight(),
-		QueueWait:   cfg.QueueWait(),
-		Cooldown429: cfg.Cooldown429(),
-		Cooldown5xx: cfg.Cooldown5xx(),
-		CooldownCap: cfg.CooldownCap(),
+		MaxInflight:       cfg.MaxInflight(),
+		QueueWait:         cfg.QueueWait(),
+		Cooldown429:       cfg.Cooldown429(),
+		Cooldown5xx:       cfg.Cooldown5xx(),
+		CooldownTransport: cfg.CooldownTransport(),
+		CooldownCap:       cfg.CooldownCap(),
+		// Transport cools for less and escalates less far: it is the class least
+		// likely to be the account's fault (SDD §4.5.1).
+		CooldownTransportCap: cfg.CooldownTransportCap(),
 	}, probe, renew)
 
 	sessions := session.New(session.Options{

@@ -61,46 +61,53 @@ const (
 	DefaultCooldown429    = 60 * time.Second
 	DefaultCooldown5xx    = 30 * time.Second
 	DefaultCooldownCap    = 10 * time.Minute
-	DefaultProbeInterval  = 60 * time.Second
+	// DefaultCooldownTransport: the transport class has its own ladder (SDD
+	// §4.5.1) — a dead connection or a stall is less likely to be the account's
+	// fault than an upstream 5xx, so it cools for less and escalates less far.
+	DefaultCooldownTransport    = 15 * time.Second
+	DefaultCooldownTransportCap = 5 * time.Minute
+	DefaultProbeInterval        = 60 * time.Second
 )
 
 // Config is the immutable runtime configuration (CONF-006: no mutation
 // surface; construct via Load only).
 type Config struct {
-	host             string
-	port             int
-	apiKeys          []string
-	upstreamBase     string
-	accountsFile     string
-	defaultModel     string
-	requestTimeout   time.Duration
-	sseIdleTimeout   time.Duration
-	sessionRefresh   time.Duration
-	stickyTTL        time.Duration
-	stickyMax        int
-	sessionWait      time.Duration
-	sessionFork      string
-	maxInflight      int
-	queueWait        time.Duration
-	keepalive        time.Duration
-	audioPoll        time.Duration
-	catalogTTL       time.Duration
-	ttsTimeout       time.Duration
-	ttsMaxTimeout    time.Duration
-	asrTimeout       time.Duration
-	speechMaxChars   int
-	ttsVoice         string
-	timezone         string
-	userAgent        string
-	secChUA          string
-	replayCap        int
-	cooldown429      time.Duration
-	cooldown5xx      time.Duration
-	cooldownCap      time.Duration
-	probeInterval    time.Duration
-	logLevel         string
-	otpAuto          bool
-	crossRegionAgree bool
+	host                 string
+	port                 int
+	apiKeys              []string
+	upstreamBase         string
+	accountsFile         string
+	defaultModel         string
+	requestTimeout       time.Duration
+	sseIdleTimeout       time.Duration
+	sessionRefresh       time.Duration
+	stickyTTL            time.Duration
+	stickyMax            int
+	sessionWait          time.Duration
+	sessionFork          string
+	maxInflight          int
+	queueWait            time.Duration
+	keepalive            time.Duration
+	audioPoll            time.Duration
+	catalogTTL           time.Duration
+	ttsTimeout           time.Duration
+	ttsMaxTimeout        time.Duration
+	asrTimeout           time.Duration
+	speechMaxChars       int
+	ttsVoice             string
+	timezone             string
+	userAgent            string
+	secChUA              string
+	replayCap            int
+	cooldown429          time.Duration
+	cooldownTransport    time.Duration
+	cooldownTransportCap time.Duration
+	cooldown5xx          time.Duration
+	cooldownCap          time.Duration
+	probeInterval        time.Duration
+	logLevel             string
+	otpAuto              bool
+	crossRegionAgree     bool
 }
 
 // Load reads the MIMO2API_* environment. Invalid numeric values produce an
@@ -109,38 +116,40 @@ type Config struct {
 // entries dropped (CONF-004).
 func Load() (*Config, error) {
 	c := &Config{
-		host:             getenv("MIMO2API_HOST", DefaultHost),
-		port:             DefaultPort,
-		upstreamBase:     getenv("MIMO2API_UPSTREAM_BASE", DefaultUpstreamBase),
-		accountsFile:     getenv("MIMO2API_ACCOUNTS_FILE", DefaultAccountsFile),
-		defaultModel:     getenv("MIMO2API_DEFAULT_MODEL", DefaultDefaultModel),
-		timezone:         getenv("MIMO2API_X_TIMEZONE", DefaultTimezone),
-		userAgent:        getenv("MIMO2API_USER_AGENT", DefaultUserAgent),
-		secChUA:          getenv("MIMO2API_SEC_CH_UA", DefaultSecChUA),
-		logLevel:         getenv("MIMO2API_LOG_LEVEL", DefaultLogLevel),
-		requestTimeout:   DefaultRequestTimeout,
-		sseIdleTimeout:   DefaultSSEIdleTimeout,
-		sessionRefresh:   DefaultSessionRefresh,
-		stickyTTL:        DefaultStickyTTL,
-		stickyMax:        DefaultStickyMax,
-		sessionWait:      DefaultSessionWait,
-		maxInflight:      DefaultMaxInflight,
-		queueWait:        DefaultQueueWait,
-		keepalive:        DefaultKeepalive,
-		audioPoll:        DefaultAudioPoll,
-		catalogTTL:       DefaultCatalogTTL,
-		ttsTimeout:       DefaultTTSTimeout,
-		ttsMaxTimeout:    DefaultTTSMaxTimeout,
-		asrTimeout:       DefaultASRTimeout,
-		speechMaxChars:   DefaultSpeechMaxChars,
-		ttsVoice:         getenv("MIMO2API_TTS_VOICE", ""),
-		replayCap:        DefaultReplayCap,
-		cooldown429:      DefaultCooldown429,
-		cooldown5xx:      DefaultCooldown5xx,
-		cooldownCap:      DefaultCooldownCap,
-		probeInterval:    DefaultProbeInterval,
-		otpAuto:          getenvBool("MIMO2API_OTP_AUTO", true),
-		crossRegionAgree: getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
+		host:                 getenv("MIMO2API_HOST", DefaultHost),
+		port:                 DefaultPort,
+		upstreamBase:         getenv("MIMO2API_UPSTREAM_BASE", DefaultUpstreamBase),
+		accountsFile:         getenv("MIMO2API_ACCOUNTS_FILE", DefaultAccountsFile),
+		defaultModel:         getenv("MIMO2API_DEFAULT_MODEL", DefaultDefaultModel),
+		timezone:             getenv("MIMO2API_X_TIMEZONE", DefaultTimezone),
+		userAgent:            getenv("MIMO2API_USER_AGENT", DefaultUserAgent),
+		secChUA:              getenv("MIMO2API_SEC_CH_UA", DefaultSecChUA),
+		logLevel:             getenv("MIMO2API_LOG_LEVEL", DefaultLogLevel),
+		requestTimeout:       DefaultRequestTimeout,
+		sseIdleTimeout:       DefaultSSEIdleTimeout,
+		sessionRefresh:       DefaultSessionRefresh,
+		stickyTTL:            DefaultStickyTTL,
+		stickyMax:            DefaultStickyMax,
+		sessionWait:          DefaultSessionWait,
+		maxInflight:          DefaultMaxInflight,
+		queueWait:            DefaultQueueWait,
+		keepalive:            DefaultKeepalive,
+		audioPoll:            DefaultAudioPoll,
+		catalogTTL:           DefaultCatalogTTL,
+		ttsTimeout:           DefaultTTSTimeout,
+		ttsMaxTimeout:        DefaultTTSMaxTimeout,
+		asrTimeout:           DefaultASRTimeout,
+		speechMaxChars:       DefaultSpeechMaxChars,
+		ttsVoice:             getenv("MIMO2API_TTS_VOICE", ""),
+		replayCap:            DefaultReplayCap,
+		cooldown429:          DefaultCooldown429,
+		cooldown5xx:          DefaultCooldown5xx,
+		cooldownTransport:    DefaultCooldownTransport,
+		cooldownCap:          DefaultCooldownCap,
+		cooldownTransportCap: DefaultCooldownTransportCap,
+		probeInterval:        DefaultProbeInterval,
+		otpAuto:              getenvBool("MIMO2API_OTP_AUTO", true),
+		crossRegionAgree:     getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
 	}
 
 	keys := ParseAPIKeys(os.Getenv("MIMO2API_API_KEYS"))
@@ -188,6 +197,21 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.probeInterval, err = getenvSeconds("MIMO2API_PROBE_INTERVAL_S", DefaultProbeInterval); err != nil {
+		return nil, err
+	}
+	if c.cooldown429, err = getenvSeconds("MIMO2API_COOLDOWN_429_S", DefaultCooldown429); err != nil {
+		return nil, err
+	}
+	if c.cooldown5xx, err = getenvSeconds("MIMO2API_COOLDOWN_5XX_S", DefaultCooldown5xx); err != nil {
+		return nil, err
+	}
+	if c.cooldownTransport, err = getenvSeconds("MIMO2API_COOLDOWN_TRANSPORT_S", DefaultCooldownTransport); err != nil {
+		return nil, err
+	}
+	if c.cooldownCap, err = getenvSeconds("MIMO2API_COOLDOWN_CAP_S", DefaultCooldownCap); err != nil {
+		return nil, err
+	}
+	if c.cooldownTransportCap, err = getenvSeconds("MIMO2API_COOLDOWN_TRANSPORT_CAP_S", DefaultCooldownTransportCap); err != nil {
 		return nil, err
 	}
 	if c.catalogTTL, err = getenvSeconds("MIMO2API_CATALOG_TTL_S", DefaultCatalogTTL); err != nil {
@@ -251,17 +275,21 @@ func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
 func (c *Config) TTSTimeout() time.Duration { return c.ttsTimeout }
 
 // TTSMaxTimeout caps the per-piece poll budget (see TTSTimeout).
-func (c *Config) TTSMaxTimeout() time.Duration { return c.ttsMaxTimeout }
-func (c *Config) ASRTimeout() time.Duration    { return c.asrTimeout }
-func (c *Config) SpeechMaxChars() int          { return c.speechMaxChars }
-func (c *Config) TTSVoice() string             { return c.ttsVoice }
-func (c *Config) Timezone() string             { return c.timezone }
-func (c *Config) UserAgent() string            { return c.userAgent }
-func (c *Config) SecChUA() string              { return c.secChUA }
-func (c *Config) ReplayCap() int               { return c.replayCap }
-func (c *Config) Cooldown429() time.Duration   { return c.cooldown429 }
-func (c *Config) Cooldown5xx() time.Duration   { return c.cooldown5xx }
-func (c *Config) CooldownCap() time.Duration   { return c.cooldownCap }
+func (c *Config) TTSMaxTimeout() time.Duration     { return c.ttsMaxTimeout }
+func (c *Config) ASRTimeout() time.Duration        { return c.asrTimeout }
+func (c *Config) SpeechMaxChars() int              { return c.speechMaxChars }
+func (c *Config) TTSVoice() string                 { return c.ttsVoice }
+func (c *Config) Timezone() string                 { return c.timezone }
+func (c *Config) UserAgent() string                { return c.userAgent }
+func (c *Config) SecChUA() string                  { return c.secChUA }
+func (c *Config) ReplayCap() int                   { return c.replayCap }
+func (c *Config) Cooldown429() time.Duration       { return c.cooldown429 }
+func (c *Config) Cooldown5xx() time.Duration       { return c.cooldown5xx }
+func (c *Config) CooldownCap() time.Duration       { return c.cooldownCap }
+func (c *Config) CooldownTransport() time.Duration { return c.cooldownTransport }
+func (c *Config) CooldownTransportCap() time.Duration {
+	return c.cooldownTransportCap
+}
 func (c *Config) ProbeInterval() time.Duration { return c.probeInterval }
 func (c *Config) LogLevel() string             { return c.logLevel }
 

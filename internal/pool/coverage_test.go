@@ -117,10 +117,10 @@ func TestEnable(t *testing.T) {
 			t.Errorf("cooldown not cleared: %v", got)
 		}
 		p.mu.Lock()
-		fs, perm := p.byID["a1"].failStreak, p.byID["a1"].permanent
+		fs, perm := p.byID["a1"].failures[ClassUpstream5xx], p.byID["a1"].permanent
 		p.mu.Unlock()
 		if fs != 0 || perm {
-			t.Errorf("after Enable: failStreak=%d permanent=%v, want 0/false", fs, perm)
+			t.Errorf("after Enable: 5xx failures=%d permanent=%v, want 0/false", fs, perm)
 		}
 		// Ladder restarted: the next 429 cools for the base 60s, not 240s.
 		p.Report429("a1")

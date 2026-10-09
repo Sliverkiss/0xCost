@@ -56,6 +56,14 @@ func (m *MockUpstream) SetAudioStatusScript(kind string, statuses ...string) {
 	m.asrStatuses = statuses
 }
 
+// SetAudioHTTPStatus makes the TTS generate endpoint answer a bare HTTP status
+// (e.g. 500) instead of a synthesis task. status <= 0 restores normal service.
+func (m *MockUpstream) SetAudioHTTPStatus(status int, body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioHTTPStatus, m.audioHTTPBody = status, body
+}
+
 // SetBotConfigError makes bot/config fail with a business error (empty string
 // clears it), which is how the model-catalog fallback path is exercised.
 func (m *MockUpstream) SetBotConfigError(msg string) {
@@ -212,6 +220,14 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSONEnvelope(w, 0, "成功", cfg)
 
 	case r.URL.Path == "/open-apis/tts/v2/generate":
+		m.mu.Lock()
+		httpStatus, httpBody := m.audioHTTPStatus, m.audioHTTPBody
+		m.mu.Unlock()
+		if httpStatus > 0 {
+			w.WriteHeader(httpStatus)
+			_, _ = io.WriteString(w, httpBody)
+			return
+		}
 		var req struct {
 			ConversationID string `json:"conversationId"`
 			MsgID          string `json:"msgId"`

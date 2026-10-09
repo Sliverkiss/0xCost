@@ -403,9 +403,10 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			continue
 
 		default:
-			// Upstream sick: 5xx/transport/stall — 1 retry on another
-			// account, cooldown from 30s (SDD §7.1).
-			s.pool.Report5xx(lease.ID)
+			// Upstream sick: 1 retry on another account, cooled down on the
+			// ladder of its own class — a transport failure no longer advances
+			// the 5xx ladder (SDD §4.5.1, TDD POOLATTR-001).
+			s.reportFailure(lease.ID, err)
 			lease.Release()
 			if stickyEntry != nil {
 				// The sticky slot pointed at a sick account: discard it so
@@ -566,9 +567,10 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			if committed {
 				// Post-first-byte failure: honest termination, never a
 				// restart (SDD §7.3, TDD API-021/STICKY-009). Content-level
-				// errors carry no pool action; everything else is sick.
+				// errors carry no pool action; everything else is sick and is
+				// cooled down on its own class's ladder (SDD §4.5.1).
 				if !isContentErr(err) {
-					s.pool.Report5xx(lease.ID)
+					s.reportFailure(lease.ID, err)
 				}
 				if plan.entry != nil {
 					s.sessions.Delete(plan.sessionKey)

@@ -85,15 +85,48 @@ func isAuthErr(err error) bool {
 	return errors.As(err, &ae) && ae.IsAuthExpired()
 }
 
+// FailureClass names the kind of upstream failure that cooled an account down
+// (SDD §4.5.1, spec §4). Each class owns its counter and its ladder: a transport
+// failure must never advance the 5xx ladder, and after the fact an operator must
+// be able to tell which one cooled the account.
+type FailureClass string
+
+const (
+	// ClassTransport: connection error, timeout, SSE idle-stall, EOF mid-body —
+	// failures with no HTTP response, which may be network- or egress-shaped
+	// rather than the account's fault.
+	ClassTransport FailureClass = "transport"
+	// ClassUpstream5xx: the upstream answered 5xx (or a non-SSE 200 body).
+	ClassUpstream5xx FailureClass = "upstream-5xx"
+	// ClassThrottle429: the upstream answered 429.
+	ClassThrottle429 FailureClass = "throttle-429"
+)
+
+// FailureClasses is the full set, in a stable order (the /v1/admin/pool view
+// renders every class, present or not).
+func FailureClasses() []FailureClass {
+	return []FailureClass{ClassTransport, ClassUpstream5xx, ClassThrottle429}
+}
+
+// classLadder is one class's base and cap (SDD §4.5.1).
+type classLadder struct {
+	base time.Duration
+	cap  time.Duration
+}
+
 // Options configures the pool. Zero fields take SDD defaults.
 type Options struct {
-	MaxInflight int           // per-account semaphore (default 2, SDD §4.4)
-	QueueWait   time.Duration // acquire wait bound (default 15s)
-	Cooldown429 time.Duration // first cooldown on 429 (default 60s)
-	Cooldown5xx time.Duration // first cooldown on 5xx/transport (default 30s)
-	CooldownCap time.Duration // ladder cap (default 10m)
-	WarmPenalty float64       // selection penalty for accounts with inflight work
-	Now         func() time.Time
+	MaxInflight       int           // per-account semaphore (default 2, SDD §4.4)
+	QueueWait         time.Duration // acquire wait bound (default 15s)
+	Cooldown429       time.Duration // first cooldown on 429 (default 60s)
+	Cooldown5xx       time.Duration // first cooldown on 5xx (default 30s)
+	CooldownTransport time.Duration // first cooldown on transport failures (default 15s)
+	CooldownCap       time.Duration // ladder cap for 429/5xx (default 10m)
+	// CooldownTransportCap caps the transport ladder (default 5m). A transport
+	// failure is less likely to be the account's fault, so it escalates less far.
+	CooldownTransportCap time.Duration
+	WarmPenalty          float64 // selection penalty for accounts with inflight work
+	Now                  func() time.Time
 }
 
 type account struct {
@@ -101,11 +134,18 @@ type account struct {
 	state         State
 	cooldownUntil time.Time
 	disabled      bool
-	permanent     bool // 461: never auto-recovers (SDD §4.6, TDD POOL-012)
+	permanent     bool // dead passToken: never auto-recovers (SDD §4.5.2, TDD RISK-003)
 	reason        string
-	failStreak    int           // consecutive cooldown-triggering failures
-	sem           chan struct{} // in-flight semaphore; len() is the inflight count
-	ewmaLatency   float64       // seconds, EWMA alpha 0.2 (SDD §4.4)
+	// failures counts consecutive failures per class; the counters never
+	// escalate each other (REQ-2/REQ-6).
+	failures map[FailureClass]int
+	// cooldownClass/cooldownStatus/cooldownSince record why the account is
+	// cooling, not just until when (REQ-5).
+	cooldownClass  FailureClass
+	cooldownStatus int
+	cooldownSince  time.Time
+	sem            chan struct{} // in-flight semaphore; len() is the inflight count
+	ewmaLatency    float64       // seconds, EWMA alpha 0.2 (SDD §4.4)
 }
 
 // Pool is the account pool. One mutex guards selection and state; in-flight
@@ -118,9 +158,7 @@ type Pool struct {
 	cursor      int // round-robin rotation within the selection band
 	maxInflight int
 	queueWait   time.Duration
-	cd429       time.Duration
-	cd5xx       time.Duration
-	cdCap       time.Duration
+	ladders     map[FailureClass]classLadder
 	warmPenalty float64
 	now         func() time.Time
 	probe       ProbeFunc
@@ -145,8 +183,14 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 	if opts.Cooldown5xx <= 0 {
 		opts.Cooldown5xx = 30 * time.Second
 	}
+	if opts.CooldownTransport <= 0 {
+		opts.CooldownTransport = 15 * time.Second
+	}
 	if opts.CooldownCap <= 0 {
 		opts.CooldownCap = 10 * time.Minute
+	}
+	if opts.CooldownTransportCap <= 0 {
+		opts.CooldownTransportCap = 5 * time.Minute
 	}
 	if opts.WarmPenalty <= 0 {
 		opts.WarmPenalty = 0.5
@@ -157,9 +201,11 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 	p := &Pool{
 		maxInflight: opts.MaxInflight,
 		queueWait:   opts.QueueWait,
-		cd429:       opts.Cooldown429,
-		cd5xx:       opts.Cooldown5xx,
-		cdCap:       opts.CooldownCap,
+		ladders: map[FailureClass]classLadder{
+			ClassTransport:   {base: opts.CooldownTransport, cap: opts.CooldownTransportCap},
+			ClassUpstream5xx: {base: opts.Cooldown5xx, cap: opts.CooldownCap},
+			ClassThrottle429: {base: opts.Cooldown429, cap: opts.CooldownCap},
+		},
 		warmPenalty: opts.WarmPenalty,
 		now:         opts.Now,
 		probe:       probe,
@@ -172,8 +218,9 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 			continue
 		}
 		acc := &account{
-			id:  a.ID,
-			sem: make(chan struct{}, opts.MaxInflight),
+			id:       a.ID,
+			sem:      make(chan struct{}, opts.MaxInflight),
+			failures: map[FailureClass]int{},
 		}
 		switch State(a.State) {
 		case StateDisabled:
@@ -336,7 +383,7 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 			return nil, errBusy // slots may free up: waitable
 		}
 		if nearest.IsZero() {
-			nearest = now.Add(p.cd429)
+			nearest = now.Add(p.ladders[ClassThrottle429].base)
 		}
 		return nil, &ErrParked{RetryAfter: nearest.Sub(now)}
 	}
@@ -374,45 +421,112 @@ func (p *Pool) RecordFirstByte(accountID string, elapsed time.Duration) {
 	}
 }
 
-// ReportSuccess resets the cooldown ladder (SDD §4.5, TDD POOL-004).
-func (p *Pool) ReportSuccess(accountID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if a := p.byID[accountID]; a != nil {
-		a.failStreak = 0
-	}
-}
-
-// Report429 applies the rate-limit cooldown ladder: base 60s doubling to the
-// 10m cap (SDD §4.5, TDD POOL-002/003).
-func (p *Pool) Report429(accountID string) {
-	p.cooldown(accountID, p.cd429)
-}
-
-// Report5xx applies the upstream-sick ladder: base 30s doubling to the cap
-// (SDD §4.5, TDD POOL-005). Transport errors are treated the same.
-func (p *Pool) Report5xx(accountID string) {
-	p.cooldown(accountID, p.cd5xx)
-}
-
-func (p *Pool) cooldown(accountID string, base time.Duration) {
+// ReportFailure applies the ladder of that failure's own class and records the
+// cause (SDD §4.5.1, POOLATTR-*). status is the upstream's status when there was
+// one (0 for a transport failure). No class may escalate another: each keeps its
+// own counter. The upstream's own Retry-After is never read — ladders are the
+// single source of cooldown timing (owner decision, spec §10.2).
+func (p *Pool) ReportFailure(accountID string, class FailureClass, status int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a := p.byID[accountID]
 	if a == nil || a.disabled {
 		return
 	}
-	a.failStreak++
-	d := base
-	for i := 1; i < a.failStreak; i++ {
+	ladder, known := p.ladders[class]
+	if !known {
+		// Unknown classes cool like a 5xx: fail closed rather than inventing a
+		// shorter penalty for a signal nobody classified.
+		ladder = p.ladders[ClassUpstream5xx]
+	}
+	if a.failures == nil {
+		a.failures = map[FailureClass]int{}
+	}
+	a.failures[class]++
+	d := ladder.base
+	for i := 1; i < a.failures[class]; i++ {
 		d *= 2
-		if d >= p.cdCap || d <= 0 {
-			d = p.cdCap
+		if d >= ladder.cap || d <= 0 {
+			d = ladder.cap
 			break
 		}
 	}
 	a.state = StateCooldown
 	a.cooldownUntil = p.now().Add(d)
+	a.cooldownClass = class
+	a.cooldownStatus = status
+	a.cooldownSince = p.now()
+}
+
+// ReportTransport records a transport-class failure (connection error, timeout,
+// SSE idle-stall, EOF mid-body) on its own ladder (POOLATTR-001/003/004).
+func (p *Pool) ReportTransport(accountID string) {
+	p.ReportFailure(accountID, ClassTransport, 0)
+}
+
+// FailuresOf reports the per-class failure counters of one account. Every known
+// class is present, zero included, so callers (and the /v1/admin/pool view) can
+// render a stable shape.
+func (p *Pool) FailuresOf(accountID string) map[FailureClass]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[FailureClass]int, len(FailureClasses()))
+	for _, c := range FailureClasses() {
+		out[c] = 0
+	}
+	if a := p.byID[accountID]; a != nil {
+		for c, n := range a.failures {
+			out[c] = n
+		}
+	}
+	return out
+}
+
+// CooldownInfoOf reports why an account is cooling: the class, the upstream status
+// that caused it (0 when there was none) and when it started. Empty when the
+// account has never cooled.
+func (p *Pool) CooldownInfoOf(accountID string) (FailureClass, int, time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a := p.byID[accountID]
+	if a == nil {
+		return "", 0, time.Time{}
+	}
+	return a.cooldownClass, a.cooldownStatus, a.cooldownSince
+}
+
+// ResetFailures clears an account's failure counters without touching its cooldown
+// — used when a credential renewal succeeds (POOLATTR-006). Cooldowns are
+// time-owned: releasing one here would hand an unhealthy account straight back,
+// which is exactly the loop the reference implementation documents avoiding.
+func (p *Pool) ResetFailures(accountID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if a := p.byID[accountID]; a != nil {
+		a.failures = map[FailureClass]int{}
+	}
+}
+
+// ReportSuccess resets the cooldown ladder (SDD §4.5, TDD POOL-004).
+func (p *Pool) ReportSuccess(accountID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if a := p.byID[accountID]; a != nil {
+		a.failures = map[FailureClass]int{}
+	}
+}
+
+// Report429 applies the rate-limit cooldown ladder: base 60s doubling to the
+// 10m cap (SDD §4.5, TDD POOL-002/003).
+func (p *Pool) Report429(accountID string) {
+	p.ReportFailure(accountID, ClassThrottle429, 429)
+}
+
+// Report5xx applies the upstream-sick ladder: base 30s doubling to the cap
+// (SDD §4.5, TDD POOL-005). Transport failures have their own ladder now —
+// call ReportTransport for those (SDD §4.5.1).
+func (p *Pool) Report5xx(accountID string) {
+	p.ReportFailure(accountID, ClassUpstream5xx, 0)
 }
 
 // ReportDisabled disables an account with a reason. Disabled accounts are
@@ -449,7 +563,8 @@ func (p *Pool) Enable(accountID string) {
 	a.disabled = false
 	a.permanent = false
 	a.reason = ""
-	a.failStreak = 0
+	a.failures = map[FailureClass]int{}
+	a.cooldownClass, a.cooldownStatus, a.cooldownSince = "", 0, time.Time{}
 	a.cooldownUntil = time.Time{}
 	a.state = StateAvailable
 	select {
@@ -491,7 +606,7 @@ func (p *Pool) ProbeSweep(ctx context.Context) int {
 		switch {
 		case err == nil:
 			a.state = StateAvailable
-			a.failStreak = 0
+			a.failures = map[FailureClass]int{}
 			recovered++
 		case isAuthErr(err) && p.renew != nil:
 			p.mu.Unlock()
@@ -503,7 +618,7 @@ func (p *Pool) ProbeSweep(ctx context.Context) int {
 			}
 			if rerr == nil {
 				a.state = StateAvailable
-				a.failStreak = 0
+				a.failures = map[FailureClass]int{}
 				recovered++
 			} else {
 				a.state = StateDisabled
@@ -511,8 +626,9 @@ func (p *Pool) ProbeSweep(ctx context.Context) int {
 				a.reason = "session renewal failed: " + rerr.Error()
 			}
 		default:
-			// Probe sick: keep cooling (ladder continues on next failure).
-			a.cooldownUntil = p.now().Add(p.cd5xx)
+			// Probe sick: keep cooling at the 5xx base (ladder continues on the
+			// next failure of that class).
+			a.cooldownUntil = p.now().Add(p.ladders[ClassUpstream5xx].base)
 		}
 		p.mu.Unlock()
 	}

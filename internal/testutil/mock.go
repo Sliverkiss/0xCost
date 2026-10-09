@@ -76,6 +76,11 @@ type MockUpstream struct {
 	uploaded     []byte
 	saveErrors   []string
 	botConfigErr string
+	// audioHTTPStatus/audioHTTPBody: when status > 0 the TTS endpoint answers
+	// that HTTP status instead of a task, so the transport/5xx classification of
+	// an audio call can be exercised (TDD POOLATTR-014).
+	audioHTTPStatus int
+	audioHTTPBody   string
 	// catalogOverrides: per-account bot/config model lists (keyed by ph)
 	// so /v1/models union behaviour can be exercised (M19 §3).
 	catalogOverrides map[string]catalogOverride

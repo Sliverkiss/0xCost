@@ -139,6 +139,16 @@ func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID 
 		s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
 	case isUpstream429(err):
 		s.pool.Report429(lease.ID)
+	default:
+		// Upstream sick during an audio call: transport failures and 5xx cool the
+		// account on their own class ladder. Until this existed, a dead
+		// connection or a 5xx in a TTS/ASR call never cooled the account at all
+		// (SDD §4.5.1). Business errors (e.g. an audit refusal) are not
+		// transport and carry no 5xx, so they stay action-free — they say
+		// nothing about the account's health.
+		if isTransportErr(err) || isUpstream5xx(err) {
+			s.reportFailure(lease.ID, err)
+		}
 	}
 	return err
 }
