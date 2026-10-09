@@ -116,8 +116,9 @@ dropped from the tail.
 
 `tokenUsage` is a **character count, not the model's tokens** (an ASCII file of
 300,052 characters reported `tokenUsage=300052`), and the window is
-language-independent: 90,031 ASCII chars are served, 300,052 are truncated, and
-CJK is served at 100,036 / truncated at 110,020. So:
+language-independent: 90,031 ASCII chars are served while 300,052 and 600,082 are
+truncated, and CJK is served at 100,036 / truncated at 110,020 — the same window
+whatever the alphabet, which also rules out "English fits more characters". So:
 
 - **one request carries roughly 100,000 characters of attachment text in total**
   (the same magnitude as the query cap), shared by every file, consumed in array
