@@ -101,3 +101,34 @@ Two more findings from the same runs:
   evidence for it.
 - The parse handle is what the chat request needs: the same `objectName` with a
   different `url` is a different attachment.
+
+## Several attachments share ONE window — they do not stack
+
+Asked whether attaching more documents extends the context, the answer is no: the
+ingest budget is spent by the attachments in order, and what does not fit is
+dropped from the tail.
+
+| attachments | fact position | result |
+| --- | --- | --- |
+| 3 × 40,028 CJK chars (120,084 total) | each tail | **PARTIAL (2/3)** — the model said document 3 was cut for length |
+| 3 × 40,027 CJK chars (120,081 total) | each head | **PASS (3/3)** — nothing is lost but each document's tail |
+| 2 × 60,028 ASCII chars (120,056 total) | each tail | **PARTIAL (1/2)** |
+
+`tokenUsage` is a **character count, not the model's tokens** (an ASCII file of
+300,052 characters reported `tokenUsage=300052`), and the window is
+language-independent: 90,031 ASCII chars are served, 300,052 are truncated, and
+CJK is served at 100,036 / truncated at 110,020. So:
+
+- **one request carries roughly 100,000 characters of attachment text in total**
+  (the same magnitude as the query cap), shared by every file, consumed in array
+  order;
+- the attachment budget is nonetheless **separate from the query budget**: a
+  request can carry ~100k characters of documents *and* up to 102,400 characters
+  of message text, so the practical per-request capacity is about twice the query
+  ceiling;
+- beyond that, the only ways to send more are more **turns** (each turn is its own
+  request and the platform keeps the dialog) or another account.
+
+`maxFileCount: 50` is therefore a limit on structure — many small documents read
+as one corpus — not on volume.
+

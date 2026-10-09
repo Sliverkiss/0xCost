@@ -3,14 +3,21 @@
 //
 // The question cannot be answered by reading the bundle: the SPA sends a chat
 // payload with fields we can only guess at, and a field the server ignores looks
-// exactly like a field it accepts. So the probe plants a fact that cannot be
-// guessed, buries it in a file larger than the query ceiling, attaches it, and
-// asks for it:
+// exactly like a field it accepts. So the probe plants facts that cannot be
+// guessed, buries them in files, attaches them, and asks for them:
 //
-//	go run ./cmd/attachprobe data/accounts.json [model] [chars]
+//	go run ./cmd/attachprobe data/accounts.json [model] [chars-per-file]
 //
-// PASS means the model answered with the marker: attachments are read, are
-// accounted separately, and the ceiling is not the query's anymore.
+// Environment:
+//
+//	MARKER=head|tail   where each file's fact sits (default tail)
+//	FILES=n            how many documents to attach in one request (default 1)
+//	VARIANTS=1         only the full media item (a minimal item is refused)
+//
+// PASS means the model answered with every file's marker: the attachments were
+// read, are accounted separately, and the ceiling is not the query's anymore.
+// With FILES>1 the answer also says whether several documents share one ingest
+// window or each gets its own.
 //
 // It talks to the live upstream with the stored session (never prints it) and
 // spends one account call per variant.
@@ -29,7 +36,9 @@ import (
 	"github.com/yg/mimo2api/internal/mimo"
 )
 
-const marker = "ZQ-7788"
+// markers are per-file facts; they are deliberately unguessable and unique so a
+// "PASS" cannot come from the model inventing something plausible.
+var markers = []string{"ZQ-7788", "ZQ-7789", "ZQ-7790", "ZQ-7791", "ZQ-7792", "ZQ-7793"}
 
 type accountFile struct {
 	Accounts []struct {
@@ -60,10 +69,17 @@ func main() {
 			chars = n
 		}
 	}
-	// Where the marker sits decides what a NO-MARKER answer means: at the TAIL it
+	// Where each fact sits decides what a NO-MARKER answer means: at the TAIL it
 	// conflates "the attachment was not delivered" with "it was delivered and
 	// truncated"; at the HEAD only the former.
 	markerAtHead := os.Getenv("MARKER") == "head"
+	files := 1
+	if n, err := strconv.Atoi(os.Getenv("FILES")); err == nil && n > 0 {
+		files = n
+	}
+	if files > len(markers) {
+		files = len(markers)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -100,66 +116,78 @@ func main() {
 		Timezone:  cfg.Timezone(),
 	}).WithDevice(device)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	// A file comfortably larger than the query ceiling, with the fact at the END:
-	// a model that only sees the head cannot answer it.
+	// Each document is comfortably larger than a share of the query ceiling, and
+	// its fact sits where the environment says.
+	// CJK filler by default; ASCII on request, because the platform accounts
+	// attachments in TOKENS — so an English document should fit far more
+	// characters in the same window than a Chinese one.
 	filler := "这是一段用于测试附件通路的长文本，内容本身没有意义。"
+	if strings.EqualFold(os.Getenv("FILLER"), "ascii") {
+		filler = "This filler text exists only to give the attachment a measurable length. "
+	}
 	pad := strings.Repeat(filler, chars/len([]rune(filler))+1)
-	var body []byte
+
+	var items []any
 	where := "tail"
 	if markerAtHead {
 		where = "head"
-		body = []byte("仓库编号 " + marker + "\n" + pad)
-	} else {
-		body = []byte(pad + "\n仓库编号 " + marker + "\n")
 	}
-	fmt.Printf("file: %d bytes (~%d chars), marker at the %s: %s\n", len(body), len([]rune(string(body))), where, marker)
+	fmt.Printf("attaching %d document(s) of ~%d chars each (fact at the %s): %s\n",
+		files, chars, where, strings.Join(markers[:files], " "))
 
-	up, err := c.UploadFile(ctx, cookie, ph, "probe.txt", body)
-	if err != nil {
-		fmt.Println("UPLOAD-FAILED:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("UPLOAD-OK: objectName=%s\n", up.ObjectName)
-
-	parsed, err := c.ParseResource(ctx, cookie, ph, up.ResourceURL, up.ObjectName, model)
-	if err != nil {
-		fmt.Println("PARSE-FAILED:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("PARSE-OK: id=%s tokenUsage=%d (the query ceiling is not involved)\n", parsed.ID, parsed.TokenUsage)
-
-	query := "只回答该文档里的仓库编号，不要解释。"
-	variants := []struct {
-		name string
-		item map[string]any
-	}{
-		{"full media item", map[string]any{
-			"name": "probe.txt", "mediaType": "file", "fileUrl": up.ResourceURL,
+	for i := 0; i < files; i++ {
+		name := fmt.Sprintf("probe%d.txt", i+1)
+		var body []byte
+		if markerAtHead {
+			body = []byte("仓库编号 " + markers[i] + "\n" + pad)
+		} else {
+			body = []byte(pad + "\n仓库编号 " + markers[i] + "\n")
+		}
+		up, err := c.UploadFile(ctx, cookie, ph, name, body)
+		if err != nil {
+			fmt.Printf("UPLOAD-FAILED [%s]: %v\n", name, err)
+			os.Exit(1)
+		}
+		parsed, err := c.ParseResource(ctx, cookie, ph, up.ResourceURL, up.ObjectName, model)
+		if err != nil {
+			fmt.Printf("PARSE-FAILED [%s]: %v\n", name, err)
+			os.Exit(1)
+		}
+		fmt.Printf("  [%s] %d bytes → tokenUsage=%d id=%s\n", name, len(body), parsed.TokenUsage, parsed.ID)
+		items = append(items, map[string]any{
+			"name": name, "mediaType": "file", "fileUrl": up.ResourceURL,
 			"objectName": up.ObjectName, "url": parsed.ID, "tokenUsage": parsed.TokenUsage,
 			"status": "completed",
-		}},
-		{"minimal media item", map[string]any{
-			"name": "probe.txt", "fileUrl": up.ResourceURL, "objectName": up.ObjectName,
-			"url": parsed.ID,
-		}},
+		})
+	}
+
+	query := "只回答这些文档里的仓库编号，按文档顺序用英文逗号分隔，不要解释。"
+	if files == 1 {
+		query = "只回答该文档里的仓库编号，不要解释。"
+	}
+	variants := []struct {
+		name string
+		item []any
+	}{
+		{"full media items", items},
+		{"minimal media item", minimalize(items)},
 	}
 	if os.Getenv("VARIANTS") == "1" {
-		// A minimal media item is refused by the upstream (busy frame), so a
-		// sweep of sizes only needs the full item.
 		variants = variants[:1]
 	}
+
 	for _, v := range variants {
 		start := time.Now()
 		var res *mimo.ChatResult
 		var err error
-		// The upstream answers 服务器繁忙 under load; one retry is the difference
+		// The upstream answers 服务器繁忙 under load; retries are the difference
 		// between a measurement and a hole in the data.
 		for attempt := 1; attempt <= 3; attempt++ {
 			res, err = c.Chat(ctx, cookie, ph, mimo.ChatRequest{
-				Query: query, Model: model, MultiMedias: []any{v.item},
+				Query: query, Model: model, MultiMedias: v.item,
 			})
 			if err == nil || !strings.Contains(err.Error(), "繁忙") {
 				break
@@ -171,13 +199,38 @@ func main() {
 			continue
 		}
 		answer := strings.TrimSpace(res.Content)
-		verdict := "NO-MARKER"
-		if strings.Contains(answer, marker) {
-			verdict = "PASS"
+		var found []string
+		for i := 0; i < files; i++ {
+			if strings.Contains(answer, markers[i]) {
+				found = append(found, markers[i])
+			}
 		}
-		fmt.Printf("CHAT [%s] %s in %s: %q\n", v.name, verdict, time.Since(start).Round(time.Millisecond),
-			firstRunes(answer, 120))
+		verdict := "NO-MARKER"
+		switch {
+		case len(found) == files:
+			verdict = "PASS (all documents)"
+		case len(found) > 0:
+			verdict = fmt.Sprintf("PARTIAL (%d/%d documents)", len(found), files)
+		}
+		fmt.Printf("CHAT [%s] %s in %s: %q\n", v.name, verdict,
+			time.Since(start).Round(time.Millisecond), firstRunes(answer, 140))
 	}
+}
+
+// minimalize strips a media item down to the coordinates only — the shape that
+// the upstream refuses with its busy frame.
+func minimalize(items []any) []any {
+	out := make([]any, 0, len(items))
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name": m["name"], "fileUrl": m["fileUrl"], "objectName": m["objectName"], "url": m["url"],
+		})
+	}
+	return out
 }
 
 func firstRunes(s string, n int) string {
