@@ -332,6 +332,46 @@ func TestIMG010InvalidImageDetailRejected(t *testing.T) {
 	}
 }
 
+// IMG-011: the OpenAI vocabulary stops at this package. The body that actually
+// goes to the channel is the channel's own shape (chatPayload), so an `image_url`,
+// a `detail` or an image's bytes must never appear on the wire — asserting the
+// recorded raw body is the only way to know rather than assume.
+func TestIMG011UpstreamPayloadSpeaksOnlyTheChannelVocabulary(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := fmt.Sprintf(`{"model":"mimo-v2.6-flash","stream":false,"reasoning_effort":"low",
+		"web_search_options":{"search_context_size":"high"},"temperature":0.5,"top_p":0.9,
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"图里是什么"},
+			{"type":"image_url","image_url":{"url":%q,"detail":"high"}}]}]}`, pngDataURL())
+	status, raw := chatOnce(t, ts, body)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", status, raw)
+	}
+
+	wire := ts.Upstream.Requests()[0].RawBody
+	// Nothing of OpenAI's request vocabulary may survive the conversion.
+	for _, forbidden := range []string{
+		"image_url", "detail", "messages", "\"content\"", "stream", "reasoning_effort",
+		"web_search_options", "top_p", "role", "data:image", "base64",
+	} {
+		if strings.Contains(wire, forbidden) {
+			t.Errorf("upstream body carries OpenAI field %q — the conversion did not happen:\n%s", forbidden, wire)
+		}
+	}
+	// The channel's own shape must be there instead.
+	for _, want := range []string{
+		`"multiMedias"`, `"mediaType":"image"`, `"modelConfig"`, `"enableThinking":true`,
+		`"webSearchStatus":"enabled"`, `"temperature":0.5`, `"topP":0.9`, `"query"`,
+	} {
+		if !strings.Contains(wire, want) {
+			t.Errorf("upstream body is missing %s:\n%s", want, wire)
+		}
+	}
+}
+
 // IMG-008: the parse step is retried — the platform answers a transient failure
 // under load, and the upload bytes are already spent by then.
 func TestIMG008ParseRetriedThenSucceeds(t *testing.T) {
