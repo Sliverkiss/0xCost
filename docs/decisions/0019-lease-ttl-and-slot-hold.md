@@ -94,6 +94,19 @@ Investigating found the situation was worse than the question assumed:
 - The SSE idle watchdog (180s) is now largely superseded for chat by the 120s turn
   TTL; it still governs audio flows and any stream the TTL cannot bound.
 
+## Deployment constraint: one process owns the pool
+
+The in-flight counters and the per-account slots live in the process, while the
+account store may be shared (Upstash, ADR 0018). **One process is the supported
+deployment**, and that is a constraint rather than an oversight: two gateways sharing
+one store would each believe they hold an account's two slots, so a one-account pool
+could serve four concurrent turns and the account — not the gateway — would take the
+consequences from the platform. Scaling out is possible; the fix is to move the slot
+bookkeeping into the shared store (a per-account counter with the same TTL semantics)
+or to put a single-writer lock in front of the pool. It is deliberately not built:
+the deployment is one container on one host (ADR 0016), and a distributed lock nobody
+uses is worse to carry than a written constraint.
+
 ## Alternatives considered
 
 - **Keep a fixed 300s upstream timeout and no TTL.** Rejected: it is what allows a

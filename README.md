@@ -206,6 +206,14 @@ client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one key)
   audio and admin need no relay and no second credential.
 - **The middleware source stays in the repository** (`deploy/toolforge/`, with its
   `PROVENANCE.md`), but nothing builds or runs it: `make deploy` (i.e.
+### One process owns the pool
+
+The pool's in-flight counters and account slots live in the process, so this gateway
+is meant to run as **one instance**. Two instances sharing one account store would
+each hand out an account's slots, and the account would carry the platform's
+reaction for the oversubscription. If a future deployment needs to scale out, move
+the slot bookkeeping into the shared store first (ADR 0019).
+
 `docker compose --env-file data/deploy.env up -d --build --force-recreate` — the
 force-recreate matters, see the Makefile: `up -d --build` compares the service
 definition, not the image contents, so a rebuilt image can leave the old container
