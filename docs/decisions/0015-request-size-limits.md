@@ -23,7 +23,7 @@ the judge):
 | 102,415 chars (ASCII **and** CJK) | refused: *"Sorry, the text you sent is too long! I suggest you simplify the content appropriately or send it in parts."* (mid-stream `error` event → we surfaced 502) |
 | 105,000 chars | refused, same wording |
 | 300,000 ASCII chars | refused, same wording |
-| 20 × 6,000 chars (120,000 total across messages) | accepted and processed |
+| 20 × 6,000 chars (120,000 total across messages) | served in 258 s, and the model's answer named all 20 parts and their ~112,000-char total — the whole payload was read, not merely accepted |
 | ultraspeed 49,500 chars | served |
 | ultraspeed 52,000 / 60,000 chars | refused: *"query is too long"* |
 
@@ -126,7 +126,10 @@ platform — one wasted account call, and a much less useful message.
 1. **Send it in parts** — the upstream's own suggestion in its refusal text, and
    the shape our planner already uses: one upstream query per client user
    message, chained through `previousDialogueId`, so only the *per-query* ceiling
-   applies. Verified: 20 × 6,000 chars (120,000 total) is accepted.
+   applies. Verified end to end: 20 × 6,000 chars (120,000 total, every part under
+   the ceiling) returned 200 and the model's reply accounted for all 20 parts and
+   their ~112,000-character total. The cost is latency, not capacity: one upstream
+   call per part, ~13 s each, so that request took 258 s.
 2. **Spend less of the budget on preamble** — on the tool path the injected
    protocol is 1,355 characters for a single tool; trimming it buys the client
    real room.

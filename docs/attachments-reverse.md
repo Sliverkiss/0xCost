@@ -127,7 +127,10 @@ CJK is served at 100,036 / truncated at 110,020. So:
   of message text, so the practical per-request capacity is about twice the query
   ceiling;
 - beyond that, the only ways to send more are more **turns** (each turn is its own
-  request and the platform keeps the dialog) or another account.
+  request and the platform keeps the dialog) or another account. Turns are a real
+  route: 20 × 6,000 chars (120,000 total) returned 200 in 258 s and the model's
+  reply accounted for all 20 parts and their ~112,000-character total — the cost
+  is ~13 s per part, not capacity.
 
 `maxFileCount: 50` is therefore a limit on structure — many small documents read
 as one corpus — not on volume.
