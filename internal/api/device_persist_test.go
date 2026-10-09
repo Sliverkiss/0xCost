@@ -74,6 +74,9 @@ func newDeviceStack(t *testing.T) *deviceStack {
 		Accounts: store,
 		Sessions: session.New(session.Options{}),
 		Client:   client,
+		// These in-package stacks exercise the streaming path; the deployed
+		// default is non-streaming (ADR 0016).
+		AllowStream: true,
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)

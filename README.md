@@ -13,18 +13,17 @@ routing.
 mkdir -p data
 $EDITOR data/accounts.json   # mode 0600; never commit it
 
-# 2. one key, one address (ADR 0012). The key lives in an untracked env file —
+# 2. one key, one address (ADR 0016). The key lives in an untracked env file —
 #    data/ is gitignored, and the mirror scan fails on a key inside the repo.
-printf 'MIMO2API_TOOL_KEY=%s\n' "your-key" > data/deploy.env
+printf 'MIMO2API_API_KEYS=%s\n' "your-key" > data/deploy.env
 
 # The runtime is distroless `nonroot` (uid 65532): hand it the accounts file
 # without making it world-readable. Skipping this is the classic first-boot
 # failure — `open /data/accounts.json: permission denied`, restart loop.
 chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/accounts.json
 
-# 3. run — publishes host 21223 on the LOOPBACK ONLY → the tool layer, which serves
-#    /v1/chat/completions with function calling and proxies every other path to the
-#    gateway verbatim. TLS and the public hostname are the reverse proxy's job
+# 3. run — one container, and it publishes host 21223 on the LOOPBACK ONLY → the
+#    gateway itself. TLS and the public hostname are the reverse proxy's job
 #    (Caddy terminates :443 and proxies to 127.0.0.1:21223), so this port never
 #    needs to be reachable from outside — an exposed API port is an exposed key.
 docker compose --env-file data/deploy.env up -d --build
@@ -35,17 +34,20 @@ curl http://localhost:21223/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mimo-v2.6-pro",
-    "stream": true,
+    "stream": false,
     "messages": [{"role": "user", "content": "hello"}]
   }'
 ```
 
+Chat is **non-streaming** (ADR 0016): `stream: true` is refused with
+`400 stream_unsupported` rather than answered in a shape an SSE client cannot
+parse. Set `MIMO2API_ALLOW_STREAM=true` to serve it again.
+
 If the very first `up` prints `dependency failed to start: container mimo2api
-is unhealthy`, run `up -d` once more: the gateway's health window (30 s
-`start_period`) can outlast the dependency wait on a cold start. The gateway's
-own 8080 is deliberately **not** published — the compose network is its only
-route — and 21223 is bound to `127.0.0.1`, so the only public path in is the
-reverse proxy. Verify with `ss -ltn | grep 21223` (want `127.0.0.1`) and
+is unhealthy`, run `up -d` once more: the health window (30 s `start_period`)
+can outlast the dependency wait on a cold start. Port 21223 is bound to
+`127.0.0.1`, so the only public path in is the reverse proxy — verify with
+`ss -ltn | grep 21223` (want `127.0.0.1`) and
 `curl --max-time 5 http://<public-ip>:21223/healthz` (want a refusal).
 
 The image is a multi-stage build: `golang:1.25-alpine` compile
@@ -57,8 +59,7 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming). Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
-| POST | `/v1/raw/chat/completions` | Bearer | Internal (ADR 0012): the same chat handler, minus the tool layer — the path the middleware calls back on. Never forwarded onward; tools are reported as dropped here |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **non-streaming** (ADR 0016; `stream: true` → `400 stream_unsupported` unless `MIMO2API_ALLOW_STREAM=true`). `tools` is reported as dropped in `X-Mimo-Warnings`. Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -115,7 +116,7 @@ forwarded. `include_citations: false` keeps the search but drops the payload.
 Citations are best-effort: the upstream also answers with `(citation:N)` markers
 when it returns no result set at all.
 
-**Sessions (streaming only)**: a streaming request continues an upstream
+**Sessions (streaming only, not reachable on this deployment)**: a streaming request continues an upstream
 conversation when it can prove it owns one. The gateway resolves the session
 from `X-Mimo-Session-Id` (header) or `session_id` (body field), else derives one
 from the model, system preamble, tools and first message — scoped to your API
@@ -126,6 +127,8 @@ rewritten history replays rather than chaining onto a lookalike, and a second
 concurrent request for a busy session waits `MIMO2API_SESSION_WAIT_MS` and then
 forks onto its own session instead of interleaving. `stream: false` is
 one-shot by design: no session, no store read or write, no header (ADR 0009).
+Since chat is non-streaming (ADR 0016), nothing on the public API reaches this
+path today; it is kept for `MIMO2API_ALLOW_STREAM=true`.
 
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
@@ -141,50 +144,35 @@ Real account identifiers (phone, user id, password, tokens) are never written in
 the repository: they live in the git-ignored `data/accounts.json`, and `make hygiene`
 reads its values from there and fails if any of them appears in a tracked file.
 
-## Function calling (ADR 0012)
+## No function calling (ADR 0016)
 
-MiMo Studio has no native function calling, so `tools` is served by a middleware that
-is the deployment's **single entry point**: it strips `tools`, injects an XYML prompt
-protocol, parses the call back out of the model's text, and calls this gateway's
-ordinary chat surface. Everything it does not implement is relayed to us verbatim:
+MiMo Studio has no native function calling, and the middleware that emulated it is
+**no longer deployed** — the owner's call, and the measurement backs it: the
+injected XYML prompt spent 1,355 characters for one tool, 1,760 for three and
+5,222 for thirty, out of the same 102,400-character query budget the caller's own
+text is measured against (ADR 0015). Live proof: 102,000 characters with thirty
+tools was served on the raw chat path and refused through the tool layer. On a
+channel that short the tools were not worth the context they cost ("上下文太短，
+做不了什么事").
 
 ```
-client :21223 --(Bearer KEY)--> toolforge:8080
-                              ├── /v1/chat/completions → tools handled here, then
-                              │   the model call runs on the gateway's own path
-                              └── anything else (/v1/models, /v1/audio/*, /v1/admin/*)
-                                  → relayed unchanged, same key
+client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one key)
 ```
 
-- **One address, one key.** Clients keep a single `base_url` (published host port
-  `21223`; the container's own 8080 stays on the compose network) and a single
-  key; audio, models and admin behave exactly as if the gateway were called
-  directly, because they are — the relay passes method, query, body (multipart
-  uploads, binary audio) and the caller's headers through, and `/healthz` there
-  reports the gateway's health too.
-- **One key, both hops.** `MIMO2API_TOOL_KEY` is the key the client sends, the
-  middleware's `allowed_keys` entry, and an entry in this gateway's
-  `MIMO2API_API_KEYS`. Our copy of the middleware passes the caller's own
-  `Authorization` and `X-Mimo-*` headers through to us (`key_passthrough`,
-  `passthrough_headers`) so the model call stays in the caller's session namespace.
-- **The gateway knows nothing about it.** There is no forwarding code, no internal
-  path and no recursion to guard: by the time a chat request reaches us the body has
-  no `tools` in it. Reaching the gateway directly (`8080`, on the compose network, or
-  published if you uncomment the mapping) gives today's behaviour for tool-bearing
-  requests: `tools` reported as dropped in `X-Mimo-Warnings`.
-- **The middleware never runs tools.** The client executes them and sends the result
-  back as a `role:"tool"` turn, which the middleware folds into the prompt protocol.
-- **The middleware is vendored** (`deploy/toolforge/`, see its `PROVENANCE.md`) and
-  built from this repo: no clone, no GitHub access, no credentials at build time.
-  `docker compose up -d --build` with `MIMO2API_TOOL_KEY` set starts both; without
-  it the middleware is inert and nothing changes.
-
-Live (real account, real model, real containers, one published port): `get_weather(city)`
-through `:8081` came back as `finish_reason: tool_calls` with `{"city":"上海"}` and the
-result fed back produced the final answer; `/v1/models` returned the gateway's real
-7-model catalog; `/v1/audio/speech` returned real WAV bytes and `/v1/audio/transcriptions`
-a real transcript — both through the relay, multipart upload included. Details in
-`docs/live-findings.md` (LIVE-TOOLS-001).
+- **`tools` in a request is not an error**: it is decoded, ignored and reported in
+  `X-Mimo-Warnings`. Explicit, never a silent downgrade — a client that wants
+  tools runs them itself and sends the results back as ordinary messages.
+- **One key, one address.** `MIMO2API_API_KEYS` is the only credential, and the
+  published port (21223, loopback only) reaches the gateway directly, so models,
+  audio and admin need no relay and no second credential.
+- **The middleware source stays in the repository** (`deploy/toolforge/`, with its
+  `PROVENANCE.md`), but nothing builds or runs it: `docker compose up -d --build`
+  starts one container. Reviving it is a compose service plus an env var, and
+  `git log` holds the configuration that worked.
+- **It did work when it ran** (live, before removal): `get_weather(city)` came back
+  as `finish_reason: tool_calls` with `{"city":"上海"}`, and feeding the result back
+  produced the final answer (`docs/live-findings.md`, LIVE-TOOLS-001). It worked,
+  it just cost more context than it was worth here.
 
 ## Superseded models (ADR 0011)
 
@@ -247,7 +235,8 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | **Base** synthesis deadline; the effective budget grows with the spoken text plus 500 ms per character: measured live at 12.8 s for 128 characters, 17.8 s for 384 and >220 s for 700, so the budget is deliberately generous |
 | `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
 | `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the synthesis budget |
-| `MIMO2API_MAX_QUERY_CHARS` | `0` | Operator override for the chat character guardrail (ADR 0015). `0` = per-channel defaults: **50,000** characters for ultraspeed/fastchat (49,500 served / 52,000 refused; the Studio's own `ultraspeedQueryLimitLength: 5e4`) and **102,400** for every other model — the platform's measured ceiling for one query text (exactly 102,400 served, 102,415 refused, identical for ASCII and CJK, so it counts characters). The cap counts the **query text the platform receives**, not each message: the system messages the planner splices into the first user query — including the tool layer's injected protocol prompt (1,355 chars for one tool, 5,222 for thirty) — spend the same budget, and the error says how much of it was preamble. Anything above is refused upstream too, so rejecting locally only saves a wasted call; an upstream refusal is still translated into `400 context_too_long` with an actionable message |
+| `MIMO2API_MAX_QUERY_CHARS` | `0` | Operator override for the chat character guardrail (ADR 0015). `0` = per-channel defaults: **50,000** characters for ultraspeed/fastchat (49,500 served / 52,000 refused; the Studio's own `ultraspeedQueryLimitLength: 5e4`) and **102,400** for every other model — the platform's measured ceiling for one query text (exactly 102,400 served, 102,415 refused, identical for ASCII and CJK, so it counts characters). The cap counts the **query text the platform receives**, not each message: the system messages the planner splices into the first user query spend the same budget (that is also why the tool layer's injected protocol prompt — 1,355 chars for one tool, 5,222 for thirty — had to go, ADR 0016), and the error says how much of it was preamble. Anything above is refused upstream too, so rejecting locally only saves a wasted call; an upstream refusal is still translated into `400 context_too_long` with an actionable message |
+| `MIMO2API_ALLOW_STREAM` | `false` | Serve `stream: true` on `/v1/chat/completions`. Off (ADR 0016): the deployment is non-streaming, so a streaming request is refused with `400 stream_unsupported` naming the fix rather than answered in a shape an SSE client cannot parse. On, the SSE path and its session chaining are reachable again |
 | `MIMO2API_SPEECH_MAX_CHARS` | `1024` | `/v1/audio/speech` input cap, clamped to the upstream's **1024 character** per-synthesis limit ("播报内容长度不能超过1024"). Lower it to refuse earlier; a higher value cannot take effect (ADR 0010) |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
@@ -326,7 +315,7 @@ cooldowns, disabled reasons survive restarts):
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
 | `docs/specs/session-identity.md` | Spec (accepted): how a request resolves to a session — identity ladder, isolation invariants, fork policy, one-shot non-streaming |
 | `docs/specs/account-pool.md` | Spec (proposed): pool failure attribution, the form of 451/461, per-account observability, per-account egress |
-| `deploy/toolforge/` | ToolForge (tool-calling middleware), vendored: its source + our change, `PROVENANCE.md`, and the stack's `config.yaml` |
+| `deploy/toolforge/` | ToolForge (tool-calling middleware), vendored with its `PROVENANCE.md` — **no longer deployed** (ADR 0016); kept as the working copy that reviving it would start from |
 | `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split (superseded by 0010: the cap is refused, not split), session identity, speech as a refused limit, superseded models resolved and not advertised |
 
 ## Development

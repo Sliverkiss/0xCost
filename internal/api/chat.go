@@ -32,6 +32,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		am[i] = adapter.Msg{Role: m.Role, Content: m.Content}
 	}
 
+	// Non-streaming deployment (ADR 0016): refuse stream:true up front, before any
+	// pool interaction, and name the fix. Silent conversion to a one-shot JSON
+	// body would hand an SSE client a response it cannot parse.
+	if req.Stream && !s.allowStream {
+		s.logger.Printf("chat: refused streaming request from %s (this deployment serves non-streaming chat only)", r.RemoteAddr)
+		s.MapError(w, &streamUnsupportedError{})
+		return
+	}
+
 	// Search switch (M19, TDD WS-001/002/003). The ":online" model suffix is
 	// shorthand for web_search_status=enabled; an explicit field wins when
 	// both are present.

@@ -56,13 +56,18 @@ type TestServerOptions struct {
 	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
 	// per-channel chat caps (ADR 0015).
 	MaxQueryChars int
-	Now           func() time.Time
-	Probe         pool.ProbeFunc
-	Renew         pool.RenewFunc
-	Debug         bool          // MIMO2API_LOG_LEVEL=debug equivalent
-	SessionWait   time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
-	ForkPolicy    string        // "wait" (default) or "fork"
-	LogSink       io.Writer     // nil = discard-free default logger; set to capture trace lines
+	// AllowStream mirrors MIMO2API_ALLOW_STREAM. nil means true, the opposite of
+	// the production default (ADR 0016 is non-streaming): the streaming suites
+	// must keep exercising the SSE path, and a case that wants the deployed
+	// behaviour sets it to false explicitly.
+	AllowStream *bool
+	Now         func() time.Time
+	Probe       pool.ProbeFunc
+	Renew       pool.RenewFunc
+	Debug       bool          // MIMO2API_LOG_LEVEL=debug equivalent
+	SessionWait time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
+	ForkPolicy  string        // "wait" (default) or "fork"
+	LogSink     io.Writer     // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
 	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
 	// httptest proxy and watch what leaves through it.
@@ -153,6 +158,7 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		DefaultModel:  opts.DefaultModel,
 		ReplayCap:     opts.ReplayCap,
 		MaxQueryChars: opts.MaxQueryChars,
+		AllowStream:   opts.AllowStream == nil || *opts.AllowStream,
 		Keepalive:     keepalive,
 		Logger:        logger,
 		Debug:         opts.Debug,

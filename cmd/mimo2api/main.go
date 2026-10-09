@@ -150,8 +150,11 @@ func run() error {
 		// 0 = per-channel caps; a positive value is the operator override
 		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 		MaxQueryChars: cfg.MaxQueryChars(),
-		Keepalive:     cfg.Keepalive(),
-		Debug:         cfg.Debug(),
+		// Non-streaming by default (ADR 0016); MIMO2API_ALLOW_STREAM=true only for
+		// a client that genuinely needs SSE.
+		AllowStream: cfg.AllowStream(),
+		Keepalive:   cfg.Keepalive(),
+		Debug:       cfg.Debug(),
 
 		// Session identity (SDD §4.3.1, ADR 0009).
 		SessionWait: cfg.SessionWait(),

@@ -214,3 +214,45 @@ func TestComposedQueryUnderCapIsServed(t *testing.T) {
 		t.Errorf("upstream hits = %d, want 1", ts.Upstream.ChatHits())
 	}
 }
+
+// STREAM-001: the deployed default is non-streaming (ADR 0016), so a request that
+// asks for SSE is refused by name with the fix, before any account work — an
+// OpenAI client that got a one-shot JSON body instead would fail on the parse.
+func TestStreamingRefusedOnNonStreamingDeployment(t *testing.T) {
+	off := false
+	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{AllowStream: &off})
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for stream:true on a non-streaming deployment", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+	if !strings.Contains(body, `"code":"stream_unsupported"`) {
+		t.Errorf("body = %s, want code stream_unsupported", body)
+	}
+	if !strings.Contains(body, `stream\": false`) && !strings.Contains(body, `"stream": false`) {
+		t.Errorf("body = %s, want the fix named", body)
+	}
+	if ts.Upstream.ChatHits() != 0 {
+		t.Errorf("upstream hits = %d, want 0 (refused before any account work)", ts.Upstream.ChatHits())
+	}
+
+	// The non-streaming request on the same stack is served normally.
+	resp2, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("non-streaming status = %d, want 200", resp2.StatusCode)
+	}
+	if ts.Upstream.ChatHits() != 1 {
+		t.Errorf("upstream hits = %d, want 1 after the non-streaming request", ts.Upstream.ChatHits())
+	}
+}

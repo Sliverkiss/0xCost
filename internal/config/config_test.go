@@ -397,3 +397,25 @@ func TestConfigCooldownLadders(t *testing.T) {
 		t.Error("Load accepted a non-numeric cooldown; it must fail loudly")
 	}
 }
+
+// CONF-015: the deployment is non-streaming by default (ADR 0016) — a client
+// asking for SSE must be refused, not silently handed a different shape — and the
+// switch is the operator escape hatch for a client that needs streaming.
+func TestAllowStreamDefaultAndOverride(t *testing.T) {
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AllowStream() {
+		t.Error("AllowStream = true by default; the deployment serves non-streaming chat (ADR 0016)")
+	}
+
+	testEnv(t, map[string]string{"MIMO2API_ALLOW_STREAM": "true"})
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AllowStream() {
+		t.Error("AllowStream = false with MIMO2API_ALLOW_STREAM=true")
+	}
+}

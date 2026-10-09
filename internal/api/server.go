@@ -37,6 +37,7 @@ type Server struct {
 	replayCap    int
 	// maxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
+	allowStream   bool
 	maxQueryChars int
 	keepalive     time.Duration
 	logger        *log.Logger
@@ -162,6 +163,10 @@ type Options struct {
 	Client       *mimo.Client
 	DefaultModel string // "auto"/missing model resolution (SDD §5.2)
 	ReplayCap    int    // max replayed user turns (SDD §5.3B, default 20)
+	// AllowStream enables serving stream:true. False (the zero value, and the
+	// config default) means chat is non-streaming: a streaming request is
+	// refused with a clear 400 instead of being served as one blob (ADR 0016).
+	AllowStream bool
 	// MaxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
 	MaxQueryChars int
@@ -249,6 +254,7 @@ func New(opts Options) *Server {
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,
+		allowStream:    opts.AllowStream,
 		maxQueryChars:  opts.MaxQueryChars,
 		keepalive:      opts.Keepalive,
 		logger:         logger,

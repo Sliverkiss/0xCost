@@ -1,36 +1,36 @@
 # mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
 # in-binary healthcheck (distroless has no curl/wget).
 #
-# The deployment's single entry point (ADR 0012) is published on host port 21223:
+# ONE container, ONE published port (ADR 0016, superseding the tool layer of
+# ADR 0012): host 21223 → the gateway itself.
 #
-#   client :21223 --(Bearer $MIMO2API_TOOL_KEY)--> toolforge:8080
-#                 ├── /v1/chat/completions → tools stripped, XYML injected, call
-#                 │   parsed back; the model call runs on the gateway's own path
-#                 └── every other path → proxied to mimo2api verbatim
-#                     (/v1/models, /v1/audio/*, /v1/admin/*), same key
+#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:8080
 #
-# One address, one key: the gateway needs no forwarding code, no internal surface
-# and no second credential. The gateway's 8080 is not published (it stays on the
-# compose network) — uncomment the mapping there for direct access.
+# The tool layer is gone: MiMo has no native function calling, the middleware
+# serving it injected a protocol prompt that spent 1,355–5,222 characters of the
+# query budget (ADR 0015) — context the platform's 102,400-character ceiling does
+# not have to spare — and an OpenAI client that wants tools can call them itself
+# now that one hop and its prompt are out of the path. A request that still
+# carries `tools` is answered normally with the tools reported as dropped
+# (`X-Mimo-Warnings`), never silently.
 services:
   mimo2api:
     build: .
     image: mimo2api
     container_name: mimo2api
-    # Not published: reachable as mimo2api:8080 on the compose network, and by
-    # clients through the tool layer's port below. Uncomment for direct access —
-    # it is how the raw chat path was compared with the tool layer's (ADR 0015:
-    # 102,000 chars with 30 tools is served here and refused through the tool
-    # layer, because the injected protocol prompt spends the same budget).
-    # ports:
-    #   - "127.0.0.1:21224:8080"
+    ports:
+      # The deployment's only published port, on the LOOPBACK ONLY (ADR 0016):
+      # TLS and the public hostname belong to the reverse proxy in front (Caddy
+      # terminates :443 and proxies to 127.0.0.1:21223), and every other service
+      # on this host binds 127.0.0.1 too — an exposed API port is an exposed key.
+      - "127.0.0.1:21223:8080"
     volumes:
       - ./data:/data # accounts.json + runtime state (SDD §4.7)
     environment:
       - MIMO2API_ACCOUNTS_FILE=/data/accounts.json
       # The one key, shared by both hops: the middleware accepts it, then passes
       # the caller's own header through, and this line is what authorises it here.
-      - MIMO2API_API_KEYS=${MIMO2API_TOOL_KEY:-}
+      - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
       - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
       - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
       # Pinned policy, not left to a default that could drift:
@@ -43,51 +43,19 @@ services:
       # operator override for a client that sends more context than the Studio's
       # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
       - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}
+      # Chat is non-streaming on this deployment (ADR 0016): a request asking for
+      # stream:true is refused with a clear 400 instead of being silently served
+      # as one blob (never a silent downgrade). Flip to true only for a client
+      # that genuinely needs SSE.
+      - MIMO2API_ALLOW_STREAM=${MIMO2API_ALLOW_STREAM:-false}
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s
       timeout: 5s
       retries: 3
-      # Generous on purpose: `toolforge` waits for this container to be healthy,
-      # and a cold start (module-less distroless image, live catalog warm-up that
-      # talks to the upstream) can take longer than the first probe window. A
-      # short start_period makes a first `up` report a failed dependency while the
-      # gateway is in fact still coming up.
+      # Generous on purpose: a cold start (module-less distroless image, live
+      # catalog warm-up that talks to the upstream) can take longer than the first
+      # probe window, and a short start_period makes a first `up` report an
+      # unhealthy container while the gateway is in fact still coming up.
       start_period: 30s
-    restart: unless-stopped
-
-  # The tool layer: chat with tools (and, if you point everything here, plain chat
-  # too — with no tools in the request it is a straight passthrough).
-  # Vendored in this repository (deploy/toolforge, see its PROVENANCE.md) and built
-  # from there: no clone, no GitHub access, no credentials at build time. Edit that
-  # tree and rebuild.
-  toolforge:
-    build:
-      context: ./deploy/toolforge
-      dockerfile: Dockerfile
-    image: mimo2api-toolforge
-    container_name: mimo2api-toolforge
-    ports:
-      # The deployment's single entry point, on the LOOPBACK ONLY: TLS and the
-      # public hostname belong to the reverse proxy in front (Caddy terminates
-      # :443 and proxies to 127.0.0.1:21223), so nothing needs to reach this port
-      # from outside. Keep it off 0.0.0.0 — an exposed API port is an exposed
-      # credential, and every other service on this host binds 127.0.0.1 too.
-      - "127.0.0.1:21223:8080"
-    environment:
-      - MIMO2API_TOOL_KEY=${MIMO2API_TOOL_KEY:-}
-      - MIMO2API_UPSTREAM_URL=http://mimo2api:8080/v1
-    volumes:
-      - ./deploy/toolforge/config.yaml:/app/config.yaml:ro
-    depends_on:
-      mimo2api:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')\""
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
     restart: unless-stopped

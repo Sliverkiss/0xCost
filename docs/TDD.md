@@ -117,27 +117,31 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/live/live_test.go` | live | LIVE-001..010 + LIVE-SESS-001/002 (session chaining vs replay, one-shot) — separate package so it is never run implicitly; gated on `MIMO2API_LIVE=1` |
 | `docker/docker_test.sh` (invoked via `go test` wrapper or Makefile target) | — | DOCKER-001..006 — shell-driven, skipped when `docker` binary absent |
 
-### 2.1.1 The tool layer's acceptance (ADR 0012)
+### 2.1.1 The deployment's acceptance (ADR 0016)
 
-The middleware is a separate program in `deploy/toolforge/`, so its acceptance is
-end-to-end rather than a Go unit test:
+One container, one published port, non-streaming chat — so the acceptance is
+end-to-end against the running stack:
 
 | Check | What it proves |
 |---|---|
-| `make test-toolforge` | the vendored middleware's own `pytest` suite passes in a container (its `live`-marked network test is excluded) |
-| tools request to `:8081` → `finish_reason: tool_calls` | the injected protocol survives the real model and the parse recovers the call |
-| `role:"tool"` result sent back → final text | the second round works, i.e. the tool result is folded into the prompt protocol |
-| plain chat on `:8081` | no `tools` in the body → pure passthrough, so pointing everything at the middleware is also correct |
-| `/v1/models` through `:8081` | the relay hands the gateway's real catalog back (7 models live), i.e. clients see our models, not the middleware's view |
-| `/v1/audio/speech` through `:8081` | binary responses survive the relay: `audio/wav`, RIFF/WAVE header, 153,644 bytes live |
-| `/v1/audio/transcriptions` through `:8081` | multipart uploads survive the relay: the WAV from the line above came back transcribed |
-| `/healthz` on `:8081` | reports `upstream_health` for the gateway, so one port answers for the deployment |
-| an unknown model path through `:8081` | the gateway's own status is preserved (404, not a generic proxy error) |
-| `:8080` unpublished | the compose mapping is commented out, so a client has one address |
-| wrong key on both ports → 401 | both hops are authenticated |
-| tool request to `:8080` → `X-Mimo-Warnings` | the boundary is explicit: our port never pretends to support tools |
+| `/healthz` on `:21223` | the published port answers for the gateway itself: one container, no relay |
+| `/v1/models` on `:21223` | the real catalog comes back on the published address (7 models live) |
+| `/v1/audio/speech` on `:21223` | binary responses work on the same address (`audio/wav`, RIFF/WAVE header) and multipart uploads survive on `/v1/audio/transcriptions` |
+| wrong key → 401 | the published port is authenticated |
+| `stream: true` → `400 stream_unsupported` | the deployed default is non-streaming (ADR 0016) and the refusal names the fix — checked live, together with **no upstream call** in the unit case STREAM-001 |
+| `stream: false` → 200 | plain chat is served on the published address |
+| tools in the body → `X-Mimo-Warnings` | the boundary is explicit: the gateway never pretends to support tools |
+| `ss -ltn \| grep 21223` → `127.0.0.1` | the port is loopback-only; the reverse proxy is the only public path |
 
-Recorded live in `docs/live-findings.md` (LIVE-TOOLS-001).
+### 2.1.2 Retired: the tool layer's acceptance (ADR 0012, closed by ADR 0016)
+
+Historical, kept because it records what was verified while the middleware ran:
+`make test-toolforge` in a container; a tools request to `:8081` returning
+`finish_reason: tool_calls`; the `role:"tool"` round trip; the relay for
+`/v1/models`, `/v1/audio/*` and multipart uploads; `/healthz` on `:8081`
+reporting the gateway's health; wrong key → 401 on both hops
+(`docs/live-findings.md`, LIVE-TOOLS-001). The middleware stays vendored in
+`deploy/toolforge/` — nothing builds or runs it.
 
 ### 2.1 Recorded SSE fixtures (`internal/testutil/testdata/`)
 
@@ -386,6 +390,7 @@ Wave order agreed with the owner: ① attribution → ② risk control → ③ o
 | API-005 | GET /v1/models | server up | GET /v1/models | OpenAI `list` shape: `object:"list"`, `data[]` with `{id, object:"model", created, owned_by}`; contains the §2.6 static catalog incl. ultraspeed | §5.1, §2.6 |
 | API-006 | GET /v1/models/{id} | server up | known id / alias with `-studio` suffix / unknown id | known → 200 detail; alias → 200 after normalization; unknown → 404 error listing available ids | §5.1 |
 | API-008 | Tools stripping + warning header | — | request with `tools`, `tool_choice`, `functions` | 200; fields never appear in recorded upstream payload; response carries `X-Mimo-Warnings` naming all dropped fields | §5.2 |
+| STREAM-001 | Streaming refused on a non-streaming deployment | server built with `AllowStream=false` (the deployed default) | POST `stream:true`, then the same request with `stream:false` | streaming → `400` with `code:"stream_unsupported"` and the fix (`"stream": false`) in the message, **0 upstream calls**; then non-streaming → `200` with exactly 1 upstream call | §5.7, ADR 0016 |
 | API-009 | max_tokens ignored | — | request with `max_tokens` + `max_completion_tokens` | 200; not forwarded; warning header mentions them | §5.2 |
 | API-010 | enable_thinking → reasoning deltas | mock upstream serves `sse_thinking.txt` | `stream:true`, `enable_thinking:true` | reasoning deltas emitted as `reasoning_content` **before** content deltas, incrementally (not one fat chunk); with thinking off, reasoning is stripped | §5.2, §5.4 |
 | API-011 | reasoning:{type:enabled} alias | same fixture | `reasoning:{"type":"enabled"}` | same behavior as API-010 | §5.2 |

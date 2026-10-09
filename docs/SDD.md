@@ -914,7 +914,7 @@ passive classification depends on (REQ-15).
 
 | Route | Behavior |
 |---|---|
-| `POST /v1/chat/completions` | Chat. `stream:true` → SSE; else JSON. |
+| `POST /v1/chat/completions` | Chat, non-streaming: always one JSON body (ADR 0016). `stream:true` → `400 stream_unsupported` unless `MIMO2API_ALLOW_STREAM=true`, in which case SSE. |
 | `GET /v1/models` | Model list (§2.6), OpenAI `list` shape. |
 | `GET /v1/models/{id}` | Single model or 404 with available ids (`xm2api/server.mjs:751-776`). |
 | `GET /healthz` | Liveness + pool summary (states only, no credentials — xm2api `summaryOf` precedent, `lib/accounts.mjs:92-107`). |
@@ -1289,45 +1289,49 @@ literals. (An earlier draft of this SDD carried them inline; scrubbed
 | All-cooldown behavior | still picks one | n/a | still picks one | fails closed 429 | fails closed 429 |
 | Retry | 1 auth-refresh retry | 429/5xx ×5 (2/4/8/16s) + empty-retry | 1 renewal retry (non-stream) | 2 attempts, pre-first-byte, exclude identity | 2 attempts + auth refresh + empty-retry, pre-first-byte |
 | TTL on sessions | none | none (LRU-50 only) | n/a | none (janitor deletes upstream) | **30 min idle TTL + LRU-500** |
-| Tools | prompt-injected passthrough | 5-format parser + prompt | n/a | stripped | stripped (out of scope) |
+| Tools | prompt-injected passthrough | 5-format parser + prompt | n/a | stripped | stripped and reported as dropped (§5.6, ADR 0016) |
 
-## §5.6 Function calling via the tool layer (ADR 0012)
+## §5.6 Function calling: not offered (ADR 0016, superseding ADR 0012)
 
 MiMo Studio implements no function calling (§2.1: the chat body has no `tools`
-field, and `bot/config` advertises no such capability). `tools` on the wire is
-therefore served by an external middleware (ToolForge) that injects an XYML prompt
-protocol and parses the tool call out of the model's text. It is vendored in this
-repository (`deploy/toolforge/`, PROVENANCE.md) and sits **in front of** chat:
+field, and `bot/config` advertises no such capability). Emulating it took a
+middleware in front of the gateway that injected an XYML prompt protocol and
+parsed the call back out of the model's text — and that prompt is charged against
+the platform's per-query ceiling (§2.8, ADR 0015): 1,355 characters for one tool,
+1,760 for three, 5,222 for thirty. Measured live: 102,000 characters with thirty
+tools was **served** on the raw chat path and **refused** through the middleware.
+
+Decision: the middleware is not deployed. The measurement is the whole argument —
+on a channel whose usable query text is 102,400 characters, spending up to 5% of
+it on a protocol prompt buys fewer tools than the context it costs.
 
 ```
-client :21223 --(Bearer KEY)--> middleware:8080
-                              ├── /v1/chat/completions, /v1/responses → handled here,
-                              │   the model call then runs on /v1/chat/completions
-                              └── every other path → relayed verbatim to the gateway
+client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one published port)
 ```
 
-* **One hop, one key**: `MIMO2API_TOOL_KEY` is the caller's credential, the
-  middleware's `allowed_keys` entry, and an entry in `MIMO2API_API_KEYS`. Its
-  `key_passthrough` + `passthrough_headers` carry the caller's `Authorization` and
-  `X-Mimo-*` (§4.3.1 session carriers) to the second hop, so REQ-3/INV-2 hold. A
-  client that needs its own namespace pins `X-Mimo-Session-Id`; a client that mixes
-  plain and tool turns should pin it too, because the derived identity includes the
-  system prompt the middleware rewrites.
-* **No gateway-side plumbing**: the middleware removes `tools` before calling us, so
-  the body that arrives has nothing to trigger a forward — no internal path, no
-  recursion guard, no forwarding code, and no configuration on our side.
-* **One published port**: `features.catch_all_proxy` relays the paths the middleware
-  does not implement (`/v1/models`, `/v1/audio/*`, `/v1/admin/*`) to the gateway
-  verbatim — method, query, body, headers — so a client keeps one base_url and one
-  key; `/healthz` on that port reports the gateway's health as well.
-* **Failure**: the middleware is a separate process, so a caller pointed at the
-  published entry point (:21223 on the host, :8080 inside the container)
-  sees a connection error when it is down; a tool request sent to :8080 keeps
-  today's behaviour (tools reported as dropped in `X-Mimo-Warnings`). Neither ever
-  answers as if the model had ignored its tools.
-* **Deployment**: `MIMO2API_TOOL_KEY` (compose passes it to both services; unset =
-  nothing is reachable). The gateway's port is not published: it is reachable on the
-  compose network, and clients come in through the middleware.
+* **`tools` on the wire is accepted, ignored and reported**: the request is served
+  as plain chat and `X-Mimo-Warnings` carries `tools ignored: this deployment does
+  not implement function calling`. Never a silent downgrade — a client that wants
+  tools runs them itself and sends the results back as ordinary messages.
+* **One key, one address**: `MIMO2API_API_KEYS` is the only credential and the
+  published port reaches the gateway directly, so `/v1/models`, `/v1/audio/*` and
+  `/v1/admin/*` need no relay, no `catch_all_proxy`, and no second credential.
+* **The vendored tree stays** (`deploy/toolforge/`, PROVENANCE.md) but nothing
+  builds or runs it; reviving it is a compose service plus an env var.
+* **Historical evidence** (live, before removal): `get_weather(city)` returned
+  `finish_reason: tool_calls` with `{"city":"上海"}` and the result fed back
+  produced the final answer (docs/live-findings.md, LIVE-TOOLS-001).
+
+## §5.7 Chat transport: non-streaming (ADR 0016)
+
+`MIMO2API_ALLOW_STREAM` defaults to **false**. A request carrying `stream: true`
+is refused with `400 stream_unsupported` before any pool or account work, with the
+fix in the message; the gateway does not convert it into a one-shot JSON body,
+because an SSE client cannot parse that and the failure would surface far from its
+cause. The SSE emission path, the incremental splitter and the session machinery
+(ADR 0009: chaining is streaming-only, non-streaming is one-shot) stay in the
+code and stay tested behind the switch — the test harness enables them, the
+deployed default does not.
 
 ## Appendix B — Open questions (to resolve during implementation spike)
 

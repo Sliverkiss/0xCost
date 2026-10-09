@@ -64,9 +64,13 @@ const (
 	// (adapter.MaxQueryChars: 50k fastchat, 90k others — SDD §2.8).
 	DefaultMaxQueryChars = 0
 	DefaultReplayCap     = 20
-	DefaultCooldown429   = 60 * time.Second
-	DefaultCooldown5xx   = 30 * time.Second
-	DefaultCooldownCap   = 10 * time.Minute
+	// DefaultAllowStream: chat is non-streaming on this deployment (ADR 0016).
+	// A request asking for stream:true is refused with a clear 400 rather than
+	// silently served as one blob; flip the env var for a client that needs SSE.
+	DefaultAllowStream = false
+	DefaultCooldown429 = 60 * time.Second
+	DefaultCooldown5xx = 30 * time.Second
+	DefaultCooldownCap = 10 * time.Minute
 	// DefaultCooldownTransport: the transport class has its own ladder (SDD
 	// §4.5.1) — a dead connection or a stall is less likely to be the account's
 	// fault than an upstream 5xx, so it cools for less and escalates less far.
@@ -92,6 +96,7 @@ type Config struct {
 	sessionRefresh       time.Duration
 	stickyTTL            time.Duration
 	stickyMax            int
+	allowStream          bool
 	sessionWait          time.Duration
 	sessionFork          string
 	maxInflight          int
@@ -164,6 +169,7 @@ func Load() (*Config, error) {
 		// dispatch is an explicit operator decision (MIMO2API_OTP_AUTO=true).
 		// A default of true meant any login attempt — including the startup
 		// catalog warm-up — silently spent an SMS.
+		allowStream:      getenvBool("MIMO2API_ALLOW_STREAM", DefaultAllowStream),
 		otpAuto:          getenvBool("MIMO2API_OTP_AUTO", false),
 		crossRegionAgree: getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
 	}
@@ -286,6 +292,11 @@ func (c *Config) StickyMax() int                { return c.stickyMax }
 // SessionWait is the bound a second streaming request waits for its session
 // before forking (SDD §4.3.1, REQ-8).
 func (c *Config) SessionWait() time.Duration { return c.sessionWait }
+
+// AllowStream reports whether chat may serve stream:true. False by default
+// (ADR 0016): this deployment is non-streaming, so the SSE emission path is
+// reachable only when an operator turns it back on.
+func (c *Config) AllowStream() bool { return c.allowStream }
 
 // SessionForkPolicy is "wait" (default) or "fork": whether a busy session is
 // waited for or forked immediately.

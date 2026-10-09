@@ -78,6 +78,9 @@ func newRecoveryStack(t *testing.T, auth2 string, otpAuto bool) *recoveryStack {
 		Accounts: store,
 		Sessions: session.New(session.Options{}),
 		Client:   client,
+		// These in-package stacks exercise the streaming path; the deployed
+		// default is non-streaming (ADR 0016).
+		AllowStream: true,
 	})
 	return &recoveryStack{ts: t, srv: srv, pool: p, store: store, passport: passport, upstream: up}
 }
