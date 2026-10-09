@@ -437,14 +437,12 @@ func (c *Client) SubmitOTP(ctx context.Context, ch *OTPChallenge, code string) (
 			}
 		}
 	}
-	if userID == "" {
-		userID = sess.PH // last resort: never leave the field empty-handed
-	}
+	// passToken/userID are best-effort: they are only needed for renewal, and
+	// the caller keeps the stored values when they are empty. The session
+	// cookie is the deliverable — never throw a working login away over a
+	// missing renewal token.
 	sess.UserID = userID
 	sess.PassToken = passToken
-	if passToken == "" {
-		return nil, errors.New("otp verified but no passToken was harvested")
-	}
 	return sess, nil
 }
 

@@ -183,3 +183,26 @@ func TestOTPSessionFromLandingChain(t *testing.T) {
 		t.Errorf("session identity = (%q,%q), want (rt-mock-1,123456)", sess.PassToken, sess.UserID)
 	}
 }
+
+// OTP-CHAIN-002: passport variants that plant the session but no passToken
+// must still complete — the session is the deliverable, passToken is only
+// needed for renewal and the caller keeps its stored value.
+func TestOTPWithoutPassTokenStillCompletes(t *testing.T) {
+	client, passport := otpEnv(t)
+	passport.OmitPassToken = true
+	_, err := client.Login(context.Background(), "13800000001", "pw")
+	var pending *ErrOTPPending
+	if !errors.As(err, &pending) {
+		t.Fatalf("err = %v, want ErrOTPPending", err)
+	}
+	sess, err := client.SubmitOTP(context.Background(), pending.Challenge, "654321")
+	if err != nil {
+		t.Fatalf("SubmitOTP: %v", err)
+	}
+	if sess.PassToken != "" {
+		t.Errorf("passToken = %q, want empty (the chain planted none)", sess.PassToken)
+	}
+	if !strings.Contains(sess.Cookie, `xiaomichatbot_serviceToken="st-mock-1"`) {
+		t.Errorf("cookie %q lacks the service token", sess.Cookie)
+	}
+}

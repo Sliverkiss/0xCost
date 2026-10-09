@@ -531,8 +531,15 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 		}
 		return "", "", err
 	}
-	acct.UserID = sess.UserID
-	acct.PassToken = sess.PassToken
+	// Keep the stored identity when the flow could not harvest a fresh one
+	// (the landing chain plants passToken only on some passport variants, and
+	// blanking it would break the next renewal).
+	if sess.UserID != "" {
+		acct.UserID = sess.UserID
+	}
+	if sess.PassToken != "" {
+		acct.PassToken = sess.PassToken
+	}
 	acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
 	if err := s.store.Update(acct); err != nil {
 		s.logger.Printf("accounts: persist session for %s: %v", accountID, err)

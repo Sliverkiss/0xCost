@@ -261,9 +261,12 @@ func (c *Client) stsExchange(ctx context.Context, location string) (*Session, er
 // following only the first hop (the old behaviour) lands on an intermediate
 // 302 and misses them entirely.
 func (c *Client) stsExchangeWithJar(ctx context.Context, location string, seed map[string]string) (*Session, error) {
-	jar := map[string]string{}
-	for k, v := range seed {
-		jar[k] = v
+	// Collect into the caller's jar: the chain plants passToken/cUserId and
+	// the caller (the OTP challenge) needs them afterwards. Copying into a
+	// throwaway map is what kept the harvested passToken permanently empty.
+	jar := seed
+	if jar == nil {
+		jar = map[string]string{}
 	}
 	hops, _, err := c.followChain(ctx, jar, location, maxChainHops)
 	if err != nil {

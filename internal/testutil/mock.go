@@ -379,6 +379,10 @@ type MockPassport struct {
 	OTPWrongCode     bool
 	IdentityCalls    []RecordedIdentityCall
 
+	// OmitPassToken drops passToken/userId from the landing chain's cookies,
+	// mirroring passport variants that plant the session but no renewal token.
+	OmitPassToken bool
+
 	// Cross-region consent chain (verified live 2026-10-09). ConsentChain
 	// makes /pass2/redirect answer with the real 302 chain ending on
 	// /fe/service/userCross; ConsentBody scripts the
@@ -577,9 +581,14 @@ func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {
 	// amendment).
 	body = strings.ReplaceAll(body, "https://account.xiaomi.com/pass2/redirect", p.URL()+"/pass2/redirect")
 	w.Header().Set("Content-Type", "text/html")
-	// The passport plants passToken + userId via Set-Cookie here.
-	http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
-	http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
+	// Passport plants passToken + userId once the login is actually
+	// completed — a code=0 verification demand (notificationUrl) does not
+	// plant them, so a login that only reaches the OTP challenge has no
+	// renewal token yet (live behaviour, 2026-10-09).
+	if !strings.Contains(body, "notificationUrl") {
+		http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
+	}
 	w.WriteHeader(status)
 	io.WriteString(w, body)
 }
@@ -608,8 +617,10 @@ func (p *MockPassport) serveSTS(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "text/html")
-	http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
-	http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
+	if !p.OmitPassToken {
+		http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
+	}
 	http.SetCookie(w, &http.Cookie{Name: "cUserId", Value: "cu-mock-1", Path: "/"})
 	http.SetCookie(w, &http.Cookie{Name: "serviceToken", Value: "st-mock-1", Path: "/"})
 	http.SetCookie(w, &http.Cookie{Name: "xiaomichatbot_serviceToken", Value: "st-mock-1", Path: "/"})
