@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,8 +186,10 @@ func (c *Client) setBrowserHeaders(h http.Header) {
 // pointers so they are omitted entirely when the caller gave none (TDD
 // API-022).
 type modelConfig struct {
-	Model           string   `json:"model"`
-	EnableThinking  bool     `json:"enableThinking"`
+	Model          string `json:"model"`
+	EnableThinking bool   `json:"enableThinking"`
+	// WebSearchStatus is the upstream search switch (disabled|auto|enabled).
+	// Defaults to disabled: search costs latency and tokens, so it is opt-in.
 	WebSearchStatus string   `json:"webSearchStatus"`
 	Temperature     *float64 `json:"temperature,omitempty"`
 	TopP            *float64 `json:"topP,omitempty"`
@@ -214,8 +217,10 @@ type ChatRequest struct {
 	ConversationID   string // 32-hex; empty = mint fresh in Chat
 	PreviousDialogID string // chaining anchor; empty = null (first turn)
 	EnableThinking   bool
-	Temperature      *float64
-	TopP             *float64
+	// WebSearchStatus is the upstream search switch; empty = "disabled".
+	WebSearchStatus string
+	Temperature     *float64
+	TopP            *float64
 	// OnPiece, when non-nil, receives content/reasoning pieces as they are
 	// split (streaming passthrough). Returning an error aborts the upstream
 	// request (client disconnect propagation, SDD §7.3).
@@ -227,6 +232,13 @@ type ChatRequest struct {
 	// dialogId event arrives (mid-stream) — the API layer advances the
 	// sticky entry even on client disconnect (SDD §7.3, TDD STICKY-010).
 	OnDialogID func(dialogID string)
+	// OnEvent, when non-nil, reports each upstream event's name and payload
+	// size as it arrives (debug tracing; M19).
+	OnEvent func(name string, dataLen int, prefix string)
+	// OnCitations, when non-nil, receives the accumulated web-search
+	// citations after each web_search event — a streaming client gets them
+	// before the stream ends (M19).
+	OnCitations func([]adapter.Citation)
 }
 
 // ChatResult is the completed turn.
@@ -235,6 +247,12 @@ type ChatResult struct {
 	Reasoning string
 	Content   string
 	Usage     *adapter.MiMoUsage
+	// Citations are the web-search results the upstream returned inline
+	// (M19); empty when it searched nothing.
+	Citations []adapter.Citation
+	// CitationWarnings holds reasons a web_search payload was skipped —
+	// surfaced at debug level so a silent drop cannot hide.
+	CitationWarnings []string
 }
 
 // UpstreamError is a non-200 chat response. StatusCode drives pool health
@@ -298,7 +316,7 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 		ModelConfig: modelConfig{
 			Model:           req.Model,
 			EnableThinking:  req.EnableThinking,
-			WebSearchStatus: "disabled",
+			WebSearchStatus: searchStatusOrDefault(req.WebSearchStatus),
 			Temperature:     req.Temperature,
 			TopP:            req.TopP,
 		},
@@ -356,6 +374,8 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	st.onPiece = req.OnPiece
 	st.onFirstByte = req.OnFirstByte
 	st.onDialogID = req.OnDialogID
+	st.onCitations = req.OnCitations
+	st.onEvent = req.OnEvent
 	if _, err := st.parseEvents(streamCtx, stream); err != nil {
 		st.finish() // flush splitter state even on failure
 		return nil, err
@@ -364,5 +384,21 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	if !st.sawDeltas {
 		return nil, ErrEmptyResponse
 	}
-	return &ChatResult{DialogID: dialogID, Reasoning: reasoning, Content: content, Usage: usage}, nil
+	return &ChatResult{
+		DialogID: dialogID, Reasoning: reasoning, Content: content,
+		Usage: usage, Citations: st.citations, CitationWarnings: st.citationsLog,
+	}, nil
+}
+
+// searchStatusOrDefault maps an empty search status to the disabled default
+// (M19): search adds latency and tokens, so a caller must ask for it.
+func searchStatusOrDefault(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "auto":
+		return "auto"
+	case "enabled":
+		return "enabled"
+	default:
+		return "disabled"
+	}
 }

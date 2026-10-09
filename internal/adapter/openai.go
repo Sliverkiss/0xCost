@@ -48,6 +48,24 @@ type Chunk struct {
 	Model   string        `json:"model"`
 	Choices []ChunkChoice `json:"choices"`
 	Usage   *Usage        `json:"usage,omitempty"`
+	// Citations is a gateway extension (M19): one extra chunk with
+	// choices:[] carries the web-search results. Standard clients ignore a
+	// chunk with no choices, so the stream stays compatible.
+	Citations []Citation `json:"citations,omitempty"`
+}
+
+// ShapeCitationsChunk returns the extension chunk carrying web-search
+// citations. It is emitted at most once, right before the usage chunk, and
+// only when the upstream actually returned results.
+func ShapeCitationsChunk(id, model string, created int64, cits []Citation) Chunk {
+	return Chunk{
+		ID:        id,
+		Object:    "chat.completion.chunk",
+		Created:   created,
+		Model:     model,
+		Choices:   []ChunkChoice{},
+		Citations: cits,
+	}
 }
 
 // NewChatID mints a chatcmpl-<uuid> id shared by all chunks of one stream
@@ -196,9 +214,10 @@ func reasoningOf(u Usage) int {
 
 // CompletionMessage is the non-streaming response message (SDD §5.4).
 type CompletionMessage struct {
-	Role             string `json:"role"`
-	Content          string `json:"content"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Role             string       `json:"role"`
+	Content          string       `json:"content"`
+	ReasoningContent string       `json:"reasoning_content,omitempty"`
+	Annotations      []Annotation `json:"annotations,omitempty"`
 }
 
 // CompletionChoice is the single element of the non-streaming choices array.
@@ -216,22 +235,33 @@ type Completion struct {
 	Model   string             `json:"model"`
 	Choices []CompletionChoice `json:"choices"`
 	Usage   Usage              `json:"usage"`
+	// Citations is a gateway extension (M19) duplicating the message
+	// annotations at the top level so a client can read sources without
+	// walking choices.
+	Citations []Citation `json:"citations,omitempty"`
 }
 
 // ShapeCompletion assembles the non-streaming response. reasoning_content is
-// omitted entirely when empty (TDD API-001).
-func ShapeCompletion(id, model string, created int64, content, reasoning string, usage Usage) Completion {
+// omitted entirely when empty (TDD API-001); citations arrive via the optional
+// slice (M19) and are omitted when there are none.
+func ShapeCompletion(id, model string, created int64, content, reasoning string, usage Usage, cits ...Citation) Completion {
 	return Completion{
 		ID:      id,
 		Object:  "chat.completion",
 		Created: created,
 		Model:   model,
 		Choices: []CompletionChoice{{
-			Index:        0,
-			Message:      CompletionMessage{Role: "assistant", Content: content, ReasoningContent: reasoning},
+			Index: 0,
+			Message: CompletionMessage{
+				Role:             "assistant",
+				Content:          content,
+				ReasoningContent: reasoning,
+				Annotations:      Annotations(cits),
+			},
 			FinishReason: "stop",
 		}},
-		Usage: usage,
+		Usage:     usage,
+		Citations: cits,
 	}
 }
 

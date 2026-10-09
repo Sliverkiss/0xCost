@@ -46,6 +46,10 @@ var (
 	errContextTooLong     = errors.New("query exceeds channel character cap")
 	errUnsupportedContent = errors.New("unsupported content part")
 	errMalformedRequest   = errors.New("malformed request body")
+	// errUnsupportedSearchStatus: a search switch outside disabled|auto|
+	// enabled would be silently coerced upstream, hiding a client typo
+	// (M19).
+	errUnsupportedSearchStatus = errors.New("unsupported web_search_status")
 )
 
 // MapError translates a chat-pipeline error into the §7.4 HTTP response.
@@ -90,9 +94,13 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
 			"upstream content filter rejected the query", 0)
 	case errors.Is(err, errContextTooLong):
-		// Channel char cap (SDD §2.7, TDD ERRMAP-010/API-016).
+		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long",
 			"query exceeds the model channel's character limit", 0)
+	case errors.Is(err, errUnsupportedSearchStatus):
+		// Search switch (M19, TDD WS-002).
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_search_status",
+			"web_search_status must be one of: disabled, auto, enabled", 0)
 	case errors.Is(err, errUnsupportedContent):
 		// Image content parts (SDD §5.2, TDD API-012).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
@@ -113,6 +121,11 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 	case errors.Is(err, mimo.ErrAudioTimeout):
 		writeError(w, http.StatusGatewayTimeout, "api_error", "upstream_audio_timeout",
 			"the upstream audio task did not finish in time: "+err.Error(), 0)
+	case errors.Is(err, errAudioTextTooLong):
+		// The upstream's own 1024-character cap (TTS-HARDENING): the caller's
+		// text is the problem, so answer 400 rather than a 502.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "input_too_long",
+			"the upstream refuses speech longer than 1024 characters per request; "+err.Error(), 0)
 	case errors.Is(err, mimo.ErrAudioFailed):
 		writeError(w, http.StatusBadGateway, "api_error", "upstream_audio_failed",
 			"the upstream audio task failed: "+err.Error(), 0)

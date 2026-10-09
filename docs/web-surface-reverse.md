@@ -109,16 +109,25 @@
 
 - 请求：`modelConfig.webSearchStatus ∈ disabled|auto|enabled`（SPA 枚举 `RATIO/TRUNCATE` 对应
   `tip_ratio`/`tip_truncate` 事件，属截断提示）。
-- 模型能力位：`bot/config` → `modelConfigListNg[].features.webSearch ∈ 0|1|2`。
+- 模型能力位：**本账号实测 `modelConfigListNg[]` 只有 `{model,name,pageType,redirectTo,intro}`，
+  没有 `features`**。能力位在 `modelConfigList[]`（chat 行）：`webSearchDefaultStatus`
+  (`auto`|`disabled`|缺省)、`thinkingDefaultOn`、`showWebSearch`（实测全为 `false`，是 UI 开关，
+  **不代表不支持检索**）。SPA 里的枚举是 `DISABLED=0 / ENABLED=1 / ENABLED_BY_DEFAULT=2`，
+  本项目的 `capabilities.web_search` 即按此语义从 `webSearchDefaultStatus` 推导。
 - **实测**：即便 `webSearchStatus:"disabled"`，上游仍会返回检索事件（三种模式都观察到），
   即该字段不构成硬闸门。
 - SSE 事件序列：`dialogId` → `doc` → `web_search` → `message`… → `usage` → `finish`：
   - `event:doc` `data:{"content":"webSearch"}` —— 检索开始标记
   - `event:web_search` `data:[{...}]` —— **结果数组**，每项：
-    `{id:"2026-10-09_<32hex>_2", text:"<网页正文，可达数十 KB>", metadata:"{}"(字符串),
-      name:"<标题>", url:"<原文>", displayUrl:"www.example.cn", snippet:"<摘要>",
-      usedContent:"False"(字符串布尔)}`
-  - 一次检索最多 12 条；总体 payload 可达 ~100 KB。
+    `{id:"2026-10-09_<32hex>_2", text:"<网页正文，可达数十 KB>", metadata:{}(**对象**),
+      name:"<标题>", url:"<原文>", displayUrl:"mimo.mi.com", snippet:"<摘要>",
+      usedContent:false(**JSON 布尔**)}`
+  - **实测（2026-10-09，两次真机抓取，本项目踩过的坑）**：`usedContent` 是布尔而不是
+    `"True"` 字符串、`metadata` 是对象而不是 `"{}"` 字符串。字段类型写错会让**整个数组
+    反序列化失败** → 结果被静默丢弃（曾导致"检索有结果但引用为 0"）。因此解析器按字段
+    容错：字段怪形状只损失该字段，不损失该条引用，更不失败整轮。
+  - 一次检索最多 16 条（早期抓包见 12 条）；单帧 payload 实测 **94 KB**（其中正文占绝大部分）。
+  - 正文 `text` **不向前透出**（数十 KB 会撑爆客户端上下文），只在 debug 日志里记录长度。
 
 ## 6. 用量扩展字段
 

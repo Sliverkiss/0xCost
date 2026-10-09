@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,14 +33,33 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		am[i] = adapter.Msg{Role: m.Role, Content: m.Content}
 	}
 
+	// Search switch (M19, TDD WS-001/002/003). The ":online" model suffix is
+	// shorthand for web_search_status=enabled; an explicit field wins when
+	// both are present.
+	search, err := req.searchStatus()
+	if err != nil {
+		s.MapError(w, err)
+		return
+	}
+	requested := req.Model
+	if base, ok := strings.CutSuffix(requested, onlineSuffix); ok {
+		requested = base
+		if search == "" {
+			search = "enabled"
+		}
+	}
+	if search == "" {
+		search = "disabled"
+	}
+
 	// Model resolution (SDD §5.2, TDD API-013).
-	model, fastchat, err := adapter.NormalizeModel(req.Model, s.defaultModel, nil)
+	model, fastchat, err := adapter.NormalizeModel(requested, s.defaultModel, nil)
 	if err != nil {
 		s.MapError(w, err)
 		return
 	}
 
-	// Client-side char caps BEFORE any pool interaction (SDD §2.7, TDD
+	// Client-side char caps BEFORE any pool interaction (SDD §2.8, TDD
 	// API-016: zero upstream requests recorded).
 	cap := adapter.MaxQueryChars(model)
 	for _, m := range msgs {
@@ -60,6 +80,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		model:     model,
 		fastchat:  fastchat,
 		thinking:  req.thinkingEnabled(),
+		search:    search,
+		citations: req.citationsWanted(),
 		temp:      req.Temperature,
 		topP:      req.TopP,
 		stream:    req.Stream,
@@ -80,6 +102,10 @@ type chatPipeline struct {
 	topP      *float64
 	stream    bool
 	requested string
+	// search is the upstream webSearchStatus (disabled|auto|enabled) and
+	// citations says whether citations are returned (M19).
+	search    string
+	citations bool
 }
 
 // attemptPlan is the resolved plan for one upstream attempt.
@@ -399,6 +425,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 	var usageSum adapter.Usage
 	var lastDialogID string
 	var gotContent bool
+	var citations []adapter.Citation
 
 	for qi, query := range plan.queries {
 		prev := plan.prevDialogID
@@ -413,8 +440,19 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			ConversationID:   plan.conversationID,
 			PreviousDialogID: prev,
 			EnableThinking:   p.thinking,
+			WebSearchStatus:  p.search,
 			Temperature:      p.temp,
 			TopP:             p.topP,
+			// Debug trace: which upstream events this turn actually
+			// produced (M19 — the answer to "why are citations empty?").
+			OnEvent: func(name string, dataLen int, prefix string) {
+				s.debugf("chat: upstream event %s (%d bytes) %s", name, dataLen, prefix)
+			},
+			// Capture citations as they arrive so a streaming client can be
+			// handed them before [DONE] (M19).
+			OnCitations: func(cits []adapter.Citation) {
+				citations = cits
+			},
 			OnFirstByte: func() {
 				s.pool.RecordFirstByte(lease.ID, time.Since(attemptStart))
 			},
@@ -483,7 +521,17 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, res.Reasoning, usageSum)
+			cits := res.Citations
+			if !p.citations {
+				cits = nil // include_citations:false → search still ran
+			}
+			for _, w := range res.CitationWarnings {
+				s.debugf("chat: skipping a web_search payload: %s", w)
+			}
+			if len(cits) > 0 {
+				s.debugf("chat: turn returned %d web-search citations", len(cits))
+			}
+			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, res.Reasoning, usageSum, cits...)
 			if err := encodeJSON(w, comp); err != nil {
 				return false, err
 			}
@@ -498,6 +546,15 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 		// Zero pieces reached the client: empty response — retryable
 		// pre-byte (SDD §7.1, TDD SSE-013).
 		return false, mimo.ErrEmptyResponse
+	}
+	// Citations go out before the finish chunk so a client that stops reading
+	// at finish_reason still sees them (M19). choices:[] keeps standard
+	// clients compatible.
+	if p.citations && len(citations) > 0 {
+		s.debugf("chat: turn returned %d web-search citations", len(citations))
+		if err := sw.data(adapter.EncodeChunk(adapter.ShapeCitationsChunk(id, modelEcho, created, citations))); err != nil {
+			return true, err
+		}
 	}
 	if err := sw.data(adapter.EncodeChunk(adapter.ShapeFinishChunk(id, modelEcho, created))); err != nil {
 		return true, err
@@ -687,3 +744,8 @@ func isContentErr(err error) bool {
 	var us *mimo.ErrUpstreamStream
 	return errors.As(err, &cf) || errors.As(err, &us)
 }
+
+// onlineSuffix is the model-id shorthand for web_search_status=enabled
+// ("mimo-v2.6-flash:online"), mirroring the convention OpenAI-compatible
+// clients already use (M19, TDD WS-003).
+const onlineSuffix = ":online"

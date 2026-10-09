@@ -1,0 +1,20 @@
+event:dialogId
+data:{"type":null,"content":"dlg-ws-01","usage":null}
+
+event:doc
+data:{"content":"webSearch"}
+
+event:web_search
+data:[{"id":"2026-10-09_9f2c4a5b6d7e8f90a1b2c3d4e5f60718_2","text":"页面正文（真机可达数十 KB，这里缩短）","metadata":"{}","name":"MiMo Studio 官方文档","url":"https://aistudio.xiaomimimo.com/docs","displayUrl":"aistudio.xiaomimimo.com","snippet":"MiMo Studio 提供联网检索与语音能力。","usedContent":true},{"id":"2026-10-09_9f2c4a5b6d7e8f90a1b2c3d4e5f60718_1","text":"另一页正文","metadata":"{}","name":"示例站点","url":"https://www.example.cn/post","displayUrl":"www.example.cn","snippet":"示例摘要。","usedContent":false}]
+
+event:message
+data:{"type":"text","content":"检索到","usage":null}
+
+event:message
+data:{"type":"text","content":"两条来源。","usage":null}
+
+event:usage
+data:{"promptTokens":2242,"completionTokens":78,"totalTokens":2320,"nativeUsage":{"prompt_tokens":2242,"completion_tokens":78,"total_tokens":2320,"prompt_tokens_details":{"cached_tokens":100},"completion_tokens_details":{"reasoning_tokens":32}}}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}

@@ -93,9 +93,22 @@ type streamer struct {
 	// onDialogID, when set, is invoked with the captured dialogId as soon
 	// as the dialogId event arrives (client.go wires ChatRequest.OnDialogID).
 	onDialogID func(dialogID string)
+	// citations accumulates web-search results across events (the upstream
+	// may send more than one web_search event per turn).
+	citations []adapter.Citation
+	// onCitations, when set, receives the accumulated citations after each
+	// web_search event so a streaming client can be handed them before the
+	// stream ends.
+	onCitations func([]adapter.Citation)
 	// onTap, when set, observes every parsed event before dispatch
 	// (test hook for event-order assertions).
 	onTap func(ev Event)
+	// onEvent, when set, reports every event's name and payload size (plus a
+	// payload prefix for web_search, whose shape is the thing an operator
+	// needs when citations come back empty). Debug-level only.
+	onEvent func(name string, dataLen int, prefix string)
+	// citationsLog records skipped citation payloads for the debug log.
+	citationsLog []string
 }
 
 func newStreamer() *streamer {
@@ -114,6 +127,13 @@ type msgPayload struct {
 func (s *streamer) handleEvent(ev Event) (bool, error) {
 	if s.onTap != nil {
 		s.onTap(ev)
+	}
+	if s.onEvent != nil {
+		prefix := ""
+		if ev.Name == "web_search" {
+			prefix = truncateForLog(ev.Data, 160)
+		}
+		s.onEvent(ev.Name, len(ev.Data), prefix)
 	}
 	if !s.firstFired {
 		s.firstFired = true
@@ -166,8 +186,29 @@ func (s *streamer) handleEvent(ev Event) (bool, error) {
 		return false, classifyInBandError(p.Content)
 	case "sensitive_query", "sensitive_title":
 		return false, &ErrContentFilter{Reason: ev.Name}
-	case "web_search", "doc", "tip_ratio", "tip_truncate":
-		// Search/parse progress: ignored (web search disabled in v1).
+	case "web_search":
+		// Search results (M19). Tolerated strictly: a malformed payload is
+		// logged and skipped — it must never break the turn, and the parse
+		// does not depend on the request having asked for search (the
+		// upstream returns these even when webSearchStatus is disabled).
+		cits, perr := parseWebSearch(ev.Data)
+		if perr != nil {
+			// Record, never fail the turn: a client that asked for an answer
+			// still gets one. The reason surfaces at debug level.
+			s.citationsLog = append(s.citationsLog, perr.Error())
+		}
+		if len(cits) > 0 {
+			// Index each result by arrival order across events.
+			for i := range cits {
+				cits[i].Index = len(s.citations) + i
+			}
+			s.citations = append(s.citations, cits...)
+			if s.onCitations != nil {
+				s.onCitations(s.citations)
+			}
+		}
+	case "doc", "tip_ratio", "tip_truncate":
+		// Search/parse progress: nothing client-visible to carry.
 	}
 	return false, nil
 }
@@ -259,4 +300,123 @@ func (s *streamer) parseEvents(ctx context.Context, r io.Reader) (bool, error) {
 			return false, fmt.Errorf("sse read: %w", err)
 		}
 	}
+}
+
+// The `web_search` payload is schema-loose and the two live surprises were
+// both "one odd field killed the whole array": `usedContent` is a JSON boolean
+// (not the "True" string an earlier capture showed) and `metadata` is an
+// OBJECT (not the "{}" string that capture showed). So each item is decoded
+// field by field with per-field tolerance: a strange field costs that field,
+// never the citation and never the turn.
+//
+// Live shape (verified 2026-10-09): a bare array of up to 16 entries, ~94 KB,
+// fields {id, text (page body, tens of KB), metadata, name, url, displayUrl,
+// snippet, usedContent}.
+
+// parseWebSearch turns a `web_search` payload into citations. A payload that is
+// not JSON at all is reported (never silently skipped); individual odd fields
+// are not — they degrade one citation's richness, not the result set.
+func parseWebSearch(data string) ([]adapter.Citation, error) {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	items, err := decodeWebSearchItems(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]adapter.Citation, 0, len(items))
+	for _, it := range items {
+		url := rawString(it["url"])
+		if url == "" {
+			// A citation without a source is noise.
+			continue
+		}
+		out = append(out, adapter.Citation{
+			Title:      rawString(it["name"]),
+			URL:        url,
+			DisplayURL: rawString(it["displayUrl"]),
+			Snippet:    rawString(it["snippet"]),
+			Used:       rawBool(it["usedContent"]),
+		})
+	}
+	return out, nil
+}
+
+// decodeWebSearchItems accepts both shapes the upstream has used: a bare array
+// and an object wrapping the array in `data`.
+func decodeWebSearchItems(trimmed string) ([]map[string]json.RawMessage, error) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
+		var wrapped struct {
+			Data []map[string]json.RawMessage `json:"data"`
+		}
+		if werr := json.Unmarshal([]byte(trimmed), &wrapped); werr != nil {
+			return nil, fmt.Errorf("web_search payload unreadable: %w", err)
+		}
+		items = wrapped.Data
+	}
+	return items, nil
+}
+
+// rawString reads a JSON string; a null, number, object or array yields "" so
+// one unexpected type cannot sink the citation.
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	return ""
+}
+
+// rawBool reads the boolean forms seen in the wild: true/false, "True"/"False"
+// (case-insensitive), 1/0.
+func rawBool(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b
+	}
+	switch strings.ToLower(rawString(raw)) {
+	case "true", "1":
+		return true
+	default:
+		return false
+	}
+}
+
+// truncateForLog shortens a payload for the debug trace without splitting
+// UTF-8 runes.
+func truncateForLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// flexBool accepts the boolean forms the upstream mixes: true/false, the
+// strings "true"/"false"/"True"/"False", and 0/1. Anything else is false.
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(raw []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	switch strings.ToLower(s) {
+	case "true", "1":
+		*b = true
+	case "false", "0", "null", "":
+		*b = false
+	default:
+		*b = false
+	}
+	return nil
 }

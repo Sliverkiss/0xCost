@@ -53,6 +53,10 @@ var (
 	// FixtureSSEBasic: dialogId → 3 text deltas → usage → finish [DONE]
 	// (TDD SSE-001, API-001/002).
 	FixtureSSEBasic = mustFixture("sse_basic.txt")
+	// FixtureSSEWebSearch: dialogId → doc → web_search (two results) →
+	// message deltas → usage → finish — the real search frame shape captured
+	// from the Studio (M19, TDD SSE-015/WS-004).
+	FixtureSSEWebSearch = mustFixture("sse_websearch.txt")
 	// FixtureSSECRLF: FixtureSSEBasic with \r\n line endings (TDD SSE-002).
 	FixtureSSECRLF = mustFixture("sse_crlf.txt")
 	// FixtureSSENoSpace: mixed `event: x` (space) and `event:x` (MiMo

@@ -34,8 +34,15 @@ type chatRequest struct {
 
 	// Thinking opt-ins (SDD §5.2): enable_thinking or
 	// reasoning:{"type":"enabled"}.
-	EnableThinking bool           `json:"enable_thinking"`
-	Reasoning      *reasoningBody `json:"reasoning"`
+	EnableThinking bool `json:"enable_thinking"`
+	// Search controls (M19). web_search_status maps 1:1 onto the upstream
+	// modelConfig.webSearchStatus; the model suffix ":online" is shorthand
+	// for "enabled" (TDD WS-001/003).
+	WebSearchStatus string `json:"web_search_status"`
+	// IncludeCitations defaults to true: false suppresses the citations /
+	// annotations in the response while the upstream still searches.
+	IncludeCitations *bool          `json:"include_citations"`
+	Reasoning        *reasoningBody `json:"reasoning"`
 
 	// Dropped-but-recorded fields.
 	MaxTokens        int             `json:"max_tokens"`
@@ -62,6 +69,7 @@ type reasoningBody struct {
 var knownRequestFields = map[string]bool{
 	"model": true, "messages": true, "stream": true, "temperature": true,
 	"top_p": true, "enable_thinking": true, "reasoning": true,
+	"web_search_status": true, "include_citations": true,
 	"max_tokens": true, "max_completion_tokens": true, "tools": true,
 	"tool_choice": true, "functions": true, "response_format": true,
 	"n": true, "seed": true, "stop": true, "user": true,
@@ -184,4 +192,22 @@ func (req *chatRequest) droppedFields() []string {
 		dropped = append(dropped, "user")
 	}
 	return append(dropped, req.Other...)
+}
+
+// searchStatus validates web_search_status (M19). Empty means "not given" and
+// is resolved later (the model suffix may still turn search on).
+func (r chatRequest) searchStatus() (string, error) {
+	v := strings.ToLower(strings.TrimSpace(r.WebSearchStatus))
+	switch v {
+	case "", "auto", "enabled", "disabled":
+		return v, nil
+	default:
+		return "", errUnsupportedSearchStatus
+	}
+}
+
+// citationsWanted reports whether the response should carry citations.
+// Default true: the sources are the point of a search turn (M19).
+func (r chatRequest) citationsWanted() bool {
+	return r.IncludeCitations == nil || *r.IncludeCitations
 }
