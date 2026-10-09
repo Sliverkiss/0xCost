@@ -1028,8 +1028,10 @@ transient business-code failure under load) → one `multiMedias` entry per imag
 **the turn whose message carried it** (`mediaType: "image"`, plus the parse result's
 `id` and `tokenUsage`). The media item carries the full field set, because the probe
 showed a stripped item is refused. **`image_url.detail` is validated
-(`auto`/`low`/`high`) and then reported in `X-Mimo-Warnings`**: the channel's parse
-call takes only `fileUrl`/`objectName`/`model` (the verified shape, and the sibling
+(`auto`/`low`/`high`) and then reported in `X-Mimo-Warnings` under its own clause,
+`accepted but not honoured`** — separate from `ignored unsupported fields`, which is
+for fields we do not know at all (a caller must not read one line for both). The
+channel's parse call takes only `fileUrl`/`objectName`/`model` (the verified shape, and the sibling
 client sends nothing else), so the level has nowhere to go — the one thing it must
 never do is look applied. Limits are client-facing guards, documented as
 guards: `MIMO2API_MAX_IMAGES` (default 10) and `MIMO2API_MAX_IMAGE_BYTES` (default

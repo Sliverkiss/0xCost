@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -299,6 +300,52 @@ func imageURLSupported(u string) bool {
 	}
 }
 
+// warningsHeader renders X-Mimo-Warnings as two separate statements, because they
+// mean different things to a caller:
+//
+//   - "ignored unsupported fields" — the request named something we do not know at
+//     all (tools, max_tokens, seed…): a stripped field.
+//   - "accepted but not honoured" — a real OpenAI field we parse and validate, but
+//     which the channel has no equivalent for (image_url.detail,
+//     web_search_options.search_context_size). It is reported because a client that
+//     asked for "high" fidelity, or a bigger search context, must not be left
+//     believing it got it — silence there is a lie by omission.
+func (req *chatRequest) warningsHeader() string {
+	var clauses []string
+	if dropped := req.droppedFields(); len(dropped) > 0 {
+		clauses = append(clauses, fmt.Sprintf("ignored unsupported fields: %v", dropped))
+	}
+	if n := req.notHonouredFields(); len(n) > 0 {
+		clauses = append(clauses, fmt.Sprintf("accepted but not honoured: %v", n))
+	}
+	return strings.Join(clauses, "; ")
+}
+
+// notHonouredFields names the fields we understand but cannot act on. Distinct
+// from droppedFields, which are fields we do not understand at all.
+func (req *chatRequest) notHonouredFields() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	// OpenAI's search_context_size has no upstream counterpart (the switch is only
+	// disabled|auto|enabled): the search happens as asked, at the platform's own
+	// granularity.
+	if req.WebSearchOptions != nil && strings.TrimSpace(req.WebSearchOptions.SearchContextSize) != "" {
+		add("web_search_options.search_context_size")
+	}
+	for _, m := range req.Messages {
+		for range imageDetails(m.Content) {
+			add("image_url.detail")
+		}
+	}
+	return out
+}
+
 // droppedFields names every stripped request field for X-Mimo-Warnings
 // (SDD §5.2, TDD API-008/009).
 func (req *chatRequest) droppedFields() []string {
@@ -332,21 +379,6 @@ func (req *chatRequest) droppedFields() []string {
 	}
 	if req.User != "" {
 		dropped = append(dropped, "user")
-	}
-	// OpenAI's search_context_size has no upstream counterpart (the switch is
-	// disabled|auto|enabled): search happens as asked, and the client is told
-	// the granularity was not honoured instead of assuming it was.
-	if req.WebSearchOptions != nil && strings.TrimSpace(req.WebSearchOptions.SearchContextSize) != "" {
-		dropped = append(dropped, "web_search_options.search_context_size")
-	}
-	// OpenAI's image_url.detail has no counterpart on the channel's parse surface,
-	// so the image is processed at the channel's own level and the client is told
-	// the level was not applied.
-	for _, m := range req.Messages {
-		if len(imageDetails(m.Content)) > 0 {
-			dropped = append(dropped, "image_url.detail")
-			break
-		}
 	}
 	return append(dropped, req.Other...)
 }

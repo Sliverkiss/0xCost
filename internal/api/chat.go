@@ -121,9 +121,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dropped-field warning header (SDD §5.2, TDD API-008/009).
-	if dropped := req.droppedFields(); len(dropped) > 0 {
-		w.Header().Set("X-Mimo-Warnings", fmt.Sprintf("ignored unsupported fields: %v", dropped))
+	// Dropped-field warning header (SDD §5.2, TDD API-008/009, IMG-012).
+	if warn := req.warningsHeader(); warn != "" {
+		w.Header().Set("X-Mimo-Warnings", warn)
 	}
 
 	p := &chatPipeline{

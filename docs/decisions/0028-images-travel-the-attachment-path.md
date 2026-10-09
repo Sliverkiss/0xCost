@@ -86,7 +86,10 @@ never touches the query budget.**
   shape that this work initially ignored. It is now **validated** (a value outside
   the set is a 400 `unsupported_image_detail` before any account work) and, because
   the channel's parse call has no level parameter (verified shape; the sibling client
-  sends none either), **reported as dropped** in `X-Mimo-Warnings`. A knob that looks
+  sends none either), **reported as `accepted but not honoured`** — its own clause
+  in `X-Mimo-Warnings`, kept distinct from `ignored unsupported fields` (fields we do
+  not know at all): reporting a standard field as "unsupported" would be as wrong as
+  reporting nothing. A knob that looks
   applied but is not would be worse than one that announces itself (IMG-009/010).
 - Tests: `internal/api/image_test.go` IMG-001..010 (the mock upstream already serves
   the resource surface; the tests assert the recorded `multiMedias`, the per-turn

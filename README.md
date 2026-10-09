@@ -124,8 +124,10 @@ body or an oversized file is a named 400 (`image_fetch_failed`,
 `unsupported_image_type`, `image_too_large`, `too_many_images`,
 `unsupported_image_detail`) and never cools an account down. OpenAI's
 `image_url.detail` (`auto`/`low`/`high`) is accepted and reported in
-`X-Mimo-Warnings` as dropped: the channel's parse surface has no level knob, and a
-field that looks applied but is not is worse than one that says so. A message with images and no text is sent with a neutral query
+`X-Mimo-Warnings` as `accepted but not honoured` — a clause of its own, next to
+`ignored unsupported fields`, which is reserved for fields we do not know at all.
+The channel's parse surface has no level knob, and a field that looks applied but is
+not is worse than one that says so. A message with images and no text is sent with a neutral query
 (`请描述这张图片。`).
 
 **Web search**: with `web_search_options` present, `web_search_status: enabled`

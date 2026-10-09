@@ -332,6 +332,42 @@ func TestIMG010InvalidImageDetailRejected(t *testing.T) {
 	}
 }
 
+// IMG-012: the warning header keeps two different statements apart. A field we do
+// not know at all (tools) and a real OpenAI field we know but cannot act on
+// (image_url.detail, web_search_options.search_context_size) are not the same
+// thing, and a caller reading one line for both would conclude the wrong one.
+func TestIMG012WarningHeaderSeparatesUnknownFromUnhonoured(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := fmt.Sprintf(`{"model":"mimo-v2.6-flash","stream":false,
+		"tools":[{"type":"function","function":{"name":"x"}}],
+		"web_search_options":{"search_context_size":"high"},
+		"messages":[{"role":"user","content":[
+			{"type":"text","text":"这是什么"},
+			{"type":"image_url","image_url":{"url":%q,"detail":"high"}}]}]}`, pngDataURL())
+	resp, err := ts.Chat(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", resp.StatusCode, raw)
+	}
+	warn := resp.Header.Get("X-Mimo-Warnings")
+	if !strings.Contains(warn, "ignored unsupported fields: [tools]") {
+		t.Errorf("warnings = %q, want the unknown field named as ignored", warn)
+	}
+	if !strings.Contains(warn, "accepted but not honoured: [web_search_options.search_context_size image_url.detail]") {
+		t.Errorf("warnings = %q, want the understood-but-unapplied fields named separately, search context first, each once", warn)
+	}
+	if !strings.Contains(warn, "; ") {
+		t.Errorf("warnings = %q, want the two statements separated", warn)
+	}
+}
+
 // IMG-011: the OpenAI vocabulary stops at this package. The body that actually
 // goes to the channel is the channel's own shape (chatPayload), so an `image_url`,
 // a `detail` or an image's bytes must never appear on the wire — asserting the
