@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yg/mimo2api/internal/accounts"
@@ -38,8 +39,10 @@ type Server struct {
 	// Web-surface audio + catalog (audio.go).
 	audioConvs     *mimo.ConversationCache
 	botCfg         botConfigCache
+	catalogTTL     time.Duration
 	audioPoll      time.Duration
 	ttsTimeout     time.Duration
+	ttsMaxTimeout  time.Duration
 	asrTimeout     time.Duration
 	speechMaxChars int
 	defaultVoice   string
@@ -70,8 +73,14 @@ type Options struct {
 	Debug        bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
 
 	// Audio surface (M18): poll cadence and per-flow deadlines.
-	AudioPoll      time.Duration // TTS/ASR status poll interval (default 1s)
-	TTSTimeout     time.Duration // synthesis deadline (default 60s)
+	AudioPoll time.Duration // TTS/ASR status poll interval (default 1s)
+	// CatalogTTL is the per-account Studio catalog cache lifetime
+	// (default 10m, M19 §3).
+	CatalogTTL time.Duration
+	TTSTimeout time.Duration // synthesis deadline for one piece (default 60s)
+	// TTSMaxTimeout caps the per-piece budget when the text scales it up
+	// (default 15m).
+	TTSMaxTimeout  time.Duration
 	ASRTimeout     time.Duration // transcription deadline (default 120s)
 	SpeechMaxChars int           // /v1/audio/speech input cap (default 10000)
 	DefaultVoice   string        // upstream voice id/name; empty = first in the catalog
@@ -91,6 +100,9 @@ func New(opts Options) *Server {
 	}
 	if opts.AudioPoll <= 0 {
 		opts.AudioPoll = time.Second
+	}
+	if opts.TTSMaxTimeout <= 0 {
+		opts.TTSMaxTimeout = 15 * time.Minute
 	}
 	if opts.TTSTimeout <= 0 {
 		opts.TTSTimeout = 60 * time.Second
@@ -125,7 +137,9 @@ func New(opts Options) *Server {
 		debug:          opts.Debug,
 		audioConvs:     mimo.NewConversationCache(0),
 		audioPoll:      opts.AudioPoll,
+		catalogTTL:     opts.CatalogTTL,
 		ttsTimeout:     opts.TTSTimeout,
+		ttsMaxTimeout:  opts.TTSMaxTimeout,
 		asrTimeout:     opts.ASRTimeout,
 		speechMaxChars: opts.SpeechMaxChars,
 		defaultVoice:   opts.DefaultVoice,
@@ -214,79 +228,200 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// modelJSON is the OpenAI model object (SDD §5.1).
+// modelJSON is the OpenAI model object (SDD §5.1) plus this project's
+// documented extension fields (M19 §3): capabilities, page_type, tasks.
 type modelJSON struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID           string            `json:"id"`
+	Object       string            `json:"object"`
+	Created      int64             `json:"created"`
+	OwnedBy      string            `json:"owned_by"`
+	Name         string            `json:"name,omitempty"`
+	Capabilities modelCapabilities `json:"capabilities"`
+	PageType     string            `json:"page_type,omitempty"`
+	Tasks        []string          `json:"tasks,omitempty"`
+	// ContextSize is the upstream's own context label ("1M") when it states
+	// one; absent when it does not, rather than guessed.
+	ContextSize string `json:"context_size,omitempty"`
+	// Source says where the row came from: "account" (the deployment's own
+	// Studio catalog) or "static" (the built-in fallback table, used only
+	// when the account read failed). Account wins on conflict.
+	Source string `json:"source"`
+}
+
+type modelCapabilities struct {
+	// WebSearch: 0 = no search surface, 1 = searchable (off by default),
+	// 2 = searchable and on by default.
+	WebSearch int    `json:"web_search"`
+	Thinking  bool   `json:"thinking"`
+	Audio     string `json:"audio"`
 }
 
 // handleModels lists the catalog in OpenAI list shape (TDD API-005).
 //
-// The ids come from the account's own Studio catalog (bot/config
-// `modelConfigListNg`, chat-capable entries first) so a client sees what this
-// deployment can actually serve, with the static list as fallback when the
-// upstream read fails — a catalog read must never take the endpoint down.
+// The rows come from the account's own Studio catalog (bot/config), unioned
+// across accounts, with the static table as a floor and fallback: an upstream
+// hiccup must never take the endpoint down (M19 §3).
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.modelsList(r.Context()))
 }
 
 func (s *Server) modelsList(ctx context.Context) map[string]any {
-	ids := s.liveModelIDs(ctx)
-	data := make([]modelJSON, 0, len(ids))
-	for _, m := range ids {
-		data = append(data, modelJSON{ID: m, Object: "model", Created: 1700000000, OwnedBy: "xiaomi"})
+	entries := s.catalogEntries(ctx)
+	data := make([]modelJSON, 0, len(entries))
+	for _, e := range entries {
+		data = append(data, modelEntryDTO(e))
 	}
 	return map[string]any{"object": "list", "data": data}
 }
 
-// liveModelIDs is the static catalog plus every chat-capable id the account
-// reports, in a stable order (static first, then upstream additions).
-func (s *Server) liveModelIDs(ctx context.Context) []string {
-	ids := make([]string, 0, len(adapter.DefaultModels)+8)
-	seen := map[string]bool{}
-	add := func(id string) {
-		if id == "" || seen[id] {
-			return
-		}
-		seen[id] = true
-		ids = append(ids, id)
+// modelEntryDTO renders one catalog entry, so the list and the single-model
+// endpoint cannot drift apart (M19 §3).
+func modelEntryDTO(e adapter.CatalogEntry) modelJSON {
+	source := adapter.SourceAccnt
+	if e.Static {
+		source = adapter.SourceFallo
 	}
+	return modelJSON{
+		ID:      e.ID,
+		Object:  "model",
+		Created: 1700000000,
+		OwnedBy: "xiaomi-mimo",
+		Name:    e.Name,
+		Capabilities: modelCapabilities{
+			WebSearch: e.Web,
+			Thinking:  e.Think,
+			Audio:     e.Audio,
+		},
+		PageType:    e.Page,
+		Tasks:       adapter.Tasks(e.Page),
+		ContextSize: e.NToken,
+		Source:      source,
+	}
+}
+
+// catalogEntries builds the deployment-wide catalog: the static floor merged
+// with every account's own view, capabilities taken at their maximum per id
+// (M19 §3).
+func (s *Server) catalogEntries(ctx context.Context) []adapter.CatalogEntry {
+	entries := make([]adapter.CatalogEntry, 0, len(adapter.DefaultModels)+24)
 	for _, m := range adapter.DefaultModels {
-		add(m)
+		// Fallback values: a chat model that is searchable but not on by
+		// default. The account catalog overrides these when it is readable.
+		entries = append(entries, adapter.CatalogEntry{
+			ID: m, Page: adapter.PageChat, Web: 1, Audio: adapter.AudioNone, Static: true,
+		})
 	}
-	err := s.withAccount(ctx, func(cookie, ph, _ string) error {
-		cfg, cerr := s.botConfig(ctx, cookie, ph)
-		if cerr != nil {
-			return cerr
+
+	ids := s.pool.IDs()
+	cfgByID := s.accountCatalogs(ctx, ids)
+	for _, id := range ids {
+		if cfg, ok := cfgByID[id]; ok {
+			entries = append(entries, accountCatalogEntries(cfg)...)
 		}
-		for _, m := range cfg.Models {
-			// pageType "chat" is what /v1/chat/completions serves; an empty
-			// pageType is treated as chat (older catalog rows omit it).
-			if m.PageType == "" || m.PageType == mimo.ConversationKindChat {
-				add(m.Model)
+	}
+	if len(cfgByID) == 0 {
+		s.debugf("models: no account catalog available (%d accounts); serving the static floor", len(ids))
+	}
+	return adapter.SortCatalog(adapter.MergeCatalog(entries))
+}
+
+// accountCatalogs reads every account's catalog concurrently, bounded so a
+// large pool cannot stampede the upstream; per-account results are cached by
+// botConfigFor for the TTL.
+func (s *Server) accountCatalogs(ctx context.Context, ids []string) map[string]*mimo.BotConfig {
+	const parallelism = 4
+	var (
+		mu  sync.Mutex
+		out = make(map[string]*mimo.BotConfig, len(ids))
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, parallelism)
+	)
+	for _, id := range ids {
+		cookie, ph, err := s.creds(ctx, id)
+		if err != nil {
+			s.debugf("models: no credentials for account %s: %v", id, err)
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id, cookie, ph string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			cfg, err := s.botConfigFor(fctx, id, cookie, ph)
+			if err != nil {
+				s.debugf("models: catalog read failed for account %s: %v", id, err)
+				return
+			}
+			mu.Lock()
+			out[id] = cfg
+			mu.Unlock()
+		}(id, cookie, ph)
+	}
+	wg.Wait()
+	return out
+}
+
+// accountCatalogEntries maps one account's bot/config onto catalog entries:
+// modelConfigListNg carries the ids and page types, and the chat rows
+// (modelConfigList) carry the capability defaults. The two are joined by id.
+func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
+	rows := make(map[string]mimo.ChatModel, len(cfg.ChatModels))
+	for _, r := range cfg.ChatModels {
+		rows[r.Model] = r
+	}
+	out := make([]adapter.CatalogEntry, 0, len(cfg.Models))
+	for _, m := range cfg.Models {
+		if m.Model == "" {
+			continue
+		}
+		page := m.PageType
+		row, hasRow := rows[m.Model]
+		var think bool
+		var wsDefault string
+		if hasRow {
+			if row.ThinkingDefaultOn != nil {
+				think = *row.ThinkingDefaultOn
+			}
+			if row.WebSearchDefaultStatus != nil {
+				wsDefault = *row.WebSearchDefaultStatus
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		s.debugf("models: live catalog unavailable (%v); serving the static list", err)
+		out = append(out, adapter.CatalogEntry{
+			ID:     m.Model,
+			Name:   m.Name,
+			Page:   page,
+			Web:    adapter.WebSearchLevel(page, wsDefault),
+			Think:  think,
+			Audio:  adapter.AudioForPage(page),
+			NToken: row.NToken,
+		})
 	}
-	return ids
+	return out
 }
 
 // handleModelByID returns one model or 404 listing available ids (TDD
 // API-006: known → 200; alias → 200 after normalization; unknown → 404).
 func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	entries := s.catalogEntries(r.Context())
+	for _, e := range entries {
+		// Same source as the list: a model the account reports is known even
+		// when the static table has never heard of it (M19 §3).
+		if e.ID == id {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(modelEntryDTO(e))
+			return
+		}
+	}
 	model, _, err := adapter.NormalizeModel(id, s.defaultModel, nil)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{
-			Message: fmt.Sprintf("model %q not found; available models: %s", id, strings.Join(adapter.DefaultModels, ", ")),
+			Message: fmt.Sprintf("model %q not found; available models: %s", id, strings.Join(modelIDs(entries), ", ")),
 			Type:    "invalid_request_error",
 		}})
 		return
@@ -294,3 +429,30 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(modelJSON{ID: model, Object: "model", Created: 1700000000, OwnedBy: "xiaomi"})
 }
+
+// modelIDs lists catalog ids for an error message, capped so a 25-model
+// catalog does not produce a wall of text.
+func modelIDs(entries []adapter.CatalogEntry) []string {
+	const max = 24
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if len(out) == max {
+			out = append(out, "…")
+			break
+		}
+		out = append(out, e.ID)
+	}
+	return out
+}
+
+// catalogWindow is how long an account's catalog (models, voices, switches) is
+// served from cache; zero falls back to the documented default (M19 §3).
+func (s *Server) catalogWindow() time.Duration {
+	if s.catalogTTL > 0 {
+		return s.catalogTTL
+	}
+	return DefaultCatalogTTL
+}
+
+// DefaultCatalogTTL is the catalog cache lifetime when nothing is configured.
+const DefaultCatalogTTL = 10 * time.Minute

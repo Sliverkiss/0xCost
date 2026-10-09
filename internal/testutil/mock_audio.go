@@ -64,6 +64,24 @@ func (m *MockUpstream) SetBotConfigError(msg string) {
 	m.botConfigErr = msg
 }
 
+// SetCatalogOverride replaces one account's bot/config model lists, keyed by
+// ph (each account has its own catalog). Used to prove the /v1/models union
+// takes capabilities at their maximum across accounts.
+func (m *MockUpstream) SetCatalogOverride(ph string, ng, chat []map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.catalogOverrides == nil {
+		m.catalogOverrides = map[string]catalogOverride{}
+	}
+	m.catalogOverrides[ph] = catalogOverride{ng: ng, chat: chat}
+}
+
+// catalogOverride is one account's scripted model lists.
+type catalogOverride struct {
+	ng   []map[string]any
+	chat []map[string]any
+}
+
 // SetAudioText overrides the transcript the ASR status endpoint returns.
 func (m *MockUpstream) SetAudioText(text string) {
 	m.mu.Lock()
@@ -180,12 +198,18 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/open-apis/bot/config":
 		m.mu.Lock()
 		cfgErr := m.botConfigErr
+		ov, hasOv := m.catalogOverrides[r.URL.Query().Get("xiaomichatbot_ph")]
 		m.mu.Unlock()
 		if cfgErr != "" {
 			writeJSONEnvelope(w, 400, cfgErr, nil)
 			return
 		}
-		writeJSONEnvelope(w, 0, "成功", mockBotConfig())
+		cfg := mockBotConfig()
+		if hasOv {
+			cfg["modelConfigListNg"] = ov.ng
+			cfg["modelConfigList"] = ov.chat
+		}
+		writeJSONEnvelope(w, 0, "成功", cfg)
 
 	case r.URL.Path == "/open-apis/tts/v2/generate":
 		var req struct {

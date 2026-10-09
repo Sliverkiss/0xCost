@@ -36,8 +36,9 @@ func modelsIDs(t *testing.T, ts *testserver.TestServer) []string {
 	return ids
 }
 
-// MODELS-LIVE-001: chat-capable ids from the account catalog are listed, the
-// audio-only rows are not, and the static floor is never dropped.
+// MODELS-LIVE-001: the account catalog is listed in full — audio rows included,
+// since they are valid models for /v1/audio/* and carry their own capabilities —
+// and the static floor is never dropped.
 func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 	ts := audioServer(t, oneAccount(), nil)
 	ids := strings.Join(modelsIDs(t, ts), ",")
@@ -46,9 +47,12 @@ func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 			t.Errorf("catalog %s is missing chat model %q", ids, want)
 		}
 	}
-	for _, unwanted := range []string{"mimo-v2-tts", "mimo-v2.5-asr"} {
-		if strings.Contains(ids, unwanted) {
-			t.Errorf("catalog %s must not advertise the non-chat row %q", ids, unwanted)
+	// Audio rows belong in the catalog (M19 §3): they are usable through the
+	// audio endpoints and their capabilities say so (CAT-001 asserts the
+	// capability values; this only checks they are present).
+	for _, wantAudio := range []string{"mimo-v2-tts", "mimo-v2.5-asr"} {
+		if !strings.Contains(ids, wantAudio) {
+			t.Errorf("catalog %s is missing the audio row %q", ids, wantAudio)
 		}
 	}
 	if !strings.Contains(ids, "mimo-v2.6-pro") {
@@ -70,7 +74,8 @@ func TestModelsFallsBackWhenCatalogUnavailable(t *testing.T) {
 	if !strings.Contains(strings.Join(ids, ","), "mimo-v2.6-pro") {
 		t.Errorf("static fallback missing: %v", ids)
 	}
-	if !strings.Contains(sink.String(), "live catalog unavailable") {
-		t.Errorf("debug log = %q, want the fallback recorded", sink.String())
+	log := sink.String()
+	if !strings.Contains(log, "catalog read failed") || !strings.Contains(log, "serving the static floor") {
+		t.Errorf("debug log = %q, want the failed read and the fallback recorded", log)
 	}
 }
