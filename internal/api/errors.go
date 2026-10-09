@@ -285,8 +285,10 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// the measured size and the limit, so a caller can act on it.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long", tooLong.Error(), 0)
 	case errors.Is(err, errUnsupportedImageURL):
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_url",
-			"image_url must be a data:image/... URL or an http(s) URL", 0)
+		// Name the real reason: the wrapped error says which rule was broken
+		// ("data URL has no comma before its payload"), which is what a caller can
+		// act on, instead of only restating the accepted shape.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_url", err.Error(), 0)
 	case errors.Is(err, errImageURLBlocked):
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_url_blocked", err.Error(), 0)
 	case errors.Is(err, errImageFetch):
@@ -294,8 +296,12 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// carries the reason (status, network, timeout) via the wrapped error.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_fetch_failed", err.Error(), 0)
 	case errors.Is(err, errUnsupportedImageType):
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_type",
-			"the fetched URL did not answer an image (content-type must be image/*)", 0)
+		// There are three ways to land here — a URL that answered something that is
+		// not an image, a data: URL whose declared subtype is not a plain image type,
+		// and bytes that are not an image at all — and the wrapped error says which.
+		// The canned "the fetched URL did not answer an image" was only ever true for
+		// the first, so a client posting an inline image was told a fetch had failed.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_type", err.Error(), 0)
 	case asImageDetail(err) != nil:
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_detail",
 			asImageDetail(err).Error(), 0)

@@ -9,6 +9,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -263,6 +264,64 @@ func TestOSTD009ErrorParamNamesTheOffendingField(t *testing.T) {
 		t.Errorf("body = %s, want param:null when no single field is at fault", raw)
 	}
 }
+
+// OSTD-010: the warning header is built from client-supplied keys, so it is bounded
+// and stable. Measured before the bound: 3000 unknown fields produced a header past
+// 64 KiB and the caller could not parse the response at all (Python's http.client
+// raises LineTooLong over 65536 bytes) — extra metadata cost the client its answer.
+func TestOSTD010WarningHeaderIsBoundedAndStable(t *testing.T) {
+	ts, _ := scriptedServer(t)
+	body := func() string {
+		m := map[string]any{"model": "mimo-v2.6-flash", "stream": false,
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		for i := 0; i < 3000; i++ {
+			m[fmt.Sprintf("unknown_field_number_%04d_padded_to_be_long", i)] = 1
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+
+	resp, err := ts.Chat(body(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", resp.StatusCode, raw)
+	}
+	warn := resp.Header.Get("X-Mimo-Warnings")
+	if warn == "" {
+		t.Fatal("no warning header: unknown fields must still be reported")
+	}
+	if len(warn) > 1024 {
+		t.Errorf("warning header is %d bytes, want a bounded one (a client cannot parse a header line over 64 KiB)", len(warn))
+	}
+	if !strings.Contains(warn, "+2992 more") {
+		t.Errorf("warnings = %q, want the truncated count reported", warn)
+	}
+	if n := strings.Count(warn, "unknown_field_number"); n > maxWarnFieldsCapped() {
+		t.Errorf("warnings = %q, want at most %d names listed", warn, maxWarnFieldsCapped())
+	}
+
+	// Same request twice: the same header. The names came out of a JSON object, so
+	// the order used to change run to run.
+	resp2, err := ts.Chat(body(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	_, _ = io.ReadAll(resp2.Body)
+	if again := resp2.Header.Get("X-Mimo-Warnings"); again != warn {
+		t.Errorf("warning header changed between identical requests:\n  %s\n  %s", warn, again)
+	}
+}
+
+// maxWarnFieldsCapped mirrors the package's cap for the assertion above.
+func maxWarnFieldsCapped() int { return 8 }
 
 // OSTD-007: the model id reaches the upstream exactly as the client wrote it —
 // the options travel in standard fields, never in a renamed model.

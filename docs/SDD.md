@@ -1004,7 +1004,7 @@ Supported request fields:
 | `stream` | Streaming vs collected delivery. |
 | `temperature`, `top_p` | Forwarded inside `modelConfig` (mimo-web-proxy sends `temperature:0.8, top_p:0.95` defaults, `web_client.go:127-140`); pass through when provided, else omit. |
 | `max_tokens` / `max_completion_tokens` | Not supported upstream; ignored (warning header). |
-| `tools`, `tool_choice`, `functions`, `response_format`, `n`, `seed`, ... | Stripped, not rejected. `X-Mimo-Warnings` response header lists dropped fields. |
+| `tools`, `tool_choice`, `functions`, `response_format`, `n`, `seed`, ... | Stripped, not rejected. `X-Mimo-Warnings` response header lists dropped fields — bounded to 8 names of 40 characters plus `+N more`, sorted and deduplicated, because the list is built from client keys and an unbounded one made the response unparseable for callers with a 64 KiB header limit (ADR 0030). |
 | `reasoning_effort` | **Standard thinking knob.** `none` → `enableThinking:false`; `minimal`/`low`/`medium`/`high` → `true` (the upstream switch is boolean, so the level itself has nothing to map onto). Anything else → 400 `unsupported_reasoning_effort`, before any account work. |
 | `web_search_options` | **Standard search knob.** Presence → `modelConfig.webSearchStatus:"enabled"`. `search_context_size` (`low`/`medium`/`high`) is validated and then reported in `X-Mimo-Warnings`, because the upstream switch has no size axis; an unknown size → 400 `unsupported_search_context_size`. |
 
@@ -1041,7 +1041,13 @@ guards: `MIMO2API_MAX_IMAGES` (default 10) and `MIMO2API_MAX_IMAGE_BYTES` (defau
 file and 50 files per message. Failures are named 400s — `unsupported_image_url`,
 `image_fetch_failed`, `unsupported_image_type`, `image_too_large`,
 `too_many_images` — and none of them cools an account down (the client's URL is not
-the account's fault). A user message that carries only images is a legal request:
+the account's fault). Each refusal carries the reason it happened rather than a canned
+sentence (ADR 0030): which scheme was refused, which declared subtype is not an image
+type, or that the bytes are not an image at all. The shape gate judges the scheme
+only — a `data:` URL of any declared type reaches the content gate, so one input gets
+one code. The type a client declares must be `image/` plus a token-shaped subtype; the
+bytes are sniffed, and the name the platform stores is rebuilt from the type the bytes
+are. A user message that carries only images is a legal request:
 the channel needs a `query`, so `adapter.DefaultImageOnlyQuery` is sent and the
 synthesis is documented here rather than hidden.
 

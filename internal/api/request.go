@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/yg/mimo2api/internal/adapter"
@@ -120,6 +121,13 @@ func decodeChatRequest(r *http.Request) (*chatRequest, error) {
 	if err != nil {
 		return nil, errMalformedRequest
 	}
+	return decodeChatBody(raw)
+}
+
+// decodeChatBody is the parser on its own, so it can be exercised directly with
+// bytes a client could send (FuzzChatRequestDecode) rather than only through a
+// live request.
+func decodeChatBody(raw []byte) (*chatRequest, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, errMalformedRequest
@@ -271,8 +279,15 @@ func flattenContent(raw json.RawMessage) (string, []adapter.MediaRef, error) {
 				texts = append(texts, p.Text)
 			case "image_url":
 				u := strings.TrimSpace(p.ImageURL.URL)
-				if u == "" || !imageURLSupported(u) {
-					return "", nil, errUnsupportedImageURL
+				if u == "" {
+					return "", nil, fmt.Errorf("%w: image_url.url is empty", errUnsupportedImageURL)
+				}
+				if !imageURLSupported(u) {
+					// Say which scheme was refused. The bare sentinel used to answer
+					// "unsupported image_url" and nothing else, which told the caller
+					// neither what was wrong nor what is accepted.
+					return "", nil, fmt.Errorf("%w: scheme %q is not fetchable, use https:, http: or data:image/...",
+						errUnsupportedImageURL, schemeOf(u))
 				}
 				// The level travels with the image so the upload path can apply
 				// it: OpenAI's field is the client's, the conversion to bytes the
@@ -288,6 +303,18 @@ func flattenContent(raw json.RawMessage) (string, []adapter.MediaRef, error) {
 	return "", nil, errMalformedRequest
 }
 
+// schemeOf is the scheme of a URL-shaped string, shortened, for an error message.
+func schemeOf(u string) string {
+	scheme := u
+	if i := strings.IndexByte(scheme, ':'); i >= 0 {
+		scheme = scheme[:i]
+	}
+	if len(scheme) > 20 {
+		scheme = scheme[:20] + "..."
+	}
+	return strings.ToLower(scheme)
+}
+
 // imageURLSupported accepts exactly what we can fetch without guessing: a data:
 // URL carrying an image, or an http(s) URL (IMG-001/002). A file:// or a
 // non-image data URL is a 400 naming the field, never a silent drop.
@@ -295,7 +322,12 @@ func imageURLSupported(u string) bool {
 	lower := strings.ToLower(u)
 	switch {
 	case strings.HasPrefix(lower, "data:"):
-		return strings.HasPrefix(lower, "data:image/")
+		// Any data: URL passes here: whether its declared type is an image is a
+		// question about content, and the decode path answers it with a message
+		// that names the type (unsupported_image_type). Two gates refusing the same
+		// input with two different codes was how this one ended up explaining
+		// nothing.
+		return true
 	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
 		return true
 	default:
@@ -318,12 +350,46 @@ func imageURLSupported(u string) bool {
 func (req *chatRequest) warningsHeader() string {
 	var clauses []string
 	if dropped := req.droppedFields(); len(dropped) > 0 {
-		clauses = append(clauses, fmt.Sprintf("ignored unsupported fields: %v", dropped))
+		clauses = append(clauses, "ignored unsupported fields: "+warnList(dropped))
 	}
 	if n := req.notHonouredFields(); len(n) > 0 {
-		clauses = append(clauses, fmt.Sprintf("accepted but not honoured: %v", n))
+		clauses = append(clauses, "accepted but not honoured: "+warnList(n))
 	}
 	return strings.Join(clauses, "; ")
+}
+
+// The warning lists are built from client-supplied JSON keys, so they are not
+// allowed to be as long as the client wants. Measured before this bound: a request
+// carrying 3000 unknown fields produced a warning header past 64 KiB and the caller
+// could not parse the response at all (Python's http.client raises LineTooLong on a
+// header line over 65536 bytes) — a client that sends extra metadata got no answer.
+const (
+	maxWarnFields   = 8
+	maxWarnFieldLen = 40
+)
+
+// warnList renders a client-supplied field list for X-Mimo-Warnings: deduplicated,
+// sorted, each name shortened, and the total preserved when the list is truncated.
+// Sorting is not cosmetic — JSON objects decode into a map, so the same request used
+// to produce a different order every time.
+func warnList(names []string) string {
+	seen := make(map[string]bool, len(names))
+	uniq := make([]string, 0, len(names))
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		if len(n) > maxWarnFieldLen {
+			n = n[:maxWarnFieldLen] + "..."
+		}
+		uniq = append(uniq, n)
+	}
+	sort.Strings(uniq)
+	if len(uniq) > maxWarnFields {
+		return fmt.Sprintf("%v +%d more", uniq[:maxWarnFields], len(uniq)-maxWarnFields)
+	}
+	return fmt.Sprintf("%v", uniq)
 }
 
 // notHonouredFields names the fields we understand but cannot act on. Distinct

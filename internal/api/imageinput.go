@@ -130,8 +130,21 @@ func fetchImage(ctx context.Context, hc *http.Client, rawURL string, maxBytes in
 		strings.HasPrefix(strings.ToLower(rawURL), "https://"):
 		return downloadImage(ctx, hc, rawURL, maxBytes, ua)
 	default:
-		return nil, errUnsupportedImageURL
+		return nil, fmt.Errorf("%w: scheme %q is not fetchable, use https:, http: or data:image/...",
+			errUnsupportedImageURL, urlSchemeOf(rawURL))
 	}
+}
+
+// urlSchemeOf is the scheme of a URL-shaped string, shortened, for an error message.
+func urlSchemeOf(rawURL string) string {
+	scheme := rawURL
+	if i := strings.IndexByte(scheme, ':'); i >= 0 {
+		scheme = scheme[:i]
+	}
+	if len(scheme) > 20 {
+		scheme = scheme[:20] + "..."
+	}
+	return strings.ToLower(scheme)
 }
 
 // decodeDataImage decodes a data:image/...;base64, payload.
@@ -142,7 +155,7 @@ func decodeDataImage(rawURL string, maxBytes int) (*fetchedImage, error) {
 	}
 	meta := strings.TrimPrefix(strings.ToLower(header), "data:")
 	mime, encoding, _ := strings.Cut(meta, ";")
-	if !strings.HasPrefix(mime, "image/") {
+	if !imageMimeToken(mime) {
 		return nil, fmt.Errorf("%w: %s is not an image type", errUnsupportedImageType, mime)
 	}
 	if encoding != "base64" {
@@ -161,7 +174,7 @@ func decodeDataImage(rawURL string, maxBytes int) (*fetchedImage, error) {
 	if maxBytes > 0 && len(data) > maxBytes {
 		return nil, fmt.Errorf("%w: inline image is %d bytes, over the %d-byte cap", errImageTooLarge, len(data), maxBytes)
 	}
-	return &fetchedImage{Data: data, Name: "image-1" + imageExt(mime), Mime: mime, Bytes: len(data)}, nil
+	return finaliseImage(&fetchedImage{Data: data, Name: "image-1", Mime: mime, Bytes: len(data)})
 }
 
 // downloadImage fetches an http(s) image URL with the byte cap applied while
@@ -191,7 +204,7 @@ func downloadImage(ctx context.Context, hc *http.Client, rawURL string, maxBytes
 		return nil, fmt.Errorf("%w: %s answered HTTP %d", errImageFetch, hostOf(rawURL), resp.StatusCode)
 	}
 	mime := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
-	if mime != "" && !strings.HasPrefix(mime, "image/") {
+	if mime != "" && !imageMimeToken(mime) {
 		return nil, fmt.Errorf("%w: %s answered %q", errUnsupportedImageType, hostOf(rawURL), mime)
 	}
 	limit := int64(maxBytes)
@@ -210,19 +223,99 @@ func downloadImage(ctx context.Context, hc *http.Client, rawURL string, maxBytes
 	}
 	if mime == "" {
 		mime = http.DetectContentType(data)
-		if !strings.HasPrefix(mime, "image/") {
+		if !imageMimeToken(mime) {
 			return nil, fmt.Errorf("%w: %s answered %q bytes with no image content-type",
 				errUnsupportedImageType, hostOf(rawURL), mime)
 		}
 	}
-	name := path.Base(req.URL.Path)
-	if name == "" || name == "/" || name == "." {
-		name = "image"
+	return finaliseImage(&fetchedImage{Data: data, Name: path.Base(req.URL.Path), Mime: mime, Bytes: len(data)})
+}
+
+// maxImageNameStem bounds the part of a client-supplied name that is kept; the
+// extension this package appends is its own.
+const maxImageNameStem = 80
+
+// finaliseImage makes the bytes and what we tell the platform about them agree.
+// Both the declared type and the name are client-controlled (a data: URL's media
+// type, a URL's last path segment), so neither is allowed to be the answer:
+//
+//   - bytes the sniffer positively identifies as something other than an image are
+//     refused (`data:image/png` over text used to be uploaded as an image), and
+//   - the name the platform sees is rebuilt from the type the bytes are, so an
+//     image served from /photo.php no longer reaches the platform as ".php".
+//
+// A format the sniffer cannot name (heic, avif — it answers application/octet-stream)
+// keeps the client's declared type: unknown is not the same as not-an-image.
+func finaliseImage(img *fetchedImage) (*fetchedImage, error) {
+	if sniffed, ok := sniffedImageType(img.Data); ok {
+		img.Mime = sniffed
+	} else if sniffed != "" {
+		return nil, fmt.Errorf("%w: the bytes are %s, not an image", errUnsupportedImageType, sniffed)
 	}
-	if !strings.Contains(name, ".") {
-		name += imageExt(mime)
+	img.Name = nameForUpload(img.Name, img.Mime)
+	return img, nil
+}
+
+// maxImageSubtypeLen bounds the subtype we are willing to carry into a file name.
+const maxImageSubtypeLen = 24
+
+// imageMimeToken reports whether a declared media type is a plain image type:
+// "image/" followed by one token-shaped subtype. A prefix test on its own let
+// "image//", "image/../.." and "image/png/x" through (found by FuzzDataImageURL with
+// `data:imAge//;BAse64,000A`), and the subtype is exactly what the uploaded name's
+// extension is built from — so a non-token subtype is a client putting path syntax
+// where a file name goes, in the one place we then hand to someone else's storage.
+func imageMimeToken(declared string) bool {
+	sub, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(declared)), "image/")
+	if !ok || sub == "" || len(sub) > maxImageSubtypeLen || strings.Contains(sub, "..") {
+		return false
 	}
-	return &fetchedImage{Data: data, Name: name, Mime: mime, Bytes: len(data)}, nil
+	for i := 0; i < len(sub); i++ {
+		c := sub[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '+', c == '-':
+		case c == '.':
+			if i == 0 || i == len(sub)-1 { // leading/trailing dot: not a subtype
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sniffedImageType reports the media type the bytes themselves declare. ok is true
+// only when the sniffer named an image type; a non-empty result with ok false is a
+// positive identification of something else (text, JSON, HTML…).
+func sniffedImageType(data []byte) (mime string, ok bool) {
+	s := strings.ToLower(strings.TrimSpace(http.DetectContentType(data)))
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if strings.HasPrefix(s, "image/") {
+		return s, true
+	}
+	if s == "application/octet-stream" {
+		return "", false // unidentified, not disproved
+	}
+	return s, false
+}
+
+// nameForUpload rebuilds the platform-facing name so its extension matches the type
+// the bytes actually are, keeping a sanitised stem from whatever the client sent.
+func nameForUpload(raw, mime string) string {
+	stem := strings.TrimSpace(path.Base(raw))
+	if i := strings.LastIndexByte(stem, '.'); i > 0 {
+		stem = stem[:i]
+	}
+	if len(stem) > maxImageNameStem {
+		stem = stem[:maxImageNameStem]
+	}
+	if stem == "" || stem == "." || stem == "/" {
+		stem = "image"
+	}
+	return stem + imageExt(mime)
 }
 
 // imageExt maps a media type onto the extension the platform should see
@@ -244,7 +337,9 @@ func imageExt(mime string) string {
 	case "image/tiff":
 		return ".tiff"
 	default:
-		if sub, ok := strings.CutPrefix(strings.ToLower(mime), "image/"); ok && sub != "" {
+		// An unknown but well-formed subtype keeps its own extension; anything else
+		// falls back, so no client string can reach the uploaded name as path syntax.
+		if sub, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/"); ok && imageMimeToken(mime) {
 			return "." + sub
 		}
 		return ".img"

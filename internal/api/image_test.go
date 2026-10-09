@@ -398,6 +398,169 @@ func bigPNGDataURL(t *testing.T, w, h int) string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
+// IMG-017: the label does not decide the type, the bytes do. `data:image/png` over
+// text used to be uploaded to the platform as an image named .png; the sniffer
+// positively identifies text, and that is a 400 rather than someone else's problem.
+// A format the sniffer cannot name (heic, avif) keeps the declared type: unknown is
+// not the same as not-an-image.
+func TestIMG017BytesDecideTheTypeNotTheLabel(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	junk := base64.StdEncoding.EncodeToString([]byte("this is definitely not an image"))
+	status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+		map[string]any{"text": "看"},
+		map[string]any{"image_url": "data:image/png;base64," + junk}))
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", status, raw)
+	}
+	if !strings.Contains(raw, "unsupported_image_type") {
+		t.Errorf("body = %s, want unsupported_image_type", raw)
+	}
+	if n := len(ts.Upstream.Requests()); n != 0 {
+		t.Errorf("upstream calls = %d, want 0", n)
+	}
+	if n := len(ts.Upstream.LastUpload()); n != 0 {
+		t.Errorf("uploads = %d, want 0 (junk must never reach the platform)", n)
+	}
+}
+
+// IMG-018: the name the platform parses by is rebuilt from the bytes, so the
+// extension cannot lie — a URL path ending .php, or a data: URL that claims a type
+// the bytes contradict, no longer arrives as something the platform misreads.
+func TestIMG018PlatformNameFollowsTheBytes(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, &testserver.TestServerOptions{ImageAllowPrivate: true})
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(tinyPNG)
+	}))
+	defer imgSrv.Close()
+
+	status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+		map[string]any{"text": "看"},
+		map[string]any{"image_url": imgSrv.URL + "/download.php?seed=1"}))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", status, raw)
+	}
+	if media := mediaOf(t, ts, 0); len(media) == 1 {
+		name, _ := media[0]["name"].(string)
+		if !strings.HasSuffix(name, ".png") {
+			t.Errorf("platform name = %q, want it to end .png (the bytes are a PNG, the path is not)", name)
+		}
+		if strings.Contains(name, ".php") {
+			t.Errorf("platform name = %q, want the misleading .php gone", name)
+		}
+	} else {
+		t.Fatalf("multiMedias = %v, want one image item", media)
+	}
+
+	// A data: URL whose declared type contradicts its bytes: the bytes win.
+	pngB64 := base64.StdEncoding.EncodeToString(tinyPNG)
+	status, raw = chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+		map[string]any{"text": "看"},
+		map[string]any{"image_url": "data:image/jpeg;base64," + pngB64}))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", status, raw)
+	}
+	if media := mediaOf(t, ts, 1); len(media) == 1 {
+		if name, _ := media[0]["name"].(string); !strings.HasSuffix(name, ".png") {
+			t.Errorf("platform name = %q, want .png: the bytes are a PNG even though the label said jpeg", name)
+		}
+	} else {
+		t.Fatalf("multiMedias = %v, want one image item", media)
+	}
+}
+
+// IMG-019: the declared subtype is not allowed to be path syntax. A prefix test on
+// "image/" accepted `data:imAge//;BAse64,000A` (found by the fuzzer), and the subtype
+// is what the extension of the name we hand the platform is built from — so `image//`
+// became "./", `image/../..` travelled as path syntax into someone else's storage.
+func TestIMG019DeclaredSubtypeCannotBePathSyntax(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	for _, bad := range []string{
+		"data:image//;base64,AAAA",                               // the fuzzer's find, lowercased
+		"data:imAge//;BAse64,000A",                               // …and as the fuzzer wrote it
+		"data:image/../..;base64,AAAA",                           // traversal in the subtype
+		"data:image/png/x;base64,AAAA",                           // an extra path segment
+		"data:image/.;base64,AAAA",                               // a bare dot
+		"data:image/" + strings.Repeat("a", 40) + ";base64,AAAA", // unbounded subtype
+	} {
+		status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+			map[string]any{"text": "看"},
+			map[string]any{"image_url": bad}))
+		if status != http.StatusBadRequest {
+			t.Errorf("%q → status %d body=%s, want 400", bad, status, raw)
+			continue
+		}
+		if !strings.Contains(raw, "unsupported_image_type") {
+			t.Errorf("%q → body %s, want unsupported_image_type", bad, raw)
+		}
+	}
+	if n := len(ts.Upstream.Requests()); n != 0 {
+		t.Errorf("upstream calls = %d, want 0", n)
+	}
+	if n := len(ts.Upstream.LastUpload()); n != 0 {
+		t.Errorf("uploads = %d, want 0: nothing with path syntax in its name may be uploaded", n)
+	}
+
+	// A well-formed type in a different case still works, and the name it produces is
+	// a file name.
+	pngB64 := base64.StdEncoding.EncodeToString(tinyPNG)
+	status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+		map[string]any{"text": "看"},
+		map[string]any{"image_url": "data:IMAGE/PNG;base64," + pngB64}))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", status, raw)
+	}
+	media := mediaOf(t, ts, 0)
+	if len(media) != 1 {
+		t.Fatalf("multiMedias = %v, want one image item", media)
+	}
+	if name, _ := media[0]["name"].(string); strings.ContainsAny(name, "/\\") || !strings.HasSuffix(name, ".png") {
+		t.Errorf("platform name = %q, want a plain file name ending .png", name)
+	}
+}
+
+// IMG-020: the refusal names the real reason. Every unsupported_image_type used to
+// answer "the fetched URL did not answer an image (content-type must be image/*)",
+// which is untrue for an inline image and hides which of the three rules was broken.
+func TestIMG020RefusalNamesTheRealReason(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	cases := []struct{ url, wantSubstr, wantAbsent string }{
+		{"data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("plain text")),
+			"the bytes are", "fetched URL"},
+		{"data:text/plain;base64,AAAA", "text/plain is not an image type", "fetched URL"},
+		{"data:image//;base64,AAAA", "image// is not an image type", "fetched URL"},
+		{"data:image/png,notbase64", "only base64 data URLs are accepted", ""},
+		{"file:///etc/passwd", "unsupported image", ""},
+	}
+	for _, c := range cases {
+		status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+			map[string]any{"text": "看"},
+			map[string]any{"image_url": c.url}))
+		if status != http.StatusBadRequest {
+			t.Errorf("%q → status %d body=%s, want 400", c.url, status, raw)
+			continue
+		}
+		if !strings.Contains(raw, c.wantSubstr) {
+			t.Errorf("%q → body %s, want it to name %q", c.url, raw, c.wantSubstr)
+		}
+		if c.wantAbsent != "" && strings.Contains(raw, c.wantAbsent) {
+			t.Errorf("%q → body %s, must not claim %q", c.url, raw, c.wantAbsent)
+		}
+	}
+}
+
 // IMG-014: a client-supplied URL must not reach the operator's own network. The
 // gateway answers 400 image_url_blocked and — the part that matters — never opens
 // the connection at all: the listener that would have answered records no request.
