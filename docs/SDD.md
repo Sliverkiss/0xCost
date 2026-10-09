@@ -1167,7 +1167,7 @@ services:
   mimo2api:
     build: .
     ports:
-      - "3000:3000"
+      - "127.0.0.1:21223:21223"
     volumes:
       - ./data:/data          # accounts.json + runtime state (§4.7)
     environment:
@@ -1184,7 +1184,7 @@ services:
 ```
 
 Healthcheck note: distroless has no `curl`/`wget`, so the binary exposes a tiny
-`mimo2api healthcheck` subcommand that does `GET http://127.0.0.1:3000/healthz`
+`mimo2api healthcheck` subcommand that does `GET http://127.0.0.1:21223/healthz`
 and exits 0/1 — a common static-binary pattern.
 
 Config surface — env vars, prefixed `MIMO2API_` to stay collision-free in compose

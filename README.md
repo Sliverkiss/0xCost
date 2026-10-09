@@ -24,7 +24,7 @@ printf 'MIMO2API_API_KEYS=%s\n' "your-key" > data/deploy.env
 chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/accounts.json
 
 # 3. run — one container, and it publishes host 21223 on the LOOPBACK ONLY → the
-#    gateway itself (container port 3000, ADR 0018). TLS and the public hostname
+#    gateway itself (container port 21223). TLS and the public hostname
 #    are the reverse proxy's job (Caddy terminates :443 and proxies to
 #    127.0.0.1:21223), so this port never needs to be reachable from outside —
 #    an exposed API port is an exposed key.

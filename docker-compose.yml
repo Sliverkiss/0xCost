@@ -1,10 +1,11 @@
-# mimo2api compose (SDD §6): container port 3000 (ADR 0018), /data volume for
-# accounts.json, in-binary healthcheck (distroless has no curl/wget).
+# mimo2api compose (SDD §6): container port 21223 (the same number on the host —
+# one port, not a mapping), /data volume for accounts.json, in-binary healthcheck
+# (distroless has no curl/wget).
 #
 # ONE container, ONE published port (ADR 0016, superseding the tool layer of
 # ADR 0012): host 21223 → the gateway itself.
 #
-#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:3000
+#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:21223
 #
 # A hosted deployment without a durable file system (Belmo) instead sets
 # DS_REDIS_HOST + DS_REDIS_TOKEN and keeps its accounts in Upstash — same
@@ -27,7 +28,7 @@ services:
       # TLS and the public hostname belong to the reverse proxy in front (Caddy
       # terminates :443 and proxies to 127.0.0.1:21223), and every other service
       # on this host binds 127.0.0.1 too — an exposed API port is an exposed key.
-      - "127.0.0.1:21223:3000"
+      - "127.0.0.1:21223:21223"
     volumes:
       - ./data:/data # accounts.json (import source) + runtime state (SDD §4.7)
     environment:

@@ -14,9 +14,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mimo2ap
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/mimo2api /mimo2api
 VOLUME /data
-# The container port is 3000 (ADR 0018): the hosted deployment publishes 3000,
-# so the image and compose agree instead of mapping two different numbers.
-EXPOSE 3000
-ENV MIMO2API_PORT=3000
+# The container port is 21223 — the deployment's own port, the one Caddy proxies to
+# (127.0.0.1:21223). The image and compose agree instead of mapping two different
+# numbers, and nothing in this deployment listens on the hosted platform's 3000.
+EXPOSE 21223
+ENV MIMO2API_PORT=21223
 USER nonroot
 ENTRYPOINT ["/mimo2api"]
