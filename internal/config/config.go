@@ -62,7 +62,9 @@ const (
 	DefaultASRTimeout     = 120 * time.Second
 	DefaultSpeechMaxChars = 1024
 	// DefaultMaxQueryChars: 0 keeps the per-channel chat caps
-	// (adapter.MaxQueryChars: 50k fastchat, 90k others — SDD §2.8).
+	// (adapter.MaxQueryChars: 50,000 fastchat / 102,400 others — SDD §2.8,
+	// measured per ADR 0015; the old "90k others" here was the pre-measurement
+	// guess and contradicted the code).
 	DefaultMaxQueryChars = 0
 	DefaultReplayCap     = 20
 	DefaultCooldown429   = 60 * time.Second
