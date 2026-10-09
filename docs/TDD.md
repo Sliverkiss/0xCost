@@ -752,10 +752,12 @@ structural" kind are found by tooling rather than by reading:
   carries no path syntax, the inline byte cap holds. `FuzzDataImageURL` found defect 2
   of ADR 0030 in 30 seconds; its failing input is committed under
   `internal/api/testdata/fuzz/FuzzDataImageURL/` and replayed by `go test ./...`.
-- `staticaudit` (stdlib `go/ast`, kept in the scratch workspace) — discarded error
+- `scripts/staticaudit` (stdlib `go/ast`, run with `make audit`) — discarded error
   results, `strings.Cut` results used without their "found" flag, and `defer`/
-  `time.After` inside loops. Last run: 5 sites to read, all correct as written (three
-  deliberately so, e.g. the idempotent `defer lease.Release()` backstop).
+  `time.After` inside loops. Its function table is deliberately narrow so the output
+  stays readable; the exclusions are named in the source with the reason. Last run:
+  9 findings, all correct as written (several deliberately so, e.g. the idempotent
+  `defer lease.Release()` backstop).
 
 ## 5. Live verification protocol
 

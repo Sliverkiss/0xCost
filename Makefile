@@ -11,7 +11,7 @@ PKGS       := adapter pool mimo api accounts config
 .DEFAULT_GOAL := help
 # deploy/logs/down must be declared: a `deploy/` directory exists in this tree, and
 # without .PHONY make treats the directory as an up-to-date target and runs nothing.
-.PHONY: help build test test-race cover cover-check vet fmt hygiene test-docker run clean \
+.PHONY: help build test test-race cover cover-check vet fmt hygiene audit test-docker run clean \
 	deploy logs down mirror push-mirror
 
 help: ## List available targets.
@@ -133,6 +133,9 @@ clean: ## Remove build and coverage artifacts.
 MIRROR_URL ?= https://github.com/Sliverkiss/mimo2api
 MIRROR_DIR ?= $(CURDIR)/../.mimo2api-mirror
 MIRROR_MSG ?= docs/mirror-commit-message.txt
+
+audit: ## Static pass for discarded errors, unread Cut results, defer/timer-in-loop
+	$(GO) run ./scripts/staticaudit internal cmd
 
 mirror: ## Build the distribution mirror at $(MIRROR_DIR).
 	rm -rf $(MIRROR_DIR) && mkdir -p $(MIRROR_DIR)
