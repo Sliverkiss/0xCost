@@ -147,8 +147,11 @@ func run() error {
 		Client:       client,
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
-		Keepalive:    cfg.Keepalive(),
-		Debug:        cfg.Debug(),
+		// 0 = per-channel caps; a positive value is the operator override
+		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
+		MaxQueryChars: cfg.MaxQueryChars(),
+		Keepalive:     cfg.Keepalive(),
+		Debug:         cfg.Debug(),
 
 		// Session identity (SDD §4.3.1, ADR 0009).
 		SessionWait: cfg.SessionWait(),

@@ -64,10 +64,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Client-side char caps BEFORE any pool interaction (SDD §2.8, TDD
 	// API-016: zero upstream requests recorded).
-	cap := adapter.MaxQueryChars(model)
+	cap := s.queryCharCap(model)
 	for _, m := range msgs {
-		if len([]rune(m.Content)) > cap {
-			s.MapError(w, errContextTooLong)
+		if n := len([]rune(m.Content)); n > cap {
+			// Log it: this rejection used to be silent on the server side, so an
+			// operator could not even tell which client sent what (ADR 0015).
+			s.logger.Printf("chat: rejected request from %s: %s message of %d chars over the %d-char cap (model %s, %d messages)",
+				r.RemoteAddr, m.Role, n, cap, model, len(msgs))
+			s.MapError(w, &queryTooLongError{Limit: cap, Actual: n, Model: model})
 			return
 		}
 	}

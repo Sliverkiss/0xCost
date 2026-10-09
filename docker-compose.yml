@@ -36,6 +36,10 @@ services:
       #   SMS on its own — the operator finishes a human gate (ADR 0013).
       - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
+      # 0 = per-channel caps (50k fastchat / 90k others); a positive value is the
+      # operator override for a client that sends more context than the Studio's
+      # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
+      - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s

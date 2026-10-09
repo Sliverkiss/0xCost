@@ -504,6 +504,13 @@ Rows assert both status/shape and the triggering path.
 | ERRMAP-008 | Upstream 5xx / transport | 502 / `api_error` / `upstream_failure` |
 | ERRMAP-009 | Content filter (`sensitive_query`) | 400 / `invalid_request_error` / `content_filter` |
 | ERRMAP-010 | Query exceeds channel char cap | 400 / `invalid_request_error` / `context_too_long` (cross-ref API-016) |
+| TOOLONG-001 | The platform's mid-stream too-long refusal becomes a client error | `MapError` with `ErrUpstreamStream{"Sorry, the text you sent is too long!…"}` | 400 `context_too_long` whose message tells the caller to send fewer or shorter messages — not a 502 carrying English prose |
+| TOOLONG-002 | The same refusal arriving as an HTTP error body | `MapError` with `UpstreamError{502, "query is too long"}` | 400 `context_too_long` |
+| TOOLONG-003 | An unrelated upstream failure keeps its meaning | `MapError` with a busy-upstream stream error | stays 502, no `context_too_long` (the translation must not swallow real upstream trouble) |
+| TOOLONG-004 | The old 90,000 guess no longer rejects served work | 95,000-char single message on `mimo-v2.6-pro` | 200 with exactly one upstream hit (measured served by the platform) |
+| TOOLONG-005 | The fastchat cap is real and stays local | 50,001 chars on `mimo-v2.6-pro-ultraspeed-studio` | 400, zero upstream hits (cross-ref ERRMAP-010) |
+| TOOLONG-006 | Operator override wins | `TestServerOptions{MaxQueryChars: 1234}` + a 2,000-char message | 400, zero upstream hits |
+| TOOLONG-007 | A too-long refusal is not an account fault | scripted too-long error frame mid-stream | 400 and the account stays `available` (no cooldown) |
 | ERRMAP-011 | Retry-After privacy invariant | across all 429 rows: `Retry-After` reflects only local recovery deadlines; response bodies/headers never contain phone/userId/cookie/passToken |
 | ERRMAP-012 | Streaming post-first-byte error shape | error-text content delta → `delta:{}` + `finish_reason:"stop"` → `[DONE]` (never a bare hang, never restarted deltas) |
 

@@ -88,6 +88,7 @@ func TestExportedFixturesMatchFiles(t *testing.T) {
 		"sse_multi_think.txt":           FixtureSSEMultiThink,
 		"sse_multi_usage.txt":           FixtureSSEMultiUsage,
 		"sse_error.txt":                 FixtureSSEError,
+		"sse_too_long.txt":              FixtureSSETooLong,
 		"sse_sensitive.txt":             FixtureSSESensitive,
 		"sse_empty.txt":                 FixtureSSEEmpty,
 		"sse_fastchat.txt":              FixtureSSEFastchat,

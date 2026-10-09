@@ -402,12 +402,25 @@ Live-verified protocol (`docs/web-surface-reverse.md` §3/§4):
 - Per-account parallelism is limited upstream (simple-chat's `parallel_chat_limit`
   analogue; MiMo expresses it as 429). We cap per-account in-flight requests instead of
   discovering the limit by being banned.
-- Query size caps: the Studio's own global store sets `ultraspeedQueryLimitLength: 5e4`
-  (live SPA, docs/web-surface-reverse.md §11) — **50,000 chars** for ultraspeed
-  (fastchat channel), **90,000 chars** for others (~100K rejected). The older
-  reference-implementation figure (45,000; 48,750 OK / 50,000 rejected) came from
-  `mimo-web-proxy/internal/router/multimodal.go:130-137` and is superseded by the
-  Studio constant. Enforce client-side with a clear error.
+- Query size caps (ADR 0015, measured 2026-10-09):
+  - **ultraspeed / fastchat: 50,000 chars**, enforced client-side before any
+    account is touched. This is a real, sharp limit — the Studio's own
+    `ultraspeedQueryLimitLength: 5e4` (live SPA, docs/web-surface-reverse.md §11) —
+    confirmed by the platform refusing a 60,000-char message with
+    `query is too long`. The older reference-implementation figure (45,000;
+    48,750 OK / 50,000 rejected, `mimo-web-proxy/internal/router/multimodal.go:130-137`)
+    is superseded by the Studio constant.
+  - **every other channel: a 150,000-char guardrail, not a limit.** The previous
+    90,000 was an unmeasured guess and rejected work the platform serves (a single
+    95,000- and 100,100-char message are answered; 105,000 is refused; 300,000
+    ASCII chars are refused) — i.e. the true ceiling follows a token budget near
+    100k and moves with content, so it cannot be mirrored locally. Genuine
+    refusals are **translated** from the upstream's own wording (`too long`,
+    `query is too long`, `长度不能超过`) into `400 context_too_long` with an
+    actionable message, whether they arrive as an HTTP error body or as a
+    mid-stream `error` event, and never penalize the account.
+  - `MIMO2API_MAX_QUERY_CHARS` overrides both caps (0 = per-channel defaults);
+    every local rejection is logged with size, cap, model and role.
 - Ultraspeed context: the Studio caps its *client-side* ultraspeed context at
   `ultraspeedContextRoundLimit: 3`, but the channel itself keeps more — a live
   6-round chained conversation on `/fastchat/open-apis/bot/chat` still recalled a

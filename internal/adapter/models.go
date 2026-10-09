@@ -83,14 +83,27 @@ func NormalizeModel(requested, defaultModel string, catalog []string) (model str
 }
 
 // MaxQueryChars returns the client-side per-request character cap for a model
-// channel (SDD §2.8): 50,000 for fastchat (ultraspeed), 90,000 otherwise.
+// channel (SDD §2.8).
 //
-// The fastchat figure is the Studio's own `ultraspeedQueryLimitLength: 5e4`
-// (SPA global store, docs/web-surface-reverse.md §11), measured in the same
-// unit we count: runes (UTF-16 code units for CJK == runes).
+// fastchat (ultraspeed): **50,000**, the Studio's own
+// `ultraspeedQueryLimitLength: 5e4` (SPA global store,
+// docs/web-surface-reverse.md §11) — a real, sharp limit: a single 60,000-char
+// message is refused by the upstream with `query is too long` while 50,000 is
+// served. Rejecting it locally saves a wasted account call and gives the client
+// the number instead of an English prose error.
+//
+// Every other channel: **150,000**, a guardrail rather than the upstream's rule.
+// The old 90,000 was an unmeasured guess and it blocked requests the platform
+// serves: measured 2026-10-09, a single 95,000- and even a 100,100-char message
+// are answered normally, 105,000 is refused ("the text you sent is too long"),
+// and 300,000 ASCII chars are refused — i.e. the real ceiling moves with content
+// (token budget, not a clean character count), so guessing it locally only ever
+// means rejecting work the upstream would have done. The guardrail is here for
+// absurd payloads (nothing else bounds a chat body); genuine "too long" cases
+// are translated from the upstream's own refusal into our 400 (errors.go).
 func MaxQueryChars(model string) int {
 	if IsFastchatModel(model) {
 		return 50000
 	}
-	return 90000
+	return 150000
 }

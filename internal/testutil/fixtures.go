@@ -80,6 +80,10 @@ var (
 	// FixtureSSEError: two deltas then event:error mid-stream (TDD API-021,
 	// SSE-005).
 	FixtureSSEError = mustFixture("sse_error.txt")
+	// FixtureSSETooLong: the platform's own too-long refusal, which arrives as a
+	// mid-stream error event carrying English prose (ADR 0015). The gateway
+	// translates it into a 400 the caller can act on.
+	FixtureSSETooLong = mustFixture("sse_too_long.txt")
 	// FixtureSSESensitive: content-moderation block (TDD ERRMAP-009).
 	FixtureSSESensitive = mustFixture("sse_sensitive.txt")
 	// FixtureSSEEmpty: dialogId → finish, zero message deltas (TDD SSE-013).

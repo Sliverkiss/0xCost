@@ -22,6 +22,7 @@ func testEnv(t *testing.T, kv map[string]string) {
 		"MIMO2API_COOLDOWN_CAP_S", "MIMO2API_COOLDOWN_TRANSPORT_CAP_S",
 		"MIMO2API_POOL_STATS_WINDOW_S",
 		"MIMO2API_CATALOG_TTL_S", "MIMO2API_AUDIO_TTS_TIMEOUT_S", "MIMO2API_SPEECH_MAX_CHARS",
+		"MIMO2API_MAX_QUERY_CHARS",
 		"MIMO2API_TOOLFORGE_URL", "MIMO2API_TOOLFORGE_KEY",
 	}
 	for _, k := range vars {
@@ -80,6 +81,9 @@ func TestDefaults(t *testing.T) {
 	if c.SessionRefresh() != 12*time.Hour {
 		t.Errorf("session refresh = %v, want 12h", c.SessionRefresh())
 	}
+	if c.MaxQueryChars() != 0 {
+		t.Errorf("max query chars = %d, want 0 (per-channel defaults)", c.MaxQueryChars())
+	}
 	if c.DefaultModel() != "mimo-v2.6-pro" {
 		t.Errorf("default model = %q", c.DefaultModel())
 	}
@@ -88,6 +92,19 @@ func TestDefaults(t *testing.T) {
 	}
 	if c.Addr() != "127.0.0.1:8080" {
 		t.Errorf("open-mode addr = %q", c.Addr())
+	}
+}
+
+// CONF-014: MIMO2API_MAX_QUERY_CHARS is the operator override for the chat
+// character guardrail (ADR 0015); unset/0 keeps the per-channel defaults.
+func TestMaxQueryCharsOverrideEnv(t *testing.T) {
+	testEnv(t, map[string]string{"MIMO2API_MAX_QUERY_CHARS": "250000"})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxQueryChars() != 250000 {
+		t.Errorf("max query chars = %d, want 250000", c.MaxQueryChars())
 	}
 }
 

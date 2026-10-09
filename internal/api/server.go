@@ -35,11 +35,14 @@ type Server struct {
 	apiKeys      [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
 	defaultModel string
 	replayCap    int
-	keepalive    time.Duration
-	logger       *log.Logger
-	debug        bool
-	sessionWait  time.Duration
-	forkPolicy   string
+	// maxQueryChars overrides the per-channel chat char cap when > 0
+	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
+	maxQueryChars int
+	keepalive     time.Duration
+	logger        *log.Logger
+	debug         bool
+	sessionWait   time.Duration
+	forkPolicy    string
 
 	// Web-surface audio + catalog (audio.go).
 	audioConvs     *mimo.ConversationCache
@@ -157,9 +160,12 @@ type Options struct {
 	Accounts     *accounts.Store
 	Sessions     *session.Store
 	Client       *mimo.Client
-	DefaultModel string        // "auto"/missing model resolution (SDD §5.2)
-	ReplayCap    int           // max replayed user turns (SDD §5.3B, default 20)
-	Keepalive    time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
+	DefaultModel string // "auto"/missing model resolution (SDD §5.2)
+	ReplayCap    int    // max replayed user turns (SDD §5.3B, default 20)
+	// MaxQueryChars overrides the per-channel chat char cap when > 0
+	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
+	MaxQueryChars int
+	Keepalive     time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
 	// SessionWait bounds how long a second streaming request waits for its own
 	// session before forking (SDD §4.3.1, REQ-8, default 2s).
 	SessionWait time.Duration
@@ -243,6 +249,7 @@ func New(opts Options) *Server {
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,
+		maxQueryChars:  opts.MaxQueryChars,
 		keepalive:      opts.Keepalive,
 		logger:         logger,
 		debug:          opts.Debug,

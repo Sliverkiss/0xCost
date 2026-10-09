@@ -44,7 +44,6 @@ func writeError(w http.ResponseWriter, status int, typ, code, message string, re
 // Sentinel request-level errors (chat.go raises these before the upstream
 // call; MapError translates them per SDD §7.4).
 var (
-	errContextTooLong     = errors.New("query exceeds channel character cap")
 	errUnsupportedContent = errors.New("unsupported content part")
 	errMalformedRequest   = errors.New("malformed request body")
 	// errUnsupportedSearchStatus: a search switch outside disabled|auto|
@@ -52,6 +51,48 @@ var (
 	// (M19).
 	errUnsupportedSearchStatus = errors.New("unsupported web_search_status")
 )
+
+// queryTooLongError names the number that matters: a caller that only learns
+// "the query is too long" cannot act, one that learns "92311 chars over a 90000
+// limit on this model" can trim. The code stays `context_too_long` so clients
+// that key on it keep working.
+type queryTooLongError struct {
+	Limit  int
+	Actual int
+	Model  string
+}
+
+func (e *queryTooLongError) Error() string {
+	return fmt.Sprintf("query is too long for this model channel: %d chars, limit %d (model %q); send fewer or shorter messages",
+		e.Actual, e.Limit, e.Model)
+}
+
+// upstreamTooLong reports whether an upstream refusal is about the request
+// being too long, across the wordings the platform uses: the chat channel
+// answers `Sorry, the text you sent is too long!`, the fastchat channel
+// `query is too long`, and the audio surface `长度不能超过`.
+func upstreamTooLong(s string) bool {
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	for _, marker := range []string{"too long", "query is too long", "context_too_long", "too_long"} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	return strings.Contains(s, "长度不能超过") || strings.Contains(s, "内容过长") ||
+		strings.Contains(s, "文本过长")
+}
+
+// upstreamTooLongMessage is the client-facing translation. It says what to do
+// and which channel cap applies, without inventing a number for the channel
+// whose real ceiling is content-dependent (see adapter.MaxQueryChars).
+func upstreamTooLongMessage() string {
+	return "the upstream refused this request as too long; send fewer or shorter messages " +
+		"(the ultraspeed channel caps a request at 50000 characters, other models are refused " +
+		"by the platform above roughly 100000 characters)"
+}
 
 // MapError translates a chat-pipeline error into the §7.4 HTTP response.
 // Call only BEFORE the first byte reaches the client; post-first-byte
@@ -67,6 +108,7 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		tooMany *adapter.ErrTooManyTurns
 		filter  *mimo.ErrContentFilter
 		upErr   *mimo.UpstreamError
+		tooLong *queryTooLongError
 	)
 	switch {
 	case errors.As(err, &parked):
@@ -94,10 +136,10 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// sensitive_query / sensitive_title (SDD §7.4, TDD ERRMAP-009).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
 			"upstream content filter rejected the query", 0)
-	case errors.Is(err, errContextTooLong):
-		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016).
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long",
-			"query exceeds the model channel's character limit", 0)
+	case errors.As(err, &tooLong):
+		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016). The message names
+		// the measured size and the limit, so a caller can act on it.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long", tooLong.Error(), 0)
 	case errors.Is(err, errUnsupportedSearchStatus):
 		// Search switch (M19, TDD WS-002).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_search_status",
@@ -153,6 +195,13 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 			// Upstream 429 surfaced (SDD §7.4, TDD ERRMAP-006).
 			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "upstream_rate_limited",
 				"upstream rate limited the account", 0)
+		case upstreamTooLong(upErr.Body):
+			// The upstream refused the request as too long (ADR 0015): its own
+			// wording is prose ("Sorry, the text you sent is too long!") in a 5xx
+			// envelope, which a client cannot act on. Answer the client's mistake
+			// with the client's status.
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long",
+				upstreamTooLongMessage(), 0)
 		default:
 			// Upstream 5xx and everything else upstream-shaped (SDD §7.4,
 			// TDD ERRMAP-008).
@@ -160,6 +209,13 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 				fmt.Sprintf("upstream error %d", upErr.StatusCode), 0)
 		}
 	default:
+		if upstreamTooLong(err.Error()) {
+			// Same refusal, arriving as a mid-stream `error` event (the shape the
+			// platform actually uses for the regular channel).
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long",
+				upstreamTooLongMessage(), 0)
+			return
+		}
 		// Transport / stall / unexpected (SDD §7.4 row 9, TDD ERRMAP-008).
 		writeError(w, http.StatusBadGateway, "api_error", "upstream_failure",
 			"upstream failure: "+err.Error(), 0)

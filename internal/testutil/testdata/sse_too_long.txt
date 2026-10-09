@@ -1,0 +1,5 @@
+event:dialogId
+data:{"type":null,"content":"dlg-toolong","usage":null}
+
+event:error
+data:{"type":null,"content":"Sorry, the text you sent is too long! I suggest you simplify the content appropriately or send it in parts. Thank you for your understanding.","usage":null}

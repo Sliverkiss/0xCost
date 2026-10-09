@@ -603,6 +603,30 @@ func (p *MockPassport) serveConsentAgree(w http.ResponseWriter, r *http.Request)
 	io.WriteString(w, body)
 }
 
+// Auth2CallCount is a race-free read of the recorded Auth2 calls. A test that
+// observes the mock while a goroutine may still be driving it — the
+// asynchronous credential recovery (ADR 0014), for instance — must poll this
+// rather than the slice, which the handler appends to under the mutex.
+func (p *MockPassport) Auth2CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.Auth2Calls)
+}
+
+// ServiceLoginCallCount is the race-free counterpart for the serviceLogin hop.
+func (p *MockPassport) ServiceLoginCallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.ServiceLoginCalls)
+}
+
+// LoginPageCallCount is the race-free counterpart for login-page navigations.
+func (p *MockPassport) LoginPageCallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.LoginPageCalls)
+}
+
 // serveAuth2 parses the form post, records it, and serves the scripted
 // response; the location inside is rewritten to this mock's STS endpoint.
 func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {

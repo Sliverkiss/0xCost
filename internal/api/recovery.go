@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 )
 
@@ -197,6 +198,15 @@ func (s *Server) recoverCredential(ctx context.Context, accountID string) error 
 	s.pool.Enable(accountID)
 	s.pool.ReportSuccess(accountID)
 	return nil
+}
+
+// queryCharCap is the character cap applied to one chat message: the operator
+// override when set, otherwise the model channel's own cap (SDD §2.8, ADR 0015).
+func (s *Server) queryCharCap(model string) int {
+	if s.maxQueryChars > 0 {
+		return s.maxQueryChars
+	}
+	return adapter.MaxQueryChars(model)
 }
 
 // IsDeadCredential reports whether a renewal/keepalive error means the stored

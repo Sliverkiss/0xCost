@@ -115,9 +115,15 @@ func TestRenewBeforePasswordLogin(t *testing.T) {
 	}
 }
 
-// RENEW-PREF-002: when the stored passToken is dead, renewal fails and the
-// password login is attempted — the account ends up disabled with an
-// operator-action reason rather than silently serving a stale session.
+// RENEW-PREF-002: when the stored passToken is dead, the request does not block
+// on a login: it answers with account_action and schedules the background
+// credential recovery (ADR 0014), which is what touches the passport now. Here
+// that login stops at the new-device OTP gate, so the account ends up out of
+// rotation with a reason instead of silently serving a stale session.
+//
+// The assertion polls instead of reading a counter: the recovery is
+// asynchronous by design, and a test that sampled it immediately would be
+// racing the goroutine it is checking.
 func TestRenewFallbackToPasswordLogin(t *testing.T) {
 	s := newRenewStack(t, "1000000001", "V1:dead-token")
 	// Make renewal fail: the passport answers serviceLogin with a dead-token
@@ -131,10 +137,33 @@ func TestRenewFallbackToPasswordLogin(t *testing.T) {
 	if resp == nil || resp.StatusCode == http.StatusOK {
 		t.Fatalf("chat with a dead passToken = %v %q, want a failure", resp, body)
 	}
-	if n := len(s.passport.Auth2Calls); n == 0 {
-		t.Error("expected the password login fallback to run after the failed renewal")
+	if !strings.Contains(body, "retry") {
+		t.Errorf("body = %q, want a retry hint while the account heals in the background", body)
 	}
-	if st := s.pool.StateOf("acc-renew-1"); st == pool.StateAvailable {
-		t.Errorf("pool state = %s, want the account out of rotation", st)
+
+	// The background recovery is the only thing that may log in now.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && s.passport.Auth2CallCount() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := s.passport.Auth2CallCount(); n == 0 {
+		t.Fatal("no background credential recovery ran after the failed renewal")
+	}
+
+	// Let it settle, then assert the invariant that matters: a dead credential is
+	// never left in place while the account serves traffic. Which way it settles
+	// depends on the login — a success replaces the passToken and re-enables the
+	// account, a human gate leaves the account out of rotation — and both are
+	// correct outcomes, so asserting either one specifically would only be
+	// asserting the schedule of a goroutine.
+	for time.Now().Before(deadline) && s.apiSrv.recovery.InFlight("acc-renew-1") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	acct, ok := s.apiSrv.store.Get("acc-renew-1")
+	if !ok {
+		t.Fatal("account disappeared from the store")
+	}
+	if acct.PassToken == "V1:dead-token" && s.pool.StateOf("acc-renew-1") == pool.StateAvailable {
+		t.Error("the dead passToken is still stored while the account is in rotation: the stale session would be served")
 	}
 }

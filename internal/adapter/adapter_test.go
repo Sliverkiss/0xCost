@@ -366,12 +366,19 @@ func TestNormalizeModel(t *testing.T) {
 	}
 }
 
+// ADR 0015: the fastchat cap is the platform's own limit (a 60,000-char message
+// is refused upstream with "query is too long"); every other channel gets a
+// guardrail, not a guess — the old 90,000 rejected work the platform serves
+// (95,000 and 100,100-char messages are answered; 105,000 is refused).
 func TestMaxQueryChars(t *testing.T) {
-	if MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio") != 50000 {
-		t.Errorf("fastchat cap")
+	if got := MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio"); got != 50000 {
+		t.Errorf("fastchat cap = %d, want 50000 (the Studio's ultraspeedQueryLimitLength)", got)
 	}
-	if MaxQueryChars("mimo-v2.6-pro") != 90000 {
-		t.Errorf("normal cap")
+	if got := MaxQueryChars("mimo-v2.6-pro"); got != 150000 {
+		t.Errorf("normal cap = %d, want the 150000 guardrail", got)
+	}
+	if MaxQueryChars("mimo-v2.6-pro") <= 100100 {
+		t.Error("the guardrail must not sit below the largest message the platform was measured to serve")
 	}
 }
 

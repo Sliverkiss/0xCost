@@ -60,10 +60,13 @@ const (
 	DefaultTTSMaxTimeout  = 900 * time.Second
 	DefaultASRTimeout     = 120 * time.Second
 	DefaultSpeechMaxChars = 1024
-	DefaultReplayCap      = 20
-	DefaultCooldown429    = 60 * time.Second
-	DefaultCooldown5xx    = 30 * time.Second
-	DefaultCooldownCap    = 10 * time.Minute
+	// DefaultMaxQueryChars: 0 keeps the per-channel chat caps
+	// (adapter.MaxQueryChars: 50k fastchat, 90k others — SDD §2.8).
+	DefaultMaxQueryChars = 0
+	DefaultReplayCap     = 20
+	DefaultCooldown429   = 60 * time.Second
+	DefaultCooldown5xx   = 30 * time.Second
+	DefaultCooldownCap   = 10 * time.Minute
 	// DefaultCooldownTransport: the transport class has its own ladder (SDD
 	// §4.5.1) — a dead connection or a stall is less likely to be the account's
 	// fault than an upstream 5xx, so it cools for less and escalates less far.
@@ -100,6 +103,7 @@ type Config struct {
 	ttsMaxTimeout        time.Duration
 	asrTimeout           time.Duration
 	speechMaxChars       int
+	maxQueryChars        int
 	ttsVoice             string
 	timezone             string
 	userAgent            string
@@ -247,6 +251,12 @@ func Load() (*Config, error) {
 	if c.speechMaxChars, err = getenvInt("MIMO2API_SPEECH_MAX_CHARS", DefaultSpeechMaxChars); err != nil {
 		return nil, err
 	}
+	// 0 = keep the per-channel caps (50k fastchat / 90k others); a positive value
+	// overrides both and is the operator's escape hatch for a client that sends
+	// more context than the Studio's own UI would (ADR 0015).
+	if c.maxQueryChars, err = getenvInt("MIMO2API_MAX_QUERY_CHARS", DefaultMaxQueryChars); err != nil {
+		return nil, err
+	}
 
 	// Explicit non-loopback host with empty keys still forces local bind.
 	if len(c.apiKeys) == 0 && c.host != "127.0.0.1" && c.host != "localhost" {
@@ -291,9 +301,13 @@ func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
 func (c *Config) TTSTimeout() time.Duration { return c.ttsTimeout }
 
 // TTSMaxTimeout caps the per-piece poll budget (see TTSTimeout).
-func (c *Config) TTSMaxTimeout() time.Duration     { return c.ttsMaxTimeout }
-func (c *Config) ASRTimeout() time.Duration        { return c.asrTimeout }
-func (c *Config) SpeechMaxChars() int              { return c.speechMaxChars }
+func (c *Config) TTSMaxTimeout() time.Duration { return c.ttsMaxTimeout }
+func (c *Config) ASRTimeout() time.Duration    { return c.asrTimeout }
+func (c *Config) SpeechMaxChars() int          { return c.speechMaxChars }
+
+// MaxQueryChars is the operator override for the chat request character cap;
+// 0 means "use the per-channel defaults" (adapter.MaxQueryChars).
+func (c *Config) MaxQueryChars() int               { return c.maxQueryChars }
 func (c *Config) TTSVoice() string                 { return c.ttsVoice }
 func (c *Config) Timezone() string                 { return c.timezone }
 func (c *Config) UserAgent() string                { return c.userAgent }
