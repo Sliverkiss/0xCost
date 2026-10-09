@@ -141,8 +141,10 @@ func TestRenewFallbackToPasswordLogin(t *testing.T) {
 		t.Errorf("body = %q, want a retry hint while the account heals in the background", body)
 	}
 
-	// The background recovery is the only thing that may log in now.
-	deadline := time.Now().Add(3 * time.Second)
+	// The background recovery is the only thing that may log in now. The deadline
+	// is generous: these are polls of an asynchronous goroutine, and a tight one
+	// turns machine load into a test failure.
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) && s.passport.Auth2CallCount() == 0 {
 		time.Sleep(5 * time.Millisecond)
 	}

@@ -410,15 +410,17 @@ Live-verified protocol (`docs/web-surface-reverse.md` §3/§4):
     `query is too long`. The older reference-implementation figure (45,000;
     48,750 OK / 50,000 rejected, `mimo-web-proxy/internal/router/multimodal.go:130-137`)
     is superseded by the Studio constant.
-  - **every other channel: a 150,000-char guardrail, not a limit.** The previous
-    90,000 was an unmeasured guess and rejected work the platform serves (a single
-    95,000- and 100,100-char message are answered; 105,000 is refused; 300,000
-    ASCII chars are refused) — i.e. the true ceiling follows a token budget near
-    100k and moves with content, so it cannot be mirrored locally. Genuine
-    refusals are **translated** from the upstream's own wording (`too long`,
-    `query is too long`, `长度不能超过`) into `400 context_too_long` with an
-    actionable message, whether they arrive as an HTTP error body or as a
-    mid-stream `error` event, and never penalize the account.
+  - **every other channel: 102,400 chars**, the measured ceiling of the query
+    text (probed to the boundary: exactly 102,400 served, 102,415 refused; the same
+    for ASCII and CJK, so it counts characters and does not move with content).
+    The previous 90,000 was an unmeasured guess and rejected work the platform
+    serves. Because the platform refuses anything above 102,400 as well, mirroring
+    it locally saves a wasted account call without risking a false rejection.
+    Refusals that still come from upstream (its wording `too long`,
+    `query is too long`, `长度不能超过`) are **translated** into
+    `400 context_too_long` with an actionable message, whether they arrive as an
+    HTTP error body or as a mid-stream `error` event, and never penalize the
+    account.
   - `MIMO2API_MAX_QUERY_CHARS` overrides both caps (0 = per-channel defaults);
     every local rejection is logged with size, cap, model and role.
 - Ultraspeed context: the Studio caps its *client-side* ultraspeed context at

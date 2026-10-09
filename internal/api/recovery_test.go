@@ -83,7 +83,9 @@ func newRecoveryStack(t *testing.T, auth2 string, otpAuto bool) *recoveryStack {
 }
 
 // waitForSession polls the store until the account has a session (or the
-// deadline passes), because the recovery runs in the background by design.
+// deadline passes), because the recovery runs in the background by design. The
+// bound is intentionally loose: polling an asynchronous goroutine with a tight
+// deadline turns machine load into a flaky failure.
 func (s *recoveryStack) waitForSession(d time.Duration) *accounts.Account {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
@@ -133,7 +135,7 @@ func TestRecoveryStopsAtHumanGate(t *testing.T) {
 	if !s.srv.RecoverCredentialAsync("acc-recovery-1", "test: human gate") {
 		t.Fatal("recovery was not started")
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if s.pool.StateOf("acc-recovery-1") == pool.StateDisabled {
 			break
@@ -164,7 +166,7 @@ func TestRecoveryBacksOffAfterFailure(t *testing.T) {
 	if !s.srv.RecoverCredentialAsync("acc-recovery-1", "test: transient") {
 		t.Fatal("recovery was not started")
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if snap := s.srv.recovery.Snapshot(); snap["attempts"].(map[string]int)["acc-recovery-1"] > 0 {
 			break
@@ -237,7 +239,7 @@ func TestCredsSchedulesRecoveryAndFailsFast(t *testing.T) {
 	}
 	// Let the scheduled login finish before the mocks are torn down, so the test
 	// leaves no goroutine logging against a closed server.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) && s.srv.recovery.InFlight("acc-recovery-1") {
 		time.Sleep(5 * time.Millisecond)
 	}

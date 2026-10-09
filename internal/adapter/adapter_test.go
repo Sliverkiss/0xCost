@@ -374,11 +374,14 @@ func TestMaxQueryChars(t *testing.T) {
 	if got := MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio"); got != 50000 {
 		t.Errorf("fastchat cap = %d, want 50000 (the Studio's ultraspeedQueryLimitLength)", got)
 	}
-	if got := MaxQueryChars("mimo-v2.6-pro"); got != 150000 {
-		t.Errorf("normal cap = %d, want the 150000 guardrail", got)
+	if got := MaxQueryChars("mimo-v2.6-pro"); got != 102400 {
+		t.Errorf("normal cap = %d, want the measured 102400-character platform ceiling", got)
 	}
-	if MaxQueryChars("mimo-v2.6-pro") <= 100100 {
-		t.Error("the guardrail must not sit below the largest message the platform was measured to serve")
+	if MaxQueryChars("mimo-v2.6-pro") < 101000 {
+		t.Error("the cap must not sit below the largest message the platform was measured to serve (101,000)")
+	}
+	if MaxQueryChars("mimo-v2.6-pro") > 102400 {
+		t.Error("the cap must not sit above the measured boundary: it would forward what the platform refuses")
 	}
 }
 

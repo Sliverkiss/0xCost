@@ -75,13 +75,13 @@ func TestUpstreamOtherFailureStaysBadGateway(t *testing.T) {
 // TOOLONG-004 (regression): the 90,000-char guess used to reject work the
 // platform serves. A 95,000-char message must reach the upstream.
 func TestLongButServableMessageIsForwarded(t *testing.T) {
-	if got := adapter.MaxQueryChars("mimo-v2.6-pro"); got < 95000 {
-		t.Fatalf("non-fastchat cap = %d, want >= 95000 (measured served)", got)
+	if got := adapter.MaxQueryChars("mimo-v2.6-pro"); got != 102400 {
+		t.Fatalf("non-fastchat cap = %d, want the measured 102400 platform ceiling", got)
 	}
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	long := strings.Repeat("a", 95000)
+	long := strings.Repeat("a", 95000) // measured served (and blocked by the old 90,000 guess)
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", long}), "")
 	if err != nil {
 		t.Fatal(err)
