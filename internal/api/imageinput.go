@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 )
 
@@ -185,17 +186,23 @@ func hostOf(rawURL string) string {
 //
 // Uploads are per attempt and never cached: a parse result belongs to the session
 // that created it, and a retry runs on another account (SDD §7.1).
-func (s *Server) uploadTurnAttachments(ctx context.Context, cookie, ph, model string, urls []string) ([]any, error) {
-	items := make([]any, 0, len(urls))
-	for i, u := range urls {
-		img, err := fetchImage(ctx, u, s.maxImageBytes, s.client.UserAgent())
+func (s *Server) uploadTurnAttachments(ctx context.Context, cookie, ph, model string, refs []adapter.MediaRef) ([]any, error) {
+	items := make([]any, 0, len(refs))
+	for i, ref := range refs {
+		img, err := fetchImage(ctx, ref.URL, s.maxImageBytes, s.client.UserAgent())
 		if err != nil {
-			return nil, fmt.Errorf("image %d of %d: %w", i+1, len(urls), err)
+			return nil, fmt.Errorf("image %d of %d: %w", i+1, len(refs), err)
 		}
 		if len(img.Data) == 0 {
-			return nil, fmt.Errorf("image %d of %d: %w", i+1, len(urls), errImageFetch)
+			return nil, fmt.Errorf("image %d of %d: %w", i+1, len(refs), errImageFetch)
 		}
-		up, err := s.client.UploadFile(ctx, cookie, ph, img.Name, img.Data)
+		// image_url.detail is the client's; what the channel receives is ours.
+		data, name, applied := applyImageDetail(img.Data, img.Name, ref.Detail)
+		if !applied {
+			s.debugf("chat: image %d/%d: level %q not applied (format not decodable here) — uploading full resolution",
+				i+1, len(refs), ref.Detail)
+		}
+		up, err := s.client.UploadFile(ctx, cookie, ph, name, data)
 		if err != nil {
 			return nil, err
 		}
@@ -203,8 +210,8 @@ func (s *Server) uploadTurnAttachments(ctx context.Context, cookie, ph, model st
 		if err != nil {
 			return nil, err
 		}
-		s.debugf("chat: attachment %d/%d %s %d bytes → tokenUsage=%d", i+1, len(urls), img.Name, img.Bytes, parsed.TokenUsage)
-		items = append(items, mimo.AttachmentItem("image", img.Name, img.Bytes, up, parsed))
+		s.debugf("chat: attachment %d/%d %s %d bytes → tokenUsage=%d", i+1, len(refs), name, len(data), parsed.TokenUsage)
+		items = append(items, mimo.AttachmentItem("image", name, len(data), up, parsed))
 	}
 	return items, nil
 }

@@ -10,8 +10,12 @@ package api_test
 // payload carried.
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -301,12 +305,14 @@ func TestIMG009ImageDetailReportedAsDropped(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200 (a supported detail must not be refused)", resp.StatusCode, raw)
 	}
-	warn := resp.Header.Get("X-Mimo-Warnings")
-	if !strings.Contains(warn, "image_url.detail") {
-		t.Errorf("X-Mimo-Warnings = %q, want the unhonoured detail level named", warn)
+	if warn := resp.Header.Get("X-Mimo-Warnings"); strings.Contains(warn, "detail") {
+		t.Errorf("X-Mimo-Warnings = %q: a detail level is applied internally, so there is nothing to warn about", warn)
 	}
 	if media := mediaOf(t, ts, 0); len(media) != 1 {
 		t.Errorf("multiMedias = %v, want the image still sent", media)
+	}
+	if n := len(ts.Upstream.LastUpload()); n == 0 {
+		t.Fatal("no upload: the image must still travel the resource path")
 	}
 }
 
@@ -360,11 +366,95 @@ func TestIMG012WarningHeaderSeparatesUnknownFromUnhonoured(t *testing.T) {
 	if !strings.Contains(warn, "ignored unsupported fields: [tools]") {
 		t.Errorf("warnings = %q, want the unknown field named as ignored", warn)
 	}
-	if !strings.Contains(warn, "accepted but not honoured: [web_search_options.search_context_size image_url.detail]") {
-		t.Errorf("warnings = %q, want the understood-but-unapplied fields named separately, search context first, each once", warn)
+	if !strings.Contains(warn, "accepted but not honoured: [web_search_options.search_context_size]") {
+		t.Errorf("warnings = %q, want the understood-but-unapplied search context named separately, once", warn)
+	}
+	if strings.Contains(warn, "image_url.detail") {
+		t.Errorf("warnings = %q: detail is applied internally and must not be reported", warn)
 	}
 	if !strings.Contains(warn, "; ") {
 		t.Errorf("warnings = %q, want the two statements separated", warn)
+	}
+}
+
+// bigPNGDataURL builds a w×h PNG data URL: the only way to see whether a detail
+// level changed anything is to measure the bytes that actually went up.
+func bigPNGDataURL(t *testing.T, w, h int) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: 128, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// IMG-013: OpenAI's detail level is the client's word; what the channel receives is
+// ours. The channel has no level parameter, so the level has to be applied where it
+// exists — on the uploaded pixels ("low" is defined by OpenAI as a 512 px longest
+// side, which is also why it is the cheap option). Measured on the recorded upload,
+// not on an internal flag: "low" must arrive scaled, "high"/absent must arrive whole.
+func TestIMG013DetailLevelAppliedToUploadedBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		detail string
+		want   int
+	}{
+		{"low", "low", 512},
+		{"high", "high", 1024},
+		{"absent", "", 1024},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acct := oneAccount()
+			ts := testserver.NewTestServer(t, acct, nil)
+			ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+			ts.Upstream.SetParseResult(700, false)
+
+			level := ""
+			if tc.detail != "" {
+				level = fmt.Sprintf(`,"detail":%q`, tc.detail)
+			}
+			body := fmt.Sprintf(`{"model":"mimo-v2.6-flash","stream":false,"messages":[{"role":"user","content":[
+				{"type":"text","text":"图里是什么"},
+				{"type":"image_url","image_url":{"url":%q%s}}]}]}`, bigPNGDataURL(t, 1024, 768), level)
+			status, raw := chatOnce(t, ts, body)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body=%s, want 200", status, raw)
+			}
+
+			up := ts.Upstream.LastUpload()
+			if len(up) == 0 {
+				t.Fatal("nothing was uploaded")
+			}
+			got, _, err := image.Decode(bytes.NewReader(up))
+			if err != nil {
+				t.Fatalf("uploaded bytes are not a decodable image: %v", err)
+			}
+			b := got.Bounds()
+			longest := b.Dx()
+			if b.Dy() > longest {
+				longest = b.Dy()
+			}
+			if longest != tc.want {
+				t.Errorf("uploaded image is %dx%d (longest %d), want longest %d", b.Dx(), b.Dy(), longest, tc.want)
+			}
+			if tc.want == 512 && b.Dx() != 512 {
+				t.Errorf("width = %d, want 512 (aspect ratio must survive the scale)", b.Dx())
+			}
+			// The media item must describe the bytes that were actually sent.
+			if media := mediaOf(t, ts, 0); len(media) == 1 {
+				if size, _ := media[0]["size"].(float64); int(size) != len(up) {
+					t.Errorf("multiMedias size = %v, want %d (the uploaded size)", size, len(up))
+				}
+			} else {
+				t.Errorf("multiMedias = %v, want one image item", media)
+			}
+		})
 	}
 }
 

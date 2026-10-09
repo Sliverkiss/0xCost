@@ -84,7 +84,12 @@ on the live test account that is 15 ids, including `clawm-alpha`/`clawl-alpha`
 and the omni variants. Reasoning is returned when `reasoning_effort` is anything
 but `none` (the older `enable_thinking: true` / `reasoning: {"type":"enabled"}`
 spellings still work); the thinking arrives as `reasoning_content` on the
-message.
+message. The response is OpenAI's `chat.completion` key for key: `message.refusal`
+and `choices[0].logprobs` are sent as `null`, and `usage` always carries
+`prompt_tokens_details`/`completion_tokens_details` (zero-filled when the upstream
+counted none) — clients never have to branch on a missing key. Errors carry
+`param` naming the offending request field (`"param":"reasoning_effort"`), or
+`null` when no single field is at fault.
 
 Audio: `input` is required; `response_format` is `wav` (default) or `mp3` —
 the upstream produces no other container. `voice` takes a Studio voice id/name
@@ -123,11 +128,14 @@ call reads text out of a PNG. `MIMO2API_MAX_IMAGES` (default 10) and
 body or an oversized file is a named 400 (`image_fetch_failed`,
 `unsupported_image_type`, `image_too_large`, `too_many_images`,
 `unsupported_image_detail`) and never cools an account down. OpenAI's
-`image_url.detail` (`auto`/`low`/`high`) is accepted and reported in
-`X-Mimo-Warnings` as `accepted but not honoured` — a clause of its own, next to
-`ignored unsupported fields`, which is reserved for fields we do not know at all.
-The channel's parse surface has no level knob, and a field that looks applied but is
-not is worse than one that says so. A message with images and no text is sent with a neutral query
+`image_url.detail` (`auto`/`low`/`high`) is **applied inside the gateway**: the
+channel's parse surface has no level knob, so the level is applied where it really
+lives — on the bytes that go up. `low` is scaled so the longest side is 512 px
+(OpenAI's own definition of `low`, and why it is the cheap option), `auto`/`high`
+upload at the channel's native full resolution. A format the gateway cannot decode
+(webp, which would cost a decoder dependency it does not take) goes up whole and is
+logged. Nothing about this reaches the client, because the client only ever asked in
+OpenAI's terms. A message with images and no text is sent with a neutral query
 (`请描述这张图片。`).
 
 **Web search**: with `web_search_options` present, `web_search_status: enabled`

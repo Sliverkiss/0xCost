@@ -253,7 +253,7 @@ func (req *chatRequest) mediaErr(maxImages int) error {
 // anything else → malformed. Unknown part types are ignored, not rejected
 // (permissive decode, SDD §5.2) — only an image part we cannot fetch is refused,
 // and it is named.
-func flattenContent(raw json.RawMessage) (string, []string, error) {
+func flattenContent(raw json.RawMessage) (string, []adapter.MediaRef, error) {
 	if len(raw) == 0 {
 		return "", nil, nil
 	}
@@ -264,7 +264,7 @@ func flattenContent(raw json.RawMessage) (string, []string, error) {
 	var parts []contentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		texts := make([]string, 0, len(parts))
-		var media []string
+		var media []adapter.MediaRef
 		for _, p := range parts {
 			switch p.Type {
 			case "text", "":
@@ -274,7 +274,10 @@ func flattenContent(raw json.RawMessage) (string, []string, error) {
 				if u == "" || !imageURLSupported(u) {
 					return "", nil, errUnsupportedImageURL
 				}
-				media = append(media, u)
+				// The level travels with the image so the upload path can apply
+				// it: OpenAI's field is the client's, the conversion to bytes the
+				// channel receives is ours (IMG-013).
+				media = append(media, adapter.MediaRef{URL: u, Detail: strings.TrimSpace(p.ImageURL.Detail)})
 			default:
 				// Unknown part types are ignored, not rejected (permissive
 				// decode, SDD §5.2).
@@ -306,10 +309,12 @@ func imageURLSupported(u string) bool {
 //   - "ignored unsupported fields" — the request named something we do not know at
 //     all (tools, max_tokens, seed…): a stripped field.
 //   - "accepted but not honoured" — a real OpenAI field we parse and validate, but
-//     which the channel has no equivalent for (image_url.detail,
-//     web_search_options.search_context_size). It is reported because a client that
-//     asked for "high" fidelity, or a bigger search context, must not be left
-//     believing it got it — silence there is a lie by omission.
+//     which nothing in the pipeline can act on (web_search_options.search_context_size:
+//     the search switch has no depth). It is reported because a client that asked for
+//     a bigger search context must not be left believing it got one — silence there is
+//     a lie by omission. image_url.detail is deliberately NOT in this clause: the
+//     gateway applies it to the uploaded bytes (applyImageDetail), so it is honoured
+//     rather than reported.
 func (req *chatRequest) warningsHeader() string {
 	var clauses []string
 	if dropped := req.droppedFields(); len(dropped) > 0 {
@@ -337,11 +342,6 @@ func (req *chatRequest) notHonouredFields() []string {
 	// granularity.
 	if req.WebSearchOptions != nil && strings.TrimSpace(req.WebSearchOptions.SearchContextSize) != "" {
 		add("web_search_options.search_context_size")
-	}
-	for _, m := range req.Messages {
-		for range imageDetails(m.Content) {
-			add("image_url.detail")
-		}
 	}
 	return out
 }

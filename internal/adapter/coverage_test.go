@@ -168,21 +168,25 @@ func TestNormalizeModelCatalogBranches(t *testing.T) {
 // AddUsage must sum reasoning detail tokens across replayed turns and omit the
 // detail object entirely when the sum is zero.
 func TestAddUsageDetailBranches(t *testing.T) {
-	a := Usage{CompletionDetails: &UsageDetails{ReasoningTokens: 5}}
-	b := Usage{CompletionDetails: &UsageDetails{ReasoningTokens: 7}}
+	a := Usage{CompletionDetails: &CompletionTokensDetails{ReasoningTokens: 5}}
+	b := Usage{CompletionDetails: &CompletionTokensDetails{ReasoningTokens: 7}}
 	sum := AddUsage(a, b)
 	if sum.CompletionDetails == nil || sum.CompletionDetails.ReasoningTokens != 12 {
 		t.Errorf("reasoning sum = %+v, want 12", sum.CompletionDetails)
 	}
 	// Both nil → omitted.
+	// Both detail objects are part of OpenAI's shape, so the sum always carries
+	// them — zero-filled rather than missing, and never invented.
 	plain := AddUsage(Usage{PromptTokens: 1}, Usage{CompletionTokens: 2})
-	if plain.PromptDetails != nil || plain.CompletionDetails != nil {
-		t.Errorf("unexpected details = %+v", plain)
+	if plain.PromptDetails == nil || plain.CompletionDetails == nil {
+		t.Errorf("details must always be present, got %+v", plain)
 	}
-	// Present but zero → still omitted (never invent a detail block).
-	zero := AddUsage(Usage{CompletionDetails: &UsageDetails{}}, Usage{})
-	if zero.CompletionDetails != nil {
-		t.Errorf("zero-sum completion details must be omitted, got %+v", zero.CompletionDetails)
+	if plain.PromptDetails.CachedTokens != 0 || plain.CompletionDetails.ReasoningTokens != 0 {
+		t.Errorf("details must be zero when nothing was counted, got %+v", plain)
+	}
+	zero := AddUsage(Usage{CompletionDetails: &CompletionTokensDetails{}}, Usage{})
+	if zero.CompletionDetails == nil || zero.CompletionDetails.ReasoningTokens != 0 {
+		t.Errorf("zero-sum completion details must be present and zero, got %+v", zero.CompletionDetails)
 	}
 }
 

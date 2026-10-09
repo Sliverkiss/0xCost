@@ -22,11 +22,38 @@ func encodeJSON(w io.Writer, v any) error {
 }
 
 // apiError is the OpenAI-shaped error body (SDD §7.4):
-// {"error":{"message","type","code"}}.
+// {"error":{"message","type","param","code"}}. param names the request field a
+// parameter-level failure belongs to, the way OpenAI's own errors do
+// ("param":"temperature"); it is null rather than invented for failures that are
+// not about a single field.
 type apiError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    string `json:"code,omitempty"`
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    string  `json:"code,omitempty"`
+}
+
+// errorParams maps the codes that ARE about one request field onto it. A code
+// missing here deliberately reports param:null instead of guessing a field.
+var errorParams = map[string]string{
+	"unsupported_reasoning_effort":    "reasoning_effort",
+	"unsupported_search_context_size": "web_search_options.search_context_size",
+	"unsupported_image_detail":        "messages[].content[].image_url.detail",
+	"unsupported_image_url":           "messages[].content[].image_url.url",
+	"unsupported_image_type":          "messages[].content[].image_url.url",
+	"image_fetch_failed":              "messages[].content[].image_url.url",
+	"image_too_large":                 "messages[].content[].image_url.url",
+	"too_many_images":                 "messages",
+	"context_too_long":                "messages",
+	"stream_unsupported":              "stream",
+}
+
+// paramForCode returns the field name to report for a code, or nil.
+func paramForCode(code string) *string {
+	if p, ok := errorParams[code]; ok {
+		return &p
+	}
+	return nil
 }
 
 type errorBody struct {
@@ -42,7 +69,9 @@ func writeError(w http.ResponseWriter, status int, typ, code, message string, re
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 	}
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{Message: message, Type: typ, Code: code}})
+	_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{
+		Message: message, Type: typ, Param: paramForCode(code), Code: code,
+	}})
 }
 
 // Sentinel request-level errors (chat.go raises these before the upstream

@@ -19,10 +19,20 @@ import (
 type Msg struct {
 	Role    string
 	Content string
-	// Media are the client's image URLs for this message, in order (OpenAI
-	// image_url parts). They are inputs, not upstream handles: the pipeline
-	// uploads them with the turn they belong to (IMG-*, docs/attachments-reverse.md).
-	Media []string
+	// Media are the client's image parts for this message, in order (OpenAI
+	// image_url parts), each with the detail level the client asked for. They are
+	// inputs, not upstream handles: the pipeline converts them — fetching bytes,
+	// applying the level, uploading — with the turn they belong to (IMG-*,
+	// docs/attachments-reverse.md). Detail deliberately does NOT enter any hash:
+	// the same image at another level is the same turn, not another session.
+	Media []MediaRef
+}
+
+// MediaRef is one image part: the client's URL and OpenAI's image_url.detail
+// level ("" when the client did not send one, which is OpenAI's "auto").
+type MediaRef struct {
+	URL    string
+	Detail string
 }
 
 // SystemPreamble returns the canonical system preamble: every system message's

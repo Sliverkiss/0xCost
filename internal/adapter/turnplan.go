@@ -17,7 +17,7 @@ type TurnPlan struct {
 	// Media[i] are the image URLs that belong to Queries[i] (IMG-006): an image
 	// travels with the turn whose message carried it and is uploaded on that turn
 	// only, because the channel attaches files to a single query.
-	Media [][]string
+	Media [][]MediaRef
 }
 
 // DefaultImageOnlyQuery is the query sent for a user message that carries images
@@ -50,7 +50,7 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 	var systemParts []string
 	type userTurn struct {
 		content string
-		media   []string
+		media   []MediaRef
 	}
 	var userMsgs []userTurn
 	for _, m := range msgs {
@@ -75,7 +75,7 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 	}
 	plan := &TurnPlan{
 		Queries: make([]string, 0, len(userMsgs)),
-		Media:   make([][]string, 0, len(userMsgs)),
+		Media:   make([][]MediaRef, 0, len(userMsgs)),
 	}
 	for i, t := range userMsgs {
 		q := t.content
@@ -141,7 +141,7 @@ func PlanDelta(msgs []Msg, storedMsgCount int) (*TurnPlan, error) {
 	// arithmetic the caller stores (CountNonSystem) is unchanged.
 	var systemParts []string
 	var queries []string
-	var media [][]string
+	var media [][]MediaRef
 	seen := 0
 	for _, m := range msgs {
 		if m.Role == "system" {

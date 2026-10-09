@@ -1028,12 +1028,14 @@ transient business-code failure under load) → one `multiMedias` entry per imag
 **the turn whose message carried it** (`mediaType: "image"`, plus the parse result's
 `id` and `tokenUsage`). The media item carries the full field set, because the probe
 showed a stripped item is refused. **`image_url.detail` is validated
-(`auto`/`low`/`high`) and then reported in `X-Mimo-Warnings` under its own clause,
-`accepted but not honoured`** — separate from `ignored unsupported fields`, which is
-for fields we do not know at all (a caller must not read one line for both). The
-channel's parse call takes only `fileUrl`/`objectName`/`model` (the verified shape, and the sibling
-client sends nothing else), so the level has nowhere to go — the one thing it must
-never do is look applied. Limits are client-facing guards, documented as
+(`auto`/`low`/`high`) and then applied to the uploaded bytes** (`applyImageDetail`):
+the channel's parse call takes only `fileUrl`/`objectName`/`model` (the verified shape, and the sibling
+client sends nothing else), so `low` is reproduced where the level actually lives — on the pixels: the image is
+box-averaged down until its longest side is 512 px and re-encoded (JPEG stays JPEG so
+the upload does not grow), while `auto`/`high` upload at the channel's native
+resolution. A format this package cannot decode (webp) goes up whole; the debug log
+says so. The client is told nothing, because it asked in OpenAI's terms and got
+them (IMG-013). Limits are client-facing guards, documented as
 guards: `MIMO2API_MAX_IMAGES` (default 10) and `MIMO2API_MAX_IMAGE_BYTES` (default
 20 MiB — OpenAI's own vision-input limit). The channel itself advertises 100 MB per
 file and 50 files per message. Failures are named 400s — `unsupported_image_url`,
@@ -1077,6 +1079,20 @@ where multi-turn fidelity lives, which is why streaming requests carry the
 conversation store and non-streaming requests don't.
 
 ### 5.4 Response mapping (MiMo → OpenAI)
+
+The body is OpenAI's `chat.completion`, key for key (OSTD-008): `id` is
+`chatcmpl-<32 hex>`, `object` is `chat.completion`, `created` is Unix seconds,
+`model` is the id the client asked for, `choices[0].index` is 0 with
+`finish_reason` from the upstream event, and `usage` carries `prompt_tokens`,
+`completion_tokens`, `total_tokens` plus **both** detail objects. Keys that are
+null in OpenAI's schema are sent as null rather than omitted: `message.refusal`
+and `choices[0].logprobs`. The detail objects are always present and zero-filled
+when the upstream counted nothing, so a client never branches on their absence —
+and each carries only its own counter (`prompt_tokens_details.cached_tokens`,
+`completion_tokens_details.reasoning_tokens`), because padding one object with the
+other's key is shape noise a schema validator sees;
+`reasoning_content` stays the one optional addition (omitted when empty), and
+`annotations`/`citations` appear only on a search turn that produced sources.
 
 Non-streaming:
 
@@ -1312,6 +1328,12 @@ the source-tree `data/` — same file, container-native path.
   an honest terminated stream rather than a hang.
 
 ### 7.4 Error responses (OpenAI shape)
+
+The body is `{"error":{"message","type","param","code"}}` (OSTD-009). `param`
+names the request field a parameter-level failure belongs to, spelled the way the
+client wrote it (`reasoning_effort`, `web_search_options.search_context_size`,
+`messages[].content[].image_url.url`, `messages`, `stream`); a failure that is not
+about one field reports `param: null` instead of guessing a field.
 
 ```jsonc
 {"error": {"message": "...", "type": "...", "code": "..."}}

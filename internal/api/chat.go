@@ -163,7 +163,7 @@ type chatPipeline struct {
 // replay, in order, against one fresh upstream conversation.
 type attemptPlan struct {
 	queries        []string
-	media          [][]string // media[i] belongs to queries[i] (IMG-006)
+	media          [][]adapter.MediaRef // media[i] belongs to queries[i] (IMG-006)
 	conversationID string
 	prevDialogID   string
 }

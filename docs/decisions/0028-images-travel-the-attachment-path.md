@@ -81,16 +81,20 @@ never touches the query budget.**
 
 ## Evidence
 
-- OpenAI-alignment amendment: `image_url` is an object in OpenAI's schema, and its
-  second field, `detail` (`auto`/`low`/`high`), was the one part of the standard
-  shape that this work initially ignored. It is now **validated** (a value outside
-  the set is a 400 `unsupported_image_detail` before any account work) and, because
-  the channel's parse call has no level parameter (verified shape; the sibling client
-  sends none either), **reported as `accepted but not honoured`** — its own clause
-  in `X-Mimo-Warnings`, kept distinct from `ignored unsupported fields` (fields we do
-  not know at all): reporting a standard field as "unsupported" would be as wrong as
-  reporting nothing. A knob that looks
-  applied but is not would be worse than one that announces itself (IMG-009/010).
+- OpenAI-alignment amendment (supersedes the first version of this note): OpenAI's
+  `image_url` is an object whose second field, `detail` (`auto`/`low`/`high`), this
+  work initially ignored. The first fix validated it and reported it as "accepted but
+  not honoured" — honest, but still the wrong shape for a gateway whose whole contract
+  is *OpenAI outside, the channel's shape inside*: a standard field the client sends
+  should be **converted, not complained about**. The level is therefore applied where
+  it actually lives, on the bytes that go up: `low` is box-averaged down to a 512 px
+  longest side and re-encoded (`applyImageDetail`, dependency-free — one extra decode
+  of a format we already accepted), `auto`/`high`/absent upload at the channel's native
+  resolution. An invalid value is still a 400 `unsupported_image_detail` before any
+  account work, and `image_url.detail` no longer appears in `X-Mimo-Warnings` at all:
+  the client asked in OpenAI's terms and gets OpenAI's behaviour (IMG-009/013).
+  Formats this package cannot decode (webp) go up whole and are logged — a documented
+  limit, not a silent one.
 - Tests: `internal/api/image_test.go` IMG-001..010 (the mock upstream already serves
   the resource surface; the tests assert the recorded `multiMedias`, the per-turn
   attachment, the retry count, the byte-for-byte upload, and the named 400s).

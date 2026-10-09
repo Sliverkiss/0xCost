@@ -11,6 +11,18 @@ the OpenAI HTTP surface: chat (one-shot), TTS and ASR, web search, model listing
   anything off. Function calling is not emulated: a `tools` field is ignored and
   reported in `X-Mimo-Warnings`, because the protocol prompt an emulation needs
   spends 1,355-5,222 characters of the platform's 102,400-character query budget.
+  The response is OpenAI's `chat.completion` key for key (`message.refusal` and
+  `choices[0].logprobs` sent as `null`, `usage` always carrying its two detail
+  objects), and errors carry `param` naming the offending field.
+- Images: OpenAI `image_url` parts (a `data:` URL or an http(s) one) are fetched
+  and uploaded through the platform's own resource path (`genUploadInfo` → PUT →
+  `resource/parse`), then referenced from that turn's `multiMedias` — so an image is
+  accounted separately from the 102,400-character query budget. `image_url.detail`
+  is applied inside the gateway, on the bytes that go up: `low` is scaled to a 512 px
+  longest side (OpenAI's own definition of `low`), `auto`/`high` upload at the
+  channel's native resolution. A bad URL, a non-image body or an oversized file is a
+  named 400 (`image_fetch_failed`, `unsupported_image_type`, `image_too_large`,
+  `too_many_images`, `unsupported_image_detail`) and never cools an account down.
 - Audio: /v1/audio/speech (wav/mp3, the upstream's 1024-character limit enforced
   before any upstream work) and /v1/audio/transcriptions (multipart).
 - Models: the account's real catalog from bot/config, cached, with ids the upstream

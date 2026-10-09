@@ -8,6 +8,7 @@ package api_test
 // Documentation: SDD §5.2, docs/TDD.md OSTD-001..007.
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -149,6 +150,117 @@ func TestOSTD006ExplicitSearchStatusWins(t *testing.T) {
 	}
 	if got := ts.Upstream.Requests()[0].WebSearchStatus; got != "auto" {
 		t.Errorf("upstream webSearchStatus = %q, want %q (explicit web_search_status wins)", got, "auto")
+	}
+}
+
+// OSTD-008: the response body is OpenAI's shape, not a lookalike. The keys a client
+// validating against that schema expects are all present, including the ones that are
+// null and the usage detail objects that are zero — a client should never have to
+// branch on their absence.
+func TestOSTD008ResponseCarriesTheOpenAIShape(t *testing.T) {
+	ts, _ := scriptedServer(t)
+	status, raw := chatOnce(t, ts, ostdBody("mimo-v2.6-flash", nil))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", status, raw)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, raw)
+	}
+	for _, k := range []string{"id", "object", "created", "model", "choices", "usage"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("response has no %q: %s", k, raw)
+		}
+	}
+	if body["object"] != "chat.completion" {
+		t.Errorf("object = %v, want chat.completion", body["object"])
+	}
+	if id, _ := body["id"].(string); !strings.HasPrefix(id, "chatcmpl-") {
+		t.Errorf("id = %q, want a chatcmpl- prefixed id", id)
+	}
+	ch, _ := body["choices"].([]any)
+	if len(ch) != 1 {
+		t.Fatalf("choices = %v, want exactly one", body["choices"])
+	}
+	choice, _ := ch[0].(map[string]any)
+	for _, k := range []string{"index", "message", "logprobs", "finish_reason"} {
+		if _, ok := choice[k]; !ok {
+			t.Errorf("choices[0] has no %q: %s", k, raw)
+		}
+	}
+	if v, ok := choice["logprobs"]; !ok || v != nil {
+		t.Errorf("choices[0].logprobs = %v (present=%v), want null", v, ok)
+	}
+	msg, _ := choice["message"].(map[string]any)
+	for _, k := range []string{"role", "content", "refusal"} {
+		if _, ok := msg[k]; !ok {
+			t.Errorf("choices[0].message has no %q: %s", k, raw)
+		}
+	}
+	if v, ok := msg["refusal"]; !ok || v != nil {
+		t.Errorf("message.refusal = %v (present=%v), want null", v, ok)
+	}
+	u, _ := body["usage"].(map[string]any)
+	for _, k := range []string{"prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details", "completion_tokens_details"} {
+		if _, ok := u[k]; !ok {
+			t.Errorf("usage has no %q: %s", k, raw)
+		}
+	}
+	// Each detail object carries its own counter and only its own: OpenAI's prompt
+	// details hold cached_tokens, its completion details hold reasoning_tokens.
+	// Padding one object with the other's key is shape noise a schema validator sees.
+	prompt, _ := u["prompt_tokens_details"].(map[string]any)
+	if _, ok := prompt["cached_tokens"]; !ok {
+		t.Errorf("usage.prompt_tokens_details has no cached_tokens: %s", raw)
+	}
+	if _, ok := prompt["reasoning_tokens"]; ok {
+		t.Errorf("usage.prompt_tokens_details carries reasoning_tokens, which belongs to the completion object: %s", raw)
+	}
+	completion, _ := u["completion_tokens_details"].(map[string]any)
+	if _, ok := completion["reasoning_tokens"]; !ok {
+		t.Errorf("usage.completion_tokens_details has no reasoning_tokens: %s", raw)
+	}
+	if _, ok := completion["cached_tokens"]; ok {
+		t.Errorf("usage.completion_tokens_details carries cached_tokens, which belongs to the prompt object: %s", raw)
+	}
+}
+
+// OSTD-009: an error names the field it is about, the way OpenAI's errors do — and
+// stays silent (null) rather than guessing when the failure is not about one field.
+func TestOSTD009ErrorParamNamesTheOffendingField(t *testing.T) {
+	ts, _ := scriptedServer(t)
+	status, raw := chatOnce(t, ts, ostdBody("mimo-v2.6-flash", map[string]any{"reasoning_effort": "very-high"}))
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", status, raw)
+	}
+	var body struct {
+		Error struct {
+			Message string  `json:"message"`
+			Type    string  `json:"type"`
+			Param   *string `json:"param"`
+			Code    string  `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("error body is not JSON: %v (%s)", err, raw)
+	}
+	if body.Error.Type != "invalid_request_error" {
+		t.Errorf("type = %q, want invalid_request_error", body.Error.Type)
+	}
+	if body.Error.Param == nil || *body.Error.Param != "reasoning_effort" {
+		t.Errorf("param = %v, want reasoning_effort", body.Error.Param)
+	}
+	if body.Error.Code != "unsupported_reasoning_effort" {
+		t.Errorf("code = %q, want unsupported_reasoning_effort", body.Error.Code)
+	}
+
+	// A failure that is not about a request field must not invent one.
+	status, raw = chatOnce(t, ts, ostdBody("no-such-model", nil))
+	if status == http.StatusOK {
+		t.Fatalf("status = 200 for an unknown model, want an error: %s", raw)
+	}
+	if !strings.Contains(raw, `"param":null`) {
+		t.Errorf("body = %s, want param:null when no single field is at fault", raw)
 	}
 }
 

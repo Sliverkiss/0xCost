@@ -229,20 +229,31 @@ func TestMapUsage(t *testing.T) {
 	})
 	t.Run("nil usage maps to zeros, never invented", func(t *testing.T) {
 		got := MapUsage(nil)
-		if got != (Usage{}) {
-			t.Errorf("nil usage = %+v", got)
+		if got.PromptTokens != 0 || got.CompletionTokens != 0 || got.TotalTokens != 0 {
+			t.Errorf("nil usage tokens = %+v, want zeros", got)
+		}
+		// The detail objects are part of OpenAI's shape, so they are present and
+		// zero rather than absent — a client never branches on a missing key.
+		if got.PromptDetails == nil || got.PromptDetails.CachedTokens != 0 {
+			t.Errorf("prompt details = %+v, want present and zero", got.PromptDetails)
+		}
+		if got.CompletionDetails == nil || got.CompletionDetails.ReasoningTokens != 0 {
+			t.Errorf("completion details = %+v, want present and zero", got.CompletionDetails)
 		}
 	})
-	t.Run("details omitted when upstream sent none", func(t *testing.T) {
+	t.Run("details present and zero when upstream sent none", func(t *testing.T) {
 		got := MapUsage(&MiMoUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2})
-		if got.PromptDetails != nil || got.CompletionDetails != nil {
-			t.Errorf("unexpected details = %+v", got)
+		if got.PromptDetails == nil || got.CompletionDetails == nil {
+			t.Fatalf("details absent = %+v, want present (OpenAI always sends both objects)", got)
+		}
+		if got.PromptDetails.CachedTokens != 0 || got.CompletionDetails.ReasoningTokens != 0 {
+			t.Errorf("details = %+v, want zero counters (never invented)", got)
 		}
 	})
 }
 
 func TestAddUsage(t *testing.T) {
-	a := Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, PromptDetails: &UsageDetails{CachedTokens: 4}}
+	a := Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, PromptDetails: &PromptTokensDetails{CachedTokens: 4}}
 	b := Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}
 	s := AddUsage(a, b)
 	if s.PromptTokens != 17 || s.CompletionTokens != 8 || s.TotalTokens != 25 {

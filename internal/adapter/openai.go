@@ -23,19 +23,29 @@ type ChunkChoice struct {
 
 // UsageDetails carries cached/reasoning token detail mapped from upstream
 // nativeUsage (SDD §5.4).
-type UsageDetails struct {
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+// PromptTokensDetails and CompletionTokensDetails are separate types on purpose:
+// OpenAI's two detail objects hold different counters (prompt: cached_tokens,
+// completion: reasoning_tokens), and one shared struct would pad each object with
+// the other's key — shape noise a client validating against the schema would see.
+// No omitempty on either: both objects are always sent, zero-filled when a counter
+// does not apply, so nobody has to branch on their absence. A zero means "the
+// upstream counted none", never an invented value (TDD API-004).
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // Usage is the OpenAI usage object. Detail fields are pointer-typed so they
 // are omitted entirely when upstream sent none.
 type Usage struct {
-	PromptTokens      int           `json:"prompt_tokens"`
-	CompletionTokens  int           `json:"completion_tokens"`
-	TotalTokens       int           `json:"total_tokens"`
-	PromptDetails     *UsageDetails `json:"prompt_tokens_details,omitempty"`
-	CompletionDetails *UsageDetails `json:"completion_tokens_details,omitempty"`
+	PromptTokens      int                      `json:"prompt_tokens"`
+	CompletionTokens  int                      `json:"completion_tokens"`
+	TotalTokens       int                      `json:"total_tokens"`
+	PromptDetails     *PromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionDetails *CompletionTokensDetails `json:"completion_tokens_details"`
 }
 
 // Chunk is one OpenAI chat.completion.chunk frame. JSON keys are exactly
@@ -159,23 +169,24 @@ type NativeThink struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
-// MapUsage converts the last upstream usage event into the OpenAI usage
-// object. Nil → zeros, never invented (TDD API-004).
+// MapUsage converts the last upstream usage event into the OpenAI usage object.
+// Both detail objects are always present — zero-filled when the upstream counted
+// nothing — because OpenAI's own responses always carry them and a client should
+// not have to branch on a missing key. Nil → zeros, never invented (TDD API-004).
 func MapUsage(u *MiMoUsage) Usage {
+	out := Usage{PromptDetails: &PromptTokensDetails{}, CompletionDetails: &CompletionTokensDetails{}}
 	if u == nil {
-		return Usage{}
+		return out
 	}
-	out := Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-	}
+	out.PromptTokens = u.PromptTokens
+	out.CompletionTokens = u.CompletionTokens
+	out.TotalTokens = u.TotalTokens
 	if u.NativeUsage != nil {
 		if u.NativeUsage.PromptDetails != nil {
-			out.PromptDetails = &UsageDetails{CachedTokens: u.NativeUsage.PromptDetails.CachedTokens}
+			out.PromptDetails.CachedTokens = u.NativeUsage.PromptDetails.CachedTokens
 		}
 		if u.NativeUsage.CompletionDetails != nil {
-			out.CompletionDetails = &UsageDetails{ReasoningTokens: u.NativeUsage.CompletionDetails.ReasoningTokens}
+			out.CompletionDetails.ReasoningTokens = u.NativeUsage.CompletionDetails.ReasoningTokens
 		}
 	}
 	return out
@@ -189,12 +200,9 @@ func AddUsage(a, b Usage) Usage {
 		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
 		TotalTokens:      a.TotalTokens + b.TotalTokens,
 	}
-	if (a.PromptDetails != nil || b.PromptDetails != nil) && cachedOf(a)+cachedOf(b) > 0 {
-		sum.PromptDetails = &UsageDetails{CachedTokens: cachedOf(a) + cachedOf(b)}
-	}
-	if (a.CompletionDetails != nil || b.CompletionDetails != nil) && reasoningOf(a)+reasoningOf(b) > 0 {
-		sum.CompletionDetails = &UsageDetails{ReasoningTokens: reasoningOf(a) + reasoningOf(b)}
-	}
+	// Always present, exactly like MapUsage: both objects are part of the shape.
+	sum.PromptDetails = &PromptTokensDetails{CachedTokens: cachedOf(a) + cachedOf(b)}
+	sum.CompletionDetails = &CompletionTokensDetails{ReasoningTokens: reasoningOf(a) + reasoningOf(b)}
 	return sum
 }
 
@@ -212,18 +220,26 @@ func reasoningOf(u Usage) int {
 	return 0
 }
 
-// CompletionMessage is the non-streaming response message (SDD §5.4).
+// CompletionMessage is the non-streaming response message (SDD §5.4). Field set
+// follows OpenAI's ChatCompletionMessage: refusal is always present (null when the
+// model refused nothing) because a client validating against that schema expects
+// the key, and annotations appear when a search turn produced citations.
 type CompletionMessage struct {
 	Role             string       `json:"role"`
 	Content          string       `json:"content"`
+	Refusal          *string      `json:"refusal"`
 	ReasoningContent string       `json:"reasoning_content,omitempty"`
 	Annotations      []Annotation `json:"annotations,omitempty"`
 }
 
 // CompletionChoice is the single element of the non-streaming choices array.
+// logprobs is emitted as null: this gateway never returns token log-probabilities,
+// and OpenAI's own responses carry the key with null for clients that do not ask
+// for them.
 type CompletionChoice struct {
 	Index        int               `json:"index"`
 	Message      CompletionMessage `json:"message"`
+	Logprobs     any               `json:"logprobs"`
 	FinishReason string            `json:"finish_reason"`
 }
 
