@@ -8,7 +8,7 @@ anchor), ADR 0014 (self-healing credentials), ADR 0017 (no session store)
 ## Context
 
 The owner asked how to **manage** accounts once the store is Upstash rather than
-`data/accounts.json`: `https://known-mudfish-135209.upstash.io/` was handed over
+`data/accounts.json`: an Upstash endpoint (`https://<db>.upstash.io/`) was handed over
 with the question "看看怎么用upstash来进行管理而不是account.json".
 
 ADR 0018 made the store pluggable, and the deployed container had already been

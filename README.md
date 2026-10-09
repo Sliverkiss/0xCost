@@ -244,7 +244,7 @@ mimo2api -accounts verify                   # connect, count, report
 
 ```
 $ DS_REDIS_HOST=… DS_REDIS_TOKEN=… mimo2api -accounts list
-1 account(s) in redis (known-mudfish-135209.upstash.io:6379)
+1 account(s) in redis (<db>.upstash.io:6379)
   <id>  enabled  egress=direct credential=present(347 chars) | session=present(age 4h9m) | device=present
 ```
 

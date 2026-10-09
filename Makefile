@@ -59,28 +59,30 @@ fmt: ## Fail if gofmt -l internal cmd is non-empty.
 	echo "fmt: clean"
 
 # Repo hygiene (docs/TDD.md §6.7): no real credentials anywhere except the
-# git-ignored data/ (and references/). The search terms come from the account file
-# itself — never hardcoded here, since this file is part of the repository.
-hygiene: ## Fail if real credentials (phone/user id/password/tokens) leak into the repo.
+# git-ignored data/ (and references/). The search terms come from the credential
+# files themselves — never hardcoded here, since this file is part of the
+# repository — and the extraction lives in scripts/sensitive-values.py, which
+# covers BOTH sources: data/accounts.json (account identifiers) and
+# data/deploy.env (store credentials, API keys, egress credentials). A store
+# credential opens the pool exactly like a password does, so the gate must see it
+# (ADR 0020 — the inline copy this replaced only ever read the account file, and
+# an Upstash endpoint reached a tracked ADR through that hole).
+hygiene: ## Fail if real credentials (account identifiers, store/deploy credentials) leak into the repo.
 	@fail=0; \
-	if [ -f data/accounts.json ] && command -v python3 >/dev/null 2>&1; then \
-		real=$$(python3 -c 'import json,re;\
-d=json.load(open("data/accounts.json"));\
-vals=[];\
-[vals.extend([a.get(k) for k in ("phone","user_id","id","password","pass_token")]) for a in d.get("accounts",[])];\
-[vals.append((a.get("session") or {}).get("ph")) for a in d.get("accounts",[])];\
-[vals.append(m.group(1)) for a in d.get("accounts",[]) for m in [re.search(r"serviceToken=\"?([^\";]+)",(a.get("session") or {}).get("cookie","") or "")] if m];\
-print("\n".join(str(v) for v in vals if v))' 2>/dev/null) \
-			$$MIMO2API_HYGIENE_EXTRA; \
+	if command -v python3 >/dev/null 2>&1; then \
+		real=$$(python3 scripts/sensitive-values.py data/accounts.json data/deploy.env; echo "$$MIMO2API_HYGIENE_EXTRA"); \
+		if [ -z "$$(echo $$real | tr -d '[:space:]')" ]; then \
+			echo "hygiene: no credential files present (or they are empty) — nothing to compare"; \
+		fi; \
 		for t in $$real; do \
 			[ -n "$$t" ] || continue; \
 			if grep -rIn --exclude-dir=.git --exclude-dir=data --exclude-dir=references \
 				--exclude=Makefile --exclude=docker_test.sh -F -- "$$t" . ; then \
-				echo "hygiene: FAIL — a real account identifier is present in the repo"; fail=1; \
+				echo "hygiene: FAIL — a real credential is present in the repo"; fail=1; \
 			fi; \
 		done; \
 	else \
-		echo "hygiene: no account file (or no python3) — only the static scans ran"; \
+		echo "hygiene: no python3 — only the static scans ran"; \
 	fi; \
 	[ $$fail -eq 0 ] || { echo "hygiene: FAILED (docs/TDD.md §6.7)"; exit 1; }; \
 	echo "hygiene: clean — no real credentials outside data/"

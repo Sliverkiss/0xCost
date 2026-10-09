@@ -410,12 +410,12 @@ func TestNormalizeRedisURLUpstashForms(t *testing.T) {
 		host string
 		want string
 	}{
-		{"https with trailing slash", "https://known-mudfish-135209.upstash.io/",
-			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6379"},
-		{"bare host", "known-mudfish-135209.upstash.io",
-			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6379"},
-		{"host with port keeps it", "known-mudfish-135209.upstash.io:6380",
-			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6380"},
+		{"https with trailing slash", "https://<db>.upstash.io/",
+			"rediss://default:" + token + "@<db>.upstash.io:6379"},
+		{"bare host", "<db>.upstash.io",
+			"rediss://default:" + token + "@<db>.upstash.io:6379"},
+		{"host with port keeps it", "<db>.upstash.io:6380",
+			"rediss://default:" + token + "@<db>.upstash.io:6380"},
 		{"https with path and spaces", "  https://host.example.com/redis  ",
 			"rediss://default:" + token + "@host.example.com:6379"},
 		{"full url passes through", "rediss://default:" + token + "@h.example.com:6379",
