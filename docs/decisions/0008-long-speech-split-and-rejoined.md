@@ -1,7 +1,9 @@
 # 0008 — Long speech is split on sentence boundaries and rejoined, never truncated
 
 Date: 2026-10-09
-Status: accepted
+Status: superseded by 0010 (the split was implemented and measured live: a
+piece near the cap makes the upstream fail the task itself, so the cap is now
+refused up front and the splitter is gone)
 
 ## Context
 

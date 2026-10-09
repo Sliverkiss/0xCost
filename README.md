@@ -67,11 +67,16 @@ accepted and ignored (the upstream has no rate control). Transcriptions accept
 files up to 25 MB (gateway-side limit), `language` is passed through
 (upstream accepts `auto|zh|en`), and `verbose_json` reports only what the
 upstream actually returns (`text`, plus `language`) — no invented durations.
-**Long text**: the upstream refuses any single synthesis over 1024 characters, so
-`/v1/audio/speech` splits longer `input` on sentence boundaries (a sentence over
-the limit is hard-split), synthesises each piece and joins the audio — WAV is
-rebuilt from the first piece's own header, MP3 is a frame concatenation. If any
-piece fails, the client gets an error rather than the part spoken so far.
+**Long text**: the upstream refuses any single synthesis over 1024 characters,
+and that is the contract — `input` over the limit is refused with a 400
+(`input_too_long`) before any upstream work, so the client learns immediately
+instead of waiting out a doomed synthesis. Splitting longer text and rejoining
+the audio was implemented and removed: measured live, a ~1020-rune piece makes
+the upstream fail the task itself after ~278 s (ADR 0010). Segment long passages
+client-side; `MIMO2API_SPEECH_MAX_CHARS` can lower the cap but not raise it. Note
+that 1024 is a hard limit rather than a dependable length — reliability falls off
+well before it (384 characters: 17.8 s; 700: no answer in 220 s), so keep
+requests in the low hundreds of characters.
 Synthesis costs roughly real time upstream (live timings: 128 characters ≈ 13 s,
 384 ≈ 18 s), so a long passage takes minutes; the per-piece deadline is
 `MIMO2API_AUDIO_TTS_TIMEOUT_S` plus 100 ms per character, capped by
@@ -132,10 +137,10 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
 | `MIMO2API_AUDIO_POLL_MS` | `1000` | TTS/ASR task status poll interval (the Studio's own cadence is 1s) |
-| `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | **Base** synthesis deadline for one piece; the effective budget grows with the spoken text plus 500 ms per character: measured live at 12.8 s for 128 characters, 17.8 s for 384 and >220 s for 700, so the budget is deliberately generous |
+| `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | **Base** synthesis deadline; the effective budget grows with the spoken text plus 500 ms per character: measured live at 12.8 s for 128 characters, 17.8 s for 384 and >220 s for 700, so the budget is deliberately generous |
 | `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
-| `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the per-piece synthesis budget |
-| `MIMO2API_SPEECH_MAX_CHARS` | `10000` | `/v1/audio/speech` input cap. The upstream refuses any single synthesis over **1024 characters** ("播报内容长度不能超过1024"), so the gateway splits longer text on sentence boundaries, speaks the pieces and joins the audio — this cap only bounds the total |
+| `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the synthesis budget |
+| `MIMO2API_SPEECH_MAX_CHARS` | `1024` | `/v1/audio/speech` input cap, clamped to the upstream's **1024 character** per-synthesis limit ("播报内容长度不能超过1024"). Lower it to refuse earlier; a higher value cannot take effect (ADR 0010) |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
 | `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (session decision with the resolved id/source/frontier, the conversation/dialog id and delta size, or a full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |

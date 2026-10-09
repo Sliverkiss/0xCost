@@ -342,10 +342,12 @@ Live-verified protocol (`docs/web-surface-reverse.md` §3/§4):
   `GET /open-apis/tts/generateStatus?taskId=` → fetch the returned audio URL.
   `taskId` is a JSON **number**.
 - Formats: `wav` and `mp3` only, selected by `content.audio.format`.
-  **The upstream refuses spoken text over 1024 characters**; longer input is
-  split on sentence boundaries and rejoined (ADR 0008).
+  **The upstream refuses spoken text over 1024 characters** and so does the
+  gateway: `/v1/audio/speech` answers 400 `input_too_long` before any upstream
+  work. Splitting and rejoining longer text was tried and removed — a piece near
+  the cap makes the upstream fail the task itself (ADR 0010).
 - Synthesis cost grows faster than the text and is load-dependent (live: 12.8s
-  for 128 characters, 17.8s for 384, >220s for 700), so the per-piece deadline
+  for 128 characters, 17.8s for 384, >220s for 700), so the synthesis deadline
   scales with length.
 - ASR: `POST /open-apis/resource/genUploadInfo` → `PUT` → `POST /open-apis/asr/recognize`
   → poll `/open-apis/asr/recognizeStatus`.

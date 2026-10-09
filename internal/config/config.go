@@ -56,7 +56,7 @@ const (
 	// DefaultTTSMaxTimeout caps one piece's budget.
 	DefaultTTSMaxTimeout  = 900 * time.Second
 	DefaultASRTimeout     = 120 * time.Second
-	DefaultSpeechMaxChars = 10000
+	DefaultSpeechMaxChars = 1024
 	DefaultReplayCap      = 20
 	DefaultCooldown429    = 60 * time.Second
 	DefaultCooldown5xx    = 30 * time.Second

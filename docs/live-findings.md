@@ -25,6 +25,7 @@ consent page — see `docs/login-chain-reverse.md`).
 | LIVE-010 | Conversation GC | **phase 1 PASS** | Phase-1 snapshot written (24 h gap required); phase 2 runs with `MIMO2API_LIVE_PHASE=2`. |
 | LIVE-SESS-001 | Session chaining vs replay | **PASS** | See below — pinned turn chained in 8.2 s, replay control 47.4 s, context preserved across turns. |
 | LIVE-SESS-002 | One-shot stays stateless | **PASS** | `stream:false` with a live session id: 200, no session headers, store untouched (`sessions 1→1`, `lookups 1→1`). |
+| LIVE-TTS-003 | Long speech beyond the cap | **FAIL (by design, then removed)** | 1110 runes → 2 pieces → 502 after 278.2 s: piece 1/2 failed upstream. The split worked; a ~1020-rune piece is beyond what the service synthesises. Cap is now refused up front (ADR 0010). |
 
 ## LIVE-007 — does the upstream 429 carry a structured deadline?
 
@@ -109,3 +110,32 @@ What this proves, and what it does not:
   test) and the concurrent-fork race (SESS-020/021, covered by the integration
   tests) — both need either a second account or two simultaneous streams, which
   the live suite deliberately does not do against the operator's single account.
+
+## LIVE-TTS-003 — a split near the cap does not help, and the cap is now refused
+
+```
+input: 1110 runes ("小米 MiMo 语音合成测试。" × 74), format wav
+result: HTTP 502 after 278.2 s
+body:   the upstream audio task failed: piece 1/2:
+        upstream audio task failed (task 16075873, audit PASS)
+
+earlier, same day, single syntheses (no splitting):
+  128 runes → 12.8 s, audio returned
+  384 runes → 17.8 s, audio returned
+  700 runes → no answer within a 220 s client timeout
+```
+
+Reading it:
+
+- **The split fired**: the error names `piece 1/2`, so the gateway cut the text
+  on sentence boundaries and submitted pieces in order — the mechanism worked.
+- **The failure was the upstream's own**, not our deadline: the task came back in
+  a failed state (its content audit passed) at 278 s, while that piece's budget
+  was ~570 s (60 s + 500 ms × 1020).
+- **Piece size is the cause**: the splitter packs up to the 1024 cap, so an
+  1110-rune input becomes ~1020 + ~90, and ~1020 runes sits far outside the
+  reliable region this service shows. Raising the deadline cannot fix that.
+- **Outcome**: >1024 input is now refused with 400 `input_too_long` before any
+  upstream work, the splitter is deleted, and `MIMO2API_SPEECH_MAX_CHARS` is
+  clamped to 1024 (ADR 0010). The old path cost ~278 s of upstream time per
+  over-length request and then failed anyway.

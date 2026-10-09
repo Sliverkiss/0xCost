@@ -19,3 +19,4 @@ rather than at chat history.
 | [0007](0007-search-results-parsed-per-field.md) | Search results are parsed per field from live evidence; missing results are not a failure | accepted |
 | [0008](0008-long-speech-split-and-rejoined.md) | Long speech is split on sentence boundaries and rejoined, never truncated | accepted |
 | [0009](0009-sessions-are-streaming-only-and-verified.md) | Sessions are streaming-only, explicitly identified when possible, and verified before chaining | accepted |
+- [0010 — Long speech is a refused limit, not a split](0010-speech-length-is-a-refused-limit.md) (supersedes 0008)

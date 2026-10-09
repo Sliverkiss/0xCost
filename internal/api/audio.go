@@ -172,7 +172,7 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	if n := utf8.RuneCountInString(input); n > s.speechMaxChars {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "input_too_long",
-			fmt.Sprintf("`input` is %d characters; the limit is %d", n, s.speechMaxChars), 0)
+			fmt.Sprintf("`input` is %d characters; the upstream caps one synthesis at %d", n, s.speechMaxChars), 0)
 		return
 	}
 	format := strings.ToLower(strings.TrimSpace(req.ResponseFormat))
@@ -199,48 +199,26 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		if verr != nil {
 			return verr
 		}
-		// The upstream caps one synthesis at SpeechTextLimit characters, so
-		// longer input is split on sentence boundaries and the audio joined
-		// (M-TTS hardening; the caller should not have to know the upstream's
-		// limit, and forwarding it raw produced an opaque 502).
-		pieces := mimo.SplitSpeech(input, mimo.SpeechTextLimit)
-		if len(pieces) == 0 {
-			pieces = []string{input}
+		// One synthesis, at most SpeechTextLimit characters (enforced before any
+		// upstream work). Synthesising longer input piece by piece and joining
+		// the audio was tried and removed: a piece near the cap makes the
+		// upstream fail the task itself, so the workaround only delayed the
+		// error (ADR 0010, live 2026-10-09).
+		res, terr := s.synthesize(r.Context(), cookie, ph, accountID, mimo.TTSRequest{
+			Text:        input,
+			Instruction: req.Instructions,
+			Voice:       voice,
+			Format:      format,
+			Model:       req.Model,
+			PollEvery:   s.audioPoll,
+			PollTimeout: s.ttsTimeoutFor(input),
+		})
+		if terr != nil {
+			// No partial audio: a half-spoken answer would be worse than an
+			// error the caller can retry.
+			return classifyAudioUpstream(terr)
 		}
-		if len(pieces) > 1 {
-			s.debugf("audio: input is %d characters; synthesising %d pieces of at most %d",
-				mimo.RuneLen(input), len(pieces), mimo.SpeechTextLimit)
-		}
-		parts := make([][]byte, 0, len(pieces))
-		var last *mimo.TTSResult
-		for i, piece := range pieces {
-			res, terr := s.synthesize(r.Context(), cookie, ph, accountID, mimo.TTSRequest{
-				Text:        piece,
-				Instruction: req.Instructions,
-				Voice:       voice,
-				Format:      format,
-				Model:       req.Model,
-				PollEvery:   s.audioPoll,
-				PollTimeout: s.ttsTimeoutFor(piece),
-			})
-			if terr != nil {
-				// No partial audio: a half-spoken answer would be worse than
-				// an error the caller can retry.
-				return fmt.Errorf("piece %d/%d: %w", i+1, len(pieces), classifyAudioUpstream(terr))
-			}
-			parts = append(parts, res.Audio)
-			last = res
-		}
-		joined, jerr := mimo.JoinAudio(format, parts)
-		if jerr != nil {
-			return jerr
-		}
-		result = &mimo.TTSResult{
-			Audio:       joined,
-			ContentType: last.ContentType,
-			AudioURL:    last.AudioURL,
-			TaskID:      last.TaskID,
-		}
+		result = res
 		return nil
 	})
 	if err != nil {

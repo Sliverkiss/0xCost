@@ -128,6 +128,12 @@ func New(opts Options) *Server {
 	if opts.SpeechMaxChars <= 0 {
 		opts.SpeechMaxChars = 10000
 	}
+	// The upstream refuses one synthesis over SpeechTextLimit characters, so a
+	// larger configured cap would only accept requests that cannot succeed and
+	// turn a clear 400 into a slow upstream failure (ADR 0010).
+	if opts.SpeechMaxChars > mimo.SpeechTextLimit {
+		opts.SpeechMaxChars = mimo.SpeechTextLimit
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = log.Default()
