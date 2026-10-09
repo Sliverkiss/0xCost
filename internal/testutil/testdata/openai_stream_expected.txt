@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[{"index":0,"delta":{"content":"Hel"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[{"index":0,"delta":{"content":"lo w"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[{"index":0,"delta":{"content":"orld"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-00000000000000000000000000000000","object":"chat.completion.chunk","created":0,"model":"mimo-v2.6-pro","choices":[],"usage":{"prompt_tokens":2242,"completion_tokens":78,"total_tokens":2320,"prompt_tokens_details":{"cached_tokens":100},"completion_tokens_details":{"reasoning_tokens":32}}}
+
+data: [DONE]
+

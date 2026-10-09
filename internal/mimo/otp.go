@@ -273,7 +273,15 @@ func codeCheck(m map[string]any, what string) error {
 //     XMLHttpRequest is MANDATORY (without it email send always fails
 //     66108, 2026-09-23 packet capture).
 func (c *Client) StartOTP(ctx context.Context, notificationURL, sid string, seedJar map[string]string) (*OTPChallenge, error) {
-	tgt, err := c.startVerification(ctx, notificationURL, sid, seedJar)
+	return c.startOTP(ctx, notificationURL, sid, seedJar, !c.disableCrossRegionAgree)
+}
+
+// startOTP is StartOTP with the cross-region consent decision threaded
+// explicitly: startVerification performs the consent POST only when
+// agreeConsent is true. Login/LoginWithConsent pass their effective decision
+// here (consent.go).
+func (c *Client) startOTP(ctx context.Context, notificationURL, sid string, seedJar map[string]string, agreeConsent bool) (*OTPChallenge, error) {
+	tgt, err := c.startVerification(ctx, notificationURL, sid, seedJar, agreeConsent)
 	if err != nil {
 		return nil, err
 	}

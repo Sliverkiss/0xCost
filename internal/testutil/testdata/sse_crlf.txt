@@ -1,0 +1,18 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0001","usage":null}
+
+event:message
+data:{"type":"text","content":"Hel","usage":null}
+
+event:message
+data:{"type":"text","content":"lo w","usage":null}
+
+event:message
+data:{"type":"text","content":"orld","usage":null}
+
+event:usage
+data:{"promptTokens":2242,"completionTokens":78,"totalTokens":2320,"nativeUsage":{"prompt_tokens":2242,"completion_tokens":78,"total_tokens":2320,"prompt_tokens_details":{"cached_tokens":100},"completion_tokens_details":{"reasoning_tokens":32}}}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

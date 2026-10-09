@@ -143,9 +143,12 @@ type verificationTarget struct {
 }
 
 // startVerification walks the notificationUrl chain, agrees to the
-// cross-region data-transfer demand when it appears (unless disabled), and
-// returns the sid/context the /identity/* steps need.
-func (c *Client) startVerification(ctx context.Context, notificationURL, sidFallback string, seedJar map[string]string) (*verificationTarget, error) {
+// cross-region data-transfer demand when it appears AND agreeConsent is true,
+// and returns the sid/context the /identity/* steps need. When agreeConsent is
+// false the consent POST is never issued: the demand surfaces as
+// ErrCrossRegionConsent (the operator override arrives via LoginWithConsent,
+// which threads agreeConsent=true regardless of disableCrossRegionAgree).
+func (c *Client) startVerification(ctx context.Context, notificationURL, sidFallback string, seedJar map[string]string, agreeConsent bool) (*verificationTarget, error) {
 	jar := map[string]string{}
 	for k, v := range seedJar {
 		jar[k] = v
@@ -185,7 +188,7 @@ func (c *Client) startVerification(ctx context.Context, notificationURL, sidFall
 	if !consent {
 		return nil, fmt.Errorf("login chain landed on %s without an identity context (unsupported demand)", page)
 	}
-	if c.disableCrossRegionAgree {
+	if !agreeConsent {
 		return nil, ErrCrossRegionConsent
 	}
 	target.Consent = true

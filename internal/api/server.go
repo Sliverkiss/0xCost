@@ -94,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	// Admin OTP endpoints (SDD §2.2 amendment) — same Bearer auth.
 	mux.HandleFunc("GET /v1/admin/otp/pending", s.auth(s.handleOTPPending))
 	mux.HandleFunc("POST /v1/admin/otp/submit", s.auth(s.handleOTPSubmit))
+	// Cross-region consent override (docs/login-chain-reverse.md §1) — the
+	// operator path out of the MIMO2API_CROSS_REGION_AGREE=false dead-end.
+	mux.HandleFunc("POST /v1/admin/consent/agree", s.auth(s.handleConsentAgree))
 	return mux
 }
 

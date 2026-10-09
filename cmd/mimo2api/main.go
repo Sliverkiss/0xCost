@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -154,34 +155,31 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Serve until SIGTERM/SIGINT, then drain (SDD §3).
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("mimo2api: listening on %s (accounts: %d enabled, api keys: %d)", httpSrv.Addr, len(poolAccts), len(cfg.APIKeys()))
-		errCh <- httpSrv.ListenAndServe()
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
-	select {
-	case err := <-errCh:
-		// Server failed before/at startup (e.g. port in use).
+	// Bind first so a port clash is reported before we announce a listener.
+	ln, err := net.Listen("tcp", httpSrv.Addr)
+	if err != nil {
 		stopJanitors()
 		<-janitorDone
 		return err
-	case sig := <-sigCh:
-		log.Printf("mimo2api: %s received, draining in-flight streams (max %s)", sig, shutdownGrace)
 	}
+	log.Printf("mimo2api: listening on %s (accounts: %d enabled, api keys: %d)", ln.Addr(), len(poolAccts), len(cfg.APIKeys()))
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	// Serve until SIGTERM/SIGINT, then drain in-flight streams (SDD §3,
+	// TDD API-025) — see serveUntil for the drain contract.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("mimo2api: shutdown: %v", err)
-	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigCh
+		log.Printf("mimo2api: %s received, draining in-flight streams (max %s)", sig, shutdownGrace)
+		cancel()
+	}()
+
+	serveErr := serveUntil(ctx, httpSrv, ln, shutdownGrace, log.Printf)
 	stopJanitors()
 	<-janitorDone
-	return nil
+	return serveErr
 }
 
 // stsSweep renews cached sessions so pool accounts never ride a stale

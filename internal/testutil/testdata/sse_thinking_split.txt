@@ -1,0 +1,15 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0003","usage":null}
+
+event:message
+data:{"type":"text","content":"before <th","usage":null}
+
+event:message
+data:{"type":"text","content":"ink>\u0000reasoning here</th","usage":null}
+
+event:message
+data:{"type":"text","content":"ink>\u0000after","usage":null}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

@@ -116,7 +116,9 @@ func TestRenewFallbackToPasswordLogin(t *testing.T) {
 	s := newRenewStack(t, "2652042633", "V1:dead-token")
 	// Make renewal fail: the passport answers serviceLogin with a dead-token
 	// error instead of an STS location.
-	s.passport.SetServiceLoginResponse(`{"code":70016,"desc":"登录验证失败"}`)
+	// Exact passport shape (XSSI prefix required by parseXSSI) so the failure
+	// is classified as a dead passToken rather than a parse error.
+	s.passport.SetServiceLoginResponse(`&&&START&&&{"code":70016,"description":"登录验证失败"}`)
 
 	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
 		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)

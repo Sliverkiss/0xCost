@@ -1,0 +1,1 @@
+&&&START&&&{"notificationUrl":"https://account.xiaomi.com/pass2/redirect?sid=xiaomichatbot&context=ctx-otp-1","result":"ok","code":0,"miDemo":0,"captchaUrl":null,"description":"成功","location":"","securityStatus":128,"pwd":0,"child":0,"desc":"成功"}

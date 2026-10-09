@@ -42,6 +42,7 @@ performs `GET /healthz` for the container healthcheck.
 | GET | `/healthz` | none | Liveness + pool state summary (no credentials) |
 | GET | `/v1/admin/otp/pending` | Bearer | In-flight new-device OTP challenges (id, method, masked notify, account, expiry) |
 | POST | `/v1/admin/otp/submit` | Bearer | Complete a login with `{id, code}` — persists the session, re-enables the account |
+| POST | `/v1/admin/consent/agree` | Bearer | Agree to the cross-region transfer demand for one account (`{account_id}`) and continue its login — the operator override for `MIMO2API_CROSS_REGION_AGREE=false` (ADR 0001) |
 
 Models: `mimo-v2.6-pro`, `mimo-v2.6-pro-ultraspeed-studio` (fastchat
 channel), plus alias resolution (`mimo`, `ultraspeed`, missing model →
@@ -72,7 +73,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_REPLAY_CAP` | `20` | Max replayed user turns per request |
 | `MIMO2API_PROBE_INTERVAL_S` | `60` | Cooldown recovery probe sweep |
 | `MIMO2API_OTP_AUTO` | `true` | Auto-start the new-device OTP challenge on login demands (complete via `/v1/admin/otp/submit`) |
-| `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` disables the account instead of agreeing |
+| `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` refuses automatically and leaves the account for an operator, who can still approve one login with `POST /v1/admin/consent/agree` (ADR 0001) |
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
@@ -128,6 +129,17 @@ cooldowns, disabled reasons survive restarts):
   `finish_reason: "stop"`, `[DONE]` — never a hang, never restarted deltas.
 - **Client disconnects** propagate upstream immediately; sticky context
   advances when a dialogId was already received.
+
+## Documentation map
+
+| Document | What it holds |
+|---|---|
+| `docs/SDD.md` | Design: protocol chain, pool/session/sticky model, error mapping, deployment |
+| `docs/TDD.md` | Test design: §2 fixtures, §3 case-by-case IDs (API/RENEW/STICKY/ERRMAP/LOGIN/DOCKER), §6 gates |
+| `docs/login-chain-reverse.md` | The live-verified login chain, our code vs the real traffic, open questions |
+| `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
+| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010) |
+| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates |
 
 ## Development
 

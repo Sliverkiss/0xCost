@@ -1,0 +1,15 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0005","usage":null}
+
+event:message
+data:{"type":"text","content":"<think>\u0000first block</think>\u0000","usage":null}
+
+event:message
+data:{"type":"text","content":"middle text","usage":null}
+
+event:message
+data:{"type":"text","content":"<think>\u0000second block</think>\u0000after text","usage":null}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

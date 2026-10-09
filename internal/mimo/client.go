@@ -159,9 +159,16 @@ func (w *idleWatchedReader) stop() {
 
 // setBrowserHeaders injects the full browser header set shared by chat /
 // validate calls (SDD §2.4; web_client.go setBrowserHeaders).
+//
+// Fidelity notes (docs/login-chain-reverse.md §3): the Studio's own HTTP layer
+// adds Accept-Language and x-timeZone explicitly, and its axios instance adds
+// X-Requested-With and the JSON Accept default. Dropping any of them is a
+// fingerprint tell, so all of them are set here.
 func (c *Client) setBrowserHeaders(h http.Header) {
 	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "application/json, text/plain, */*")
 	h.Set("Accept-Language", "zh-CN")
+	h.Set("X-Requested-With", "XMLHttpRequest")
 	h.Set("x-timeZone", c.timezone)
 	h.Set("Origin", c.base)
 	h.Set("Referer", c.base+"/")

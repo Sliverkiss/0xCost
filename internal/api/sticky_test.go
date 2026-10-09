@@ -264,7 +264,7 @@ func TestStickyPostFirstByteAbortCommits(t *testing.T) {
 	}
 }
 
-// STICKY-010: client disconnect mid-stream with dialogId already received →
+// API-024 / STICKY-010: client disconnect mid-stream with dialogId already received →
 // upstream aborted, sticky entry kept (context advanced), neither success
 // nor failure, pool slot released (SDD §7.3).
 func TestStickyClientDisconnectKeepsEntry(t *testing.T) {

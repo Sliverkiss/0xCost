@@ -1,0 +1,1 @@
+&&&START&&&{"code":0,"description":"ok","location":"https://account.xiaomi.com/pass/sts?ticket=ticket1","userId":123456}

@@ -1,0 +1,12 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0002","usage":null}
+
+event:message
+data:{"type":"text","content":"<think>\u0000Let me check the math.</think>\u0000","usage":null}
+
+event:message
+data:{"type":"text","content":"The answer is 4.","usage":null}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

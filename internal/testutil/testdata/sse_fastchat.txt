@@ -1,0 +1,18 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0009","usage":null}
+
+event:message
+data:{"type":"text","content":"fast ","usage":null}
+
+event:message
+data:{"type":"text","content":"reply","usage":null}
+
+event:usage
+data:{"promptTokens":5,"completionTokens":5,"totalTokens":10}
+
+event:usage
+data:{"promptTokens":5,"completionTokens":8,"totalTokens":13}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

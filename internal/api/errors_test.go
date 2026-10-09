@@ -351,7 +351,7 @@ func TestERRMAPRetryAfterPrivacy(t *testing.T) {
 	}
 }
 
-// ERRMAP-012: streaming post-first-byte failure → error-text content delta →
+// API-021 / ERRMAP-012: streaming post-first-byte failure → error-text content delta →
 // delta:{} + finish_reason:"stop" → [DONE] (never a bare hang, never
 // restarted deltas).
 func TestERRMAPStreamErrorShape(t *testing.T) {
@@ -399,5 +399,29 @@ func TestERRMAPStreamErrorShape(t *testing.T) {
 	}
 	if !sawFinish || !sawDone {
 		t.Errorf("finish/done = %v/%v — stream must terminate honestly", sawFinish, sawDone)
+	}
+}
+
+// API-020 (TDD §3): a STREAMING request whose upstream attempts all fail
+// before the first byte must answer a plain HTTP error — correct status and
+// the §7.4 JSON shape — never a 200 with the error stuffed into an SSE body
+// (that would make clients see a "successful" stream that says nothing).
+func TestAPI020StreamingPreFirstByteErrorIsPlainJSON(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "event-stream") {
+		t.Fatalf("pre-first-byte failure answered Content-Type %q — an error must not be framed as SSE", ct)
+	}
+	status, msg, typ, code := readErr(t, resp)
+	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "upstream_rate_limited" {
+		t.Fatalf("got %d %q %q (%q), want the 429 envelope", status, typ, code, msg)
+	}
+	if strings.Contains(msg, "data:") || strings.Contains(msg, "[DONE]") {
+		t.Errorf("error body carries SSE framing: %q", msg)
 	}
 }

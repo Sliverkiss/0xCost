@@ -1,0 +1,12 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0007","usage":null}
+
+event:message
+data:{"type":"text","content":"par","usage":null}
+
+event:message
+data:{"type":"text","content":"tial","usage":null}
+
+event:error
+data:{"type":null,"content":"upstream exploded","usage":null}
+

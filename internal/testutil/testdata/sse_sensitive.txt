@@ -1,0 +1,3 @@
+event:sensitive_query
+data:{"type":null,"content":"topic not allowed","usage":null}
+

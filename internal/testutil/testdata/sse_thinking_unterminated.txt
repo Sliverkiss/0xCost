@@ -1,0 +1,9 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0004","usage":null}
+
+event:message
+data:{"type":"text","content":"pure text <think>\u0000loose thought continues","usage":null}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

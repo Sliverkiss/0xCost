@@ -1,0 +1,6 @@
+event:dialogId
+data:{"type":null,"content":"dlg-0008","usage":null}
+
+event:finish
+data:{"type":null,"content":"[DONE]","usage":null}
+

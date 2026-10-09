@@ -140,7 +140,29 @@ func (c *Client) fetchLoginContext(ctx context.Context) (*LoginContext, error) {
 // MD5(password).hex().toUpperCase(), no salt) → follow location
 // (host-allowlisted) → collect Set-Cookie into a session. Returns
 // ErrAccountAction for captcha/OTP demands (TDD LOGIN-002..009).
+//
+// The cross-region personal-data-transfer demand is auto-agreed only when
+// the client was built without DisableCrossRegionAgree; with it disabled the
+// login fails with ErrCrossRegionConsent. Use LoginWithConsent for the
+// explicit operator override (POST /v1/admin/consent/agree).
 func (c *Client) Login(ctx context.Context, phone, password string) (*Session, error) {
+	return c.login(ctx, phone, password, !c.disableCrossRegionAgree)
+}
+
+// LoginWithConsent runs exactly the same login flow as Login but agrees to
+// the cross-region personal-data-transfer demand regardless of the client's
+// DisableCrossRegionAgree setting — the operator explicitly asked for it.
+// The consent POST is issued only when the login chain actually reaches the
+// cross-region page; a plain OTP/identity chain is unaffected
+// (docs/login-chain-reverse.md §1, §5 open item 3).
+func (c *Client) LoginWithConsent(ctx context.Context, phone, password string) (*Session, error) {
+	return c.login(ctx, phone, password, true)
+}
+
+// login is the shared implementation. agreeConsent carries the effective
+// cross-region consent decision down to startOTP/startVerification, which
+// performs the consent POST only when it is true.
+func (c *Client) login(ctx context.Context, phone, password string, agreeConsent bool) (*Session, error) {
 	lctx, err := c.fetchLoginContext(ctx)
 	if err != nil {
 		return nil, err
@@ -203,7 +225,7 @@ func (c *Client) Login(ctx context.Context, phone, password string) (*Session, e
 		// happens out-of-band via SubmitOTP (SDD §2.2 amendment).
 		if nu, ok := m["notificationUrl"].(string); ok && nu != "" {
 			if !c.disableOTPAuto {
-				ch, cerr := c.StartOTP(ctx, nu, lctx.SID, jar)
+				ch, cerr := c.startOTP(ctx, nu, lctx.SID, jar, agreeConsent)
 				if cerr == nil {
 					return nil, &ErrOTPPending{Challenge: ch}
 				}

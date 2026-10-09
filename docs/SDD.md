@@ -234,7 +234,10 @@ Payload (`mimo-web-api/src/upstream.js:140-164`; confirmed
 - `previousDialogueId`: null on first turn; afterwards the `dialogId` SSE event value
   from the previous turn (`PROTOCOL.md:29,69`). MiMo keeps conversation context
   server-side keyed by `conversationId`.
-- Headers: `Content-Type: application/json`, `Accept-Language: zh-CN`,
+- Headers: `Content-Type: application/json`, `Accept: application/json,
+  text/plain, */*`, `X-Requested-With: XMLHttpRequest` (**both are axios
+  defaults in the Studio SPA — `docs/login-chain-reverse.md` §3**),
+  `Accept-Language: zh-CN`,
   `x-timeZone: Asia/Shanghai`, `Origin`/`Referer` = aistudio base, Chrome UA,
   full `Cookie` (`mimo-web-api/src/upstream.js:28-38`;
   `mimo-web-proxy/internal/mimo/web_client.go:37-49` adds `sec-ch-ua`/`sec-fetch-*` —
@@ -978,3 +981,25 @@ literals. (An earlier draft of this SDD carried them inline; scrubbed
    conversations to survive upstream-side GC, or auto-save on first message suffices
    (`mimo-web-proxy` saves async, `web_client.go:260-300`). Test with a 24h-old
    conversation.
+
+> **Status (2026-10-09, live runs recorded in `docs/live-findings.md`).**
+>
+> - **Q1 — open.** LIVE-007 fired 30 unpaced requests against one account and
+>   never reached the limiter (~0.2 req/s: each turn takes ~5 s), so the fixed
+>   cooldown ladder in §4.5 stands untested rather than confirmed. Answering it
+>   needs concurrency, not a longer sequential burst. `mimo.UpstreamError` now
+>   retains the response headers so a future run can read `Retry-After` /
+>   `x-ratelimit-*` directly (never echoed to clients, TDD ERRMAP-011).
+> - **Q2 — open, partial evidence.** Three live cold logins from this host all
+>   reached the identity/OTP step with **zero captcha answers**; that is 0/3,
+>   not the 5 samples LIVE-008 wants (it needs five operator-supplied codes,
+>   because each cold login sends an SMS — see ADR 0004). No EUI-encrypted
+>   variant is implemented.
+> - **Q3 — open.** LIVE-009 captured a fastchat (ultraspeed) stream with a
+>   **single** `usage` event (total 2418), so last-wins is neither confirmed nor
+>   contradicted. Our splitter keeps last-wins (§2.5, SSE-012), which is the
+>   safe rule if a later event is cumulative.
+> - **Q4 — phase 1 done, phase 2 pending.** LIVE-010 saved a sticky-store
+>   snapshot plus the turn transcript; phase 2 (`MIMO2API_LIVE_PHASE=2`) reruns
+>   after ≥24 h. Until then the client relies on upstream auto-save and never
+>   calls `POST /open-apis/chat/conversation/save`.
