@@ -32,6 +32,18 @@ type Server struct {
 	replayCap    int
 	keepalive    time.Duration
 	logger       *log.Logger
+	debug        bool
+}
+
+// debugf logs only when the server was built with Options.Debug
+// (MIMO2API_LOG_LEVEL=debug). Routing decisions — sticky continuation versus
+// full replay — are the first thing an operator needs when a conversation
+// appears to lose context, and far too noisy for the default level.
+func (s *Server) debugf(format string, args ...any) {
+	if !s.debug {
+		return
+	}
+	s.logger.Printf("debug: "+format, args...)
 }
 
 // Options configures a Server.
@@ -45,6 +57,7 @@ type Options struct {
 	ReplayCap    int           // max replayed user turns (SDD §5.3B, default 20)
 	Keepalive    time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
 	Logger       *log.Logger
+	Debug        bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
 }
 
 // New builds a Server. All collaborators must be wired (real or test
@@ -80,6 +93,7 @@ func New(opts Options) *Server {
 		replayCap:    opts.ReplayCap,
 		keepalive:    opts.Keepalive,
 		logger:       logger,
+		debug:        opts.Debug,
 	}
 }
 

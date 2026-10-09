@@ -261,10 +261,10 @@ func TestERRMAPContentFilter(t *testing.T) {
 
 // ERRMAP-010: query over the channel char cap → 400 context_too_long, zero
 // upstream requests (cross-ref API-016). mimo-v2.6-pro-ultraspeed-studio caps
-// at 45000 chars.
+// at 50000 chars.
 func TestERRMAPContextTooLong(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	long := strings.Repeat("a", 45001)
+	long := strings.Repeat("a", 50001)
 	body := testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", long})
 	resp, err := ts.Chat(body, "")
 	if err != nil {

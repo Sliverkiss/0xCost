@@ -77,7 +77,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
-| `MIMO2API_LOG_LEVEL` | `info` | Log level |
+| `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (sticky continuation with conversation/dialog id and delta size, or full replay with the replay cap) — the first thing to look at when a conversation seems to lose context. |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —
 open auth never reaches the network (SDD §5.1).
@@ -122,6 +122,16 @@ cooldowns, disabled reasons survive restarts):
   extends a recent conversation reuses the same account + upstream
   conversation and sends only the new messages. Non-streaming requests
   always start fresh conversations.
+- **Two chat channels.** `mimo-v2.6-pro-ultraspeed-studio` (the ultraspeed /
+  "极速" model) is routed to `/fastchat/open-apis/bot/chat`; every other model
+  goes to `/open-apis/bot/chat`. Sending the ultraspeed model to the normal
+  channel is rejected upstream with `模型名称错误` (live-verified), so the
+  routing rule is not cosmetic. Its per-request cap is 50,000 chars
+  (`ultraspeedQueryLimitLength: 5e4` in the Studio) versus 90,000 otherwise.
+  The channel is stateful and keeps more than the three rounds the Studio's own
+  UI feeds for ultraspeed (`ultraspeedContextRoundLimit`), so the gateway keeps
+  server-side chaining plus its own replay budget instead of copying that
+  truncation — see `docs/web-surface-reverse.md` §11 and LIVE-011.
 - **Error mapping** follows the OpenAI error shape with `type`/`code`
   (`pool_parked` 429 + `Retry-After`, `upstream_auth_expired` 401,
   `upstream_failure` 502, `content_filter` 400, `context_too_long` 400, …).
@@ -138,7 +148,8 @@ cooldowns, disabled reasons survive restarts):
 | `docs/TDD.md` | Test design: §2 fixtures, §3 case-by-case IDs (API/RENEW/STICKY/ERRMAP/LOGIN/DOCKER), §6 gates |
 | `docs/login-chain-reverse.md` | The live-verified login chain, our code vs the real traffic, open questions |
 | `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
-| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010) |
+| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..011) |
+| `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
 | `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates |
 
 ## Development

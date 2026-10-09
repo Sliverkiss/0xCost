@@ -341,3 +341,80 @@ func splitCodes(raw string) []string {
 	}
 	return out
 }
+
+// LIVE-011: how deep does the fastchat (ultraspeed) context really go?
+//
+// The Studio's own client keeps only three rounds for ultraspeed
+// (`ultraspeedContextRoundLimit: 3`, docs/web-surface-reverse.md §11.3), but the
+// channel itself is stateful (it returns dialogId) and may keep more. Plant a
+// fact at round 1 and ask for it back at round 6 through the gateway: recall
+// proves the upstream depth exceeds the Studio's client-side truncation, which
+// is why the gateway keeps server-side chaining instead of copying that policy.
+func TestLive011UltraDeepContext(t *testing.T) {
+	liveGate(t)
+	h := newLiveHarness(t, noMutation, true)
+
+	catalog := h.do(t, http.MethodGet, "/v1/models", nil)
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(catalog.Body, &list); err != nil {
+		t.Fatalf("decode /v1/models: %v", err)
+	}
+	ultra := ""
+	for _, m := range list.Data {
+		if adapter.IsFastchatModel(m.ID) {
+			ultra = m.ID
+			break
+		}
+	}
+	if ultra == "" {
+		t.Skip("catalog has no ultraspeed model")
+	}
+
+	const fact = "4913"
+	questions := []string{
+		"请记住这个信息：我的幸运数字是 " + fact + "。请只回复：记住了",
+		"2+2=?只回复数字",
+		"3+3=?只回复数字",
+		"4+4=?只回复数字",
+		"5+5=?只回复数字",
+		"我的幸运数字是多少？只回复数字",
+	}
+	msgs := []map[string]string{}
+	lines := []string{fmt.Sprintf("model=%s rounds=%d", ultra, len(questions))}
+	lastAnswer := ""
+	for i, q := range questions {
+		msgs = append(msgs, userMsg(q))
+		r := h.do(t, http.MethodPost, "/v1/chat/completions", chatBody(ultra, true, msgs...))
+		if r.Status != http.StatusOK {
+			t.Fatalf("round %d (%s) = %d %s", i+1, ultra, r.Status, truncate(string(r.Body), 400))
+		}
+		frames, done := parseSSE(t, string(r.Body))
+		answer := stripThinking(streamContent(frames))
+		lines = append(lines, fmt.Sprintf("round %d: frames=%d done=%v answer=%q", i+1, len(frames), done, truncate(answer, 60)))
+		lastAnswer = answer
+		msgs = append(msgs, map[string]string{"role": "assistant", "content": answer})
+		time.Sleep(pace)
+	}
+	if strings.Contains(lastAnswer, fact) {
+		lines = append(lines, fmt.Sprintf("VERDICT: round 1 fact recalled at round %d — fastchat depth > 3 rounds", len(questions)))
+	} else {
+		lines = append(lines, fmt.Sprintf("VERDICT: round 1 fact NOT recalled at round %d (answer %q) — do not claim deep context for this channel", len(questions), truncate(lastAnswer, 80)))
+	}
+	recordFindings(t, "LIVE-011", "ultraspeed context depth (fastchat channel)", lines)
+}
+
+// stripThinking removes a leading <think>...</think> (or unterminated <think>)
+// block so an assertion can look at the answer the client would see.
+func stripThinking(s string) string {
+	if i := strings.Index(s, "</think>"); i >= 0 {
+		return strings.TrimSpace(s[i+len("</think>"):])
+	}
+	if strings.HasPrefix(strings.TrimSpace(s), "<think>") {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}

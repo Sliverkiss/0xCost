@@ -123,3 +123,17 @@ GET /open-apis/asr/recognizeStatus?taskId=<n>&xiaomichatbot_ph=<ph>
 ## 交付总结要求
 最后打印：新增/修改文件清单、测试用例数、`make` 各门禁的真实输出、真机用例是否跑通（含耗时与字节数）、
 以及任何未能验证的事项（明确写"未验证"，不要含糊）。
+
+## Implementation status (updated)
+
+A first draft of the upstream audio client (`internal/mimo/audio.go`, ~600 lines:
+conversation creation, `tts/v2/generate` + `generateStatus`, `genUploadInfo` →
+PUT → `asr/recognize` → `recognizeStatus`, result download) was written and
+compiles, but the API layer and its tests are **not** done. It therefore lives
+outside the repository at
+`/root/.hermes/cache/scratch/mimo_staged/audio.go` (scratch is pruned after 72h —
+move it back in and finish the task book before that).
+
+Why it is parked: adding ~600 untested lines to `internal/mimo` drops that
+package's coverage from 83.5% to 65.9%, below the `cover-check` floor (80%,
+docs/TDD.md §6.2). Restore it together with its tests, not before.

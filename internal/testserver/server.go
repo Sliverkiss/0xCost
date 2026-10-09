@@ -2,6 +2,8 @@ package testserver
 
 import (
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,6 +52,8 @@ type TestServerOptions struct {
 	Now          func() time.Time
 	Probe        pool.ProbeFunc
 	Renew        pool.RenewFunc
+	Debug        bool      // MIMO2API_LOG_LEVEL=debug equivalent
+	LogSink      io.Writer // nil = discard-free default logger; set to capture trace lines
 }
 
 // NewTestServer wires N scripted accounts into the full stack. Keepalive
@@ -113,6 +117,10 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		IdleTimeout: opts.IdleTimeout,
 	})
 
+	var logger *log.Logger
+	if opts.LogSink != nil {
+		logger = log.New(opts.LogSink, "", 0)
+	}
 	apiSrv := api.New(api.Options{
 		APIKeys:      opts.APIKeys,
 		Pool:         p,
@@ -122,6 +130,8 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		DefaultModel: opts.DefaultModel,
 		ReplayCap:    opts.ReplayCap,
 		Keepalive:    keepalive,
+		Logger:       logger,
+		Debug:        opts.Debug,
 	})
 
 	hs := httptest.NewServer(apiSrv.Handler())

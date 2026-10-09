@@ -120,6 +120,7 @@ func run() error {
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
 		Keepalive:    cfg.Keepalive(),
+		Debug:        cfg.Debug(),
 	})
 
 	// Background janitors (SDD §3): recovery probes every probeInterval,

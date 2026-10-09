@@ -426,7 +426,7 @@ func TestNormalizeModel(t *testing.T) {
 }
 
 func TestMaxQueryChars(t *testing.T) {
-	if MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio") != 45000 {
+	if MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio") != 50000 {
 		t.Errorf("fastchat cap")
 	}
 	if MaxQueryChars("mimo-v2.6-pro") != 90000 {

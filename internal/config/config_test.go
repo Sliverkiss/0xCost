@@ -246,3 +246,37 @@ func TestOTPAutoDefaultTrue(t *testing.T) {
 		t.Error("OTPAuto = true for garbage, want false")
 	}
 }
+
+// CONFIG-DEBUG: MIMO2API_LOG_LEVEL was parsed but never consulted, so "debug"
+// silently behaved like "info" and the routing trace was unreachable. Debug()
+// is the accessor the server wires, and only the debug spelling (any case,
+// padded) turns it on.
+func TestLogLevelDebugAccessor(t *testing.T) {
+	for _, tc := range []struct {
+		level string
+		want  bool
+	}{
+		{level: "debug", want: true},
+		{level: "DEBUG", want: true},
+		{level: "  Debug  ", want: true},
+		{level: "info", want: false},
+		{level: "", want: false},
+		{level: "verbose", want: false},
+	} {
+		testEnv(t, map[string]string{"MIMO2API_LOG_LEVEL": tc.level})
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load(%q): %v", tc.level, err)
+		}
+		if got := cfg.Debug(); got != tc.want {
+			t.Errorf("Debug() with level %q = %v, want %v", tc.level, got, tc.want)
+		}
+		wantLevel := strings.TrimSpace(tc.level)
+		if wantLevel == "" {
+			wantLevel = DefaultLogLevel // empty env falls back to the default
+		}
+		if got := cfg.LogLevel(); got != wantLevel {
+			t.Errorf("LogLevel() = %q, want %q", got, wantLevel)
+		}
+	}
+}

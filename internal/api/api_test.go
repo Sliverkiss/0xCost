@@ -419,7 +419,7 @@ func TestAPIReplayCap(t *testing.T) {
 // API-016: client-side char caps — zero upstream requests.
 func TestAPICharCaps(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	big := strings.Repeat("字", 45001)
+	big := strings.Repeat("字", 50001)
 	// Normal model: cap 90000 — under.
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", big}), "")
 	if err != nil {
@@ -429,14 +429,14 @@ func TestAPICharCaps(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("90k model: status = %d", resp.StatusCode)
 	}
-	// Ultraspeed: cap 45000 — over.
+	// Ultraspeed: cap 50000 — over.
 	resp, err = ts.Chat(testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", big}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("45k model: status = %d, want 400", resp.StatusCode)
+		t.Fatalf("50k model: status = %d, want 400", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_, _, code := testutil.ParseError(t, body)

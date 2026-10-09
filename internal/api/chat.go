@@ -184,6 +184,14 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if plan.entry != nil {
+			s.debugf("chat: sticky continuation account=%s conversation=%s prevDialog=%s deltaQueries=%d msgCount=%d",
+				lease.ID, plan.conversationID, plan.prevDialogID, len(plan.queries), plan.entry.MsgCount)
+		} else {
+			s.debugf("chat: full replay account=%s conversation=%s (fresh) queries=%d replayCap=%d",
+				lease.ID, plan.conversationID, len(plan.queries), s.replayCap)
+		}
+
 		delivered, err := p.execute(ctx, w, lease, plan)
 		if err == nil {
 			return // success (execute released via finishTurn)

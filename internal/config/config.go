@@ -181,7 +181,14 @@ func (c *Config) Cooldown5xx() time.Duration    { return c.cooldown5xx }
 func (c *Config) CooldownCap() time.Duration    { return c.cooldownCap }
 func (c *Config) ProbeInterval() time.Duration  { return c.probeInterval }
 func (c *Config) LogLevel() string              { return c.logLevel }
-func (c *Config) OTPAuto() bool                 { return c.otpAuto }
+
+// Debug reports whether the operator asked for the verbose tracing level.
+// Anything other than "debug" (case-insensitive) keeps the default quiet
+// output; an unknown level is not an error, it is simply not debug.
+func (c *Config) Debug() bool {
+	return strings.EqualFold(strings.TrimSpace(c.logLevel), "debug")
+}
+func (c *Config) OTPAuto() bool { return c.otpAuto }
 
 // CrossRegionAgree reports whether the client may agree to the cross-region
 // personal-data-transfer demand automatically (MIMO2API_CROSS_REGION_AGREE,

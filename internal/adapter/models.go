@@ -83,10 +83,14 @@ func NormalizeModel(requested, defaultModel string, catalog []string) (model str
 }
 
 // MaxQueryChars returns the client-side per-request character cap for a model
-// channel (SDD §2.7): 45,000 for fastchat (ultraspeed), 90,000 otherwise.
+// channel (SDD §2.7): 50,000 for fastchat (ultraspeed), 90,000 otherwise.
+//
+// The fastchat figure is the Studio's own `ultraspeedQueryLimitLength: 5e4`
+// (SPA global store, docs/web-surface-reverse.md §11), measured in the same
+// unit we count: runes (UTF-16 code units for CJK == runes).
 func MaxQueryChars(model string) int {
 	if IsFastchatModel(model) {
-		return 45000
+		return 50000
 	}
 	return 90000
 }

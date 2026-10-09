@@ -300,9 +300,18 @@ normalization (strip `-studio` suffix etc., per `multimodal.go:50-85`).
 - Per-account parallelism is limited upstream (simple-chat's `parallel_chat_limit`
   analogue; MiMo expresses it as 429). We cap per-account in-flight requests instead of
   discovering the limit by being banned.
-- Query size caps measured by `mimo-web-proxy/internal/router/multimodal.go:130-137`:
-  **45,000 chars** for ultraspeed (fastchat channel; 48,750 OK / 50,000 rejected),
-  **90,000 chars** for others (~100K rejected). Enforce client-side with a clear error.
+- Query size caps: the Studio's own global store sets `ultraspeedQueryLimitLength: 5e4`
+  (live SPA, docs/web-surface-reverse.md §11) — **50,000 chars** for ultraspeed
+  (fastchat channel), **90,000 chars** for others (~100K rejected). The older
+  reference-implementation figure (45,000; 48,750 OK / 50,000 rejected) came from
+  `mimo-web-proxy/internal/router/multimodal.go:130-137` and is superseded by the
+  Studio constant. Enforce client-side with a clear error.
+- Ultraspeed context: the Studio caps its *client-side* ultraspeed context at
+  `ultraspeedContextRoundLimit: 3`, but the channel itself keeps more — a live
+  6-round chained conversation on `/fastchat/open-apis/bot/chat` still recalled a
+  round-1 fact, and a fresh-conversation full replay did too (reverse doc §11).
+  The gateway therefore keeps server-side chaining (sticky) plus its own replay cap
+  instead of inheriting the Studio's 3-round truncation.
 - `msgId` dedup (§2.4), UA/`sec-ch-ua` consistency, `x-timeZone` header, and the
   `xiaomichatbot_ph` query param are all risk-control-relevant. Keepalive comment
   frames (`: keepalive\n\n`) keep intermediaries from closing idle streams

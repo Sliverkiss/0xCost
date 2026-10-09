@@ -1,6 +1,6 @@
 # Web 面能力逆向（语音 / 检索 / Claw / 目录）
 
-状态：**真机实测**（账号 `18278724616`，userID `2652042633`，2026-10-09）。
+状态：**真机实测**（现役测试账号，userID `2652042633`，2026-10-09）。账号标识不写入仓库（docs/TDD.md §6.7）。
 本文只记已实测的事实；未实测的以 `未验证` 标注。桌面面（`mimo-server-cn.xiaomimimo.com`）
 本轮明确不做，结论仅备查（见 §9）。
 
@@ -187,3 +187,66 @@
 | usage 细节 | §6 | `prompt_tokens_details.cached_tokens` / `completion_tokens_details.reasoning_tokens` |
 | 运维：Claw 状态/领取 | §8 | `GET /v1/admin/claw/status`、`POST /v1/admin/claw/claim` |
 | 运维：会话管理 | §2 | TTS/ASR 前置会话按账号缓存复用（避免每次 save） |
+
+---
+
+## 11. chat 通道 vs ultraspeed（fastchat）通道
+
+### 11.1 路由规则（真机确认）
+
+- 模型 id `mimo-v2.6-pro-ultraspeed-studio` **必须**走 `/fastchat/open-apis/bot/chat`；
+  走普通通道 `/open-apis/bot/chat` 会被上游以 `event:error {"type":"text","content":"模型名称错误"}`
+  拒绝（HTTP 200 + SSE error 帧，实测）。
+- 反向：fastchat 通道**接受**普通模型（`mimo-v2.6-pro` 实测 200），只是没意义。
+- fastchat 通道同样返回 `event:dialogId`，即**有服务端会话状态**，`previousDialogueId`
+  链式续聊可用（实测 6 轮链式上下文正常）。
+
+### 11.2 时延实测（同账号、同一账号会话、短问句）
+
+| 通道 / 模型 | TTFB | 总耗时 | 事件 |
+|---|---|---|---|
+| `/fastchat/...` + `mimo-v2.6-pro-ultraspeed-studio` | **1.40 s** | 1.54 s | `dialogId`×1, `usage`×5, `message`×2, `finish`×1 |
+| `/open-apis/bot/chat` + `mimo-v2.6-pro`（基线） | 5.44 s | 5.77 s | 同上 |
+| `/open-apis/bot/chat` + ultraspeed 模型 | 0.60 s | 0.60 s | `error`×1（模型名称错误） |
+
+注意 **fastchat 通道会连发 5 个 `usage` 事件**（普通通道 1 个）——适配器必须按
+"last-wins" 处理，不能用"首个 usage 即最终值"。
+
+### 11.3 SPA 常量（真机 bundle 提取）
+
+- `ultraspeedModelCode`（导出名 `E_`）= `"mimo-v2.6-pro-ultraspeed-studio"`；
+  其模型档案 `Gm`：名称 `MiMo-V2.6-Pro UltraSpeed`，`pageType: chat`，
+  `features.webSearch = DISABLED`、`features.thinking = DISABLED`、`scene.enabled=false`。
+- 默认档案 `Yi`：`{name:"MiMo Default", model:"mimo-v2-flash"}`。
+- `ultraspeedQueryLimitLength = 5e4`（**50,000 字符**上限，按 rune 计与 JS UTF-16 长度等价）。
+- `ultraspeedContextRoundLimit = 3`（见 §11.4）。
+- 请求体构造（两个通道完全一致）：
+  ```js
+  modelConfig = {enableThinking, webSearchStatus, model, temperature?, topP?}
+  payload     = {msgId, conversationId, query, isEditedQuery,
+                 previousDialogueId, sceneType: payloadSceneType,
+                 params: payloadSceneParams, modelConfig, multiMedias}
+  ```
+  其中 `webSearchStatus = (webSearchEnabled && 附件数===0) ? sessionWebSearchMode : DISABLED`
+  —— **带附件时不检索**，这条要在检索开关实现（M19）里复刻。
+
+### 11.4 "只保留 3 轮"是客户端策略，不是服务端上限（实测）
+
+实验（fastchat + ultraspeed，同一账号）：
+
+| 方式 | 第 1 轮 | 第 6 轮回答 | 结论 |
+|---|---|---|---|
+| 链式：同一会话 6 轮、逐轮带 `previousDialogueId` | 植入"幸运数字 4913" | `4913` ✓ | 服务端保留 **≥6 轮** |
+| 全量重放：每轮**新开会话**，把历史拼进 `query` | 同上 | `4913` ✓ | 客户端自管上下文同样可行 |
+
+因此：
+1. `ultraspeedContextRoundLimit: 3` 只是 Studio 前端喂上下文的策略，**服务端不截断**。
+2. 网关**不继承**这 3 轮限制：流式继续用服务端链式（sticky，省 token），
+   非流式/缓存缺失时用全量重放（本网关 `replayCap` 轮），并在 fastchat 通道
+   按 50,000 字符预算裁剪。
+3. 两条路径都经真机验证，可按成本/质量自由取舍。
+
+### 11.5 端到端（经本网关）
+
+`/v1/chat/completions` 对 ultraspeed 模型自动路由 `/fastchat/...`；6 轮对话（流式）
+第 6 轮仍能取回第 1 轮植入的事实（脚本 `gw_ultra_e2e.py`）。
