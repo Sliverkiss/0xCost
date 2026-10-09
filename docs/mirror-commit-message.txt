@@ -1,28 +1,41 @@
 mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
 
 A Go gateway in front of Xiaomi MiMo Studio (aistudio.xiaomimimo.com) that speaks
-the OpenAI HTTP surface: chat (streaming and one-shot), TTS and ASR, model
-listing, and function calling for a model that has none.
+the OpenAI HTTP surface: chat (one-shot), TTS and ASR, web search, model listing.
 
-- Chat: SSE and non-streaming, streaming-only session chaining, per-credential
-  session identity, replay cap, keepalive, stall watchdog.
+- Chat: non-streaming only. There is no SSE path and no session store — the
+  request carries its own history, the gateway turns the upstream's SSE into one
+  JSON body, and `stream: true` is refused with a clear 400 instead of switching
+  anything off. Function calling is not emulated: a `tools` field is ignored and
+  reported in `X-Mimo-Warnings`, because the protocol prompt an emulation needs
+  spends 1,355-5,222 characters of the platform's 102,400-character query budget.
 - Audio: /v1/audio/speech (wav/mp3, the upstream's 1024-character limit enforced
   before any upstream work) and /v1/audio/transcriptions (multipart).
 - Models: the account's real catalog from bot/config, cached, with ids the upstream
   has retired resolved to their successors instead of advertised.
 - Accounts: a pool with per-class cooldowns (transport, 5xx, 429), risk-control
-  recording, per-account egress labels, OTP/consent handling, and renewal.
-- Function calling: MiMo has no native tools, so a vendored middleware
-  (deploy/toolforge) strips tools, injects an XYML prompt protocol and parses the
-  call back out. It is the deployment's single published port and relays every path
-  it does not implement to this gateway verbatim — one address, one key.
+  recording, per-account egress labels, OTP/consent handling, and self-healing
+  credentials — a 12 h keepalive, and an asynchronous password re-login when the
+  credential is revoked. Starting a re-login never spends an SMS on its own: the
+  operator completes the human gate.
+- Leases: capacity is per request, never per conversation. Each request has a
+  client-facing budget (504 on expiry), each upstream turn a TTL with a reaper,
+  and the slot returns to the pool before the response is written to a slow client.
+- Store: pluggable — the local accounts file, or Upstash (file or Redis behind one
+  interface, one JSON key per account plus an index set, stdlib RESP2 client, no
+  third-party dependency). `mimo2api -accounts <command>` lists, shows, enables,
+  disables, re-pins, removes, imports and exports accounts against whichever store
+  the environment selects.
 - Admin: GET /v1/admin/pool (masked ids, cooldown causes, risk events, invariant),
   OTP submission, consent.
 
-Deployment: docker compose (distroless image, /data volume for accounts.json,
-in-binary healthcheck). Real account identifiers are never written into the tree:
-they live in the git-ignored data/accounts.json, and `make hygiene` reads its values
-and fails if any of them appears in a tracked file.
+Deployment: docker compose (distroless image, port 3000 on the loopback behind a
+TLS reverse proxy, in-binary healthcheck) or a hosted build with no volume — a
+plain Go binary, `nixpacks.toml` included, the platform's own PORT honoured, and
+the account store in Upstash. Real account identifiers are never written into the
+tree: they live in the git-ignored data/accounts.json and data/deploy.env, and
+`make hygiene` reads both and fails if any of their values appears in a tracked
+file.
 
 This mirror carries the code and the docs; the test suite is excluded from it
 (.gitattributes export-ignore). Design notes and decision records are in docs/.
