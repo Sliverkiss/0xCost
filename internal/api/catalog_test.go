@@ -102,8 +102,8 @@ func TestCAT001CapabilitiesFromAccountCatalog(t *testing.T) {
 	}
 
 	// Audio models: no search surface, audio capability, audio task.
-	if tts, ok := rowByID(rows, "mimo-v2-tts"); !ok {
-		t.Error("mimo-v2-tts missing")
+	if tts, ok := rowByID(rows, "mimo-v2.5-tts"); !ok {
+		t.Error("mimo-v2.5-tts missing")
 	} else {
 		if tts.Capabilities.WebSearch != 0 {
 			t.Errorf("tts web_search = %d, want 0 (no search surface)", tts.Capabilities.WebSearch)

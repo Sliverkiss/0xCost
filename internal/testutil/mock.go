@@ -80,7 +80,11 @@ type MockUpstream struct {
 	// that HTTP status instead of a task, so the transport/5xx classification of
 	// an audio call can be exercised (TDD POOLATTR-014).
 	audioHTTPStatus int
-	audioHTTPBody   string
+	// ttsErrorOnce is answered once by the TTS generate endpoint before the
+	// synthesis proceeds: the shape the upstream uses to refuse a retired model
+	// ("model: [x] not support"), which the gateway learns from (TDD REFRESH-002).
+	ttsErrorOnce  string
+	audioHTTPBody string
 	// catalogOverrides: per-account bot/config model lists (keyed by ph)
 	// so /v1/models union behaviour can be exercised (M19 §3).
 	catalogOverrides map[string]catalogOverride

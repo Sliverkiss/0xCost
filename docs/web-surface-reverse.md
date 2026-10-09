@@ -73,7 +73,9 @@
      SPA 会把正文里的圆括号/方括号/花括号统一改写成 `[` `]`（控制标记语法）。
    - 角色不敏感（`user+assistant` 与 `user+user` 均成功）；`modelConfig.scene` 可省
      （`VOICE_COMMAND` 也成功）。
-   - `modelCode` 必须是 `bot/config` 里真实存在的（未知名 → `{"code":400,"msg":"modelCode cannot be empty"}`）。
+   - `modelCode` 必须是 `bot/config` 里真实存在**且未被取代**的（未知名 → `{"code":400,"msg":"modelCode cannot be empty"}`；已被取代的 id → `{"code":400,"msg":"model: [mimo-v2-tts] not support"}`，2026-10-09 真机）。
+  - **`redirectTo`（2026-10-09 真机取证）**：`modelConfigListNg` 的每一行可能带 `redirectTo`，指向平台真正提供的 id。当前账号 25 行里 **18 行已废弃**，含链式（`mimo-v2-flash-studio` → `mimo-v2-flash` → `mimo-v2.6-flash`）。SPA 用它构造 `deprecatedModelRedirectMap`，发请求前先归位；我们同样归位（ADR 0011），并且**不再把这些 id 列进 `/v1/models`**。
+  - chat 面对已废弃 id 的拒绝形态不同：不是 400，而是复用繁忙帧 `服务器繁忙，请稍后再试`（真机同一分钟交替 3 轮：当前 id 3/3 成功、废弃 id 3/3 繁忙）。
 2. 响应：`{"code":0,"data":{"taskId":16063236,"conversationId":"...","msgId":"1791521173154","status":"generating"}}`
 3. `GET /open-apis/tts/generateStatus?taskId=<n>&xiaomichatbot_ph=<ph>`
    → `{"code":0,"data":{"status":"success","audioUrl":"https://alsgp0.fds.api.xiaomi.com/chatbot-prod/multimedia/2652042633/...","audit":{"status":"PASS","blocked":false}}}`

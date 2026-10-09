@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
@@ -140,6 +141,13 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "invalid_request_error", "upstream_auth_expired",
 			"upstream session expired and could not be refreshed", 0)
 	case errors.As(err, &upErr):
+		// The status alone cannot explain an upstream refusal, and the body is
+		// where the reason lives ("modelCode cannot be empty", an audit refusal, a
+		// conversation/model mismatch). Debug level only: it is an upstream body,
+		// not something to print in normal operation or return to a client.
+		if s.debug && s.logger != nil {
+			s.logger.Printf("upstream %d: %s", upErr.StatusCode, truncateForLog(upErr.Body, 400))
+		}
 		switch {
 		case upErr.StatusCode == http.StatusTooManyRequests:
 			// Upstream 429 surfaced (SDD §7.4, TDD ERRMAP-006).
@@ -156,6 +164,15 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "api_error", "upstream_failure",
 			"upstream failure: "+err.Error(), 0)
 	}
+}
+
+// truncateForLog bounds a string destined for a log line.
+func truncateForLog(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // isAuthErr matches both mimo and pool auth-expired wrappers.

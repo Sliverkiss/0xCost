@@ -163,6 +163,14 @@ func run() error {
 		DefaultVoice:   cfg.TTSVoice(),
 	})
 
+	// Warm the superseded-model map before serving. It is the deployment's view of
+	// which model ids the upstream will actually run, and the request paths read
+	// it from memory only — so nothing on a chat or audio request can be turned
+	// into a catalog read (which could in turn demand a login).
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 20*time.Second)
+	srv.RefreshModelRedirects(warmCtx)
+	cancelWarm()
+
 	// Background janitors (SDD §3): recovery probes every probeInterval,
 	// session sweep on the same loop, plus a 6h STS keepalive sweep (§2.3).
 	ctx, stopJanitors := context.WithCancel(context.Background())
@@ -181,6 +189,10 @@ func run() error {
 				if n := p.ProbeSweep(ctx); n > 0 {
 					log.Printf("pool: recovered %d account(s)", n)
 				}
+				// Keep the superseded-id map current: an upstream that retires a
+				// model mid-flight must not start failing requests that used to
+				// work (TTL-guarded inside).
+				srv.RefreshModelRedirects(ctx)
 				if n := sessions.Sweep(); n > 0 {
 					log.Printf("session: swept %d expired entr%s", n, plural(n))
 				}

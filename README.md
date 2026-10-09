@@ -37,8 +37,8 @@ performs `GET /healthz` for the container healthcheck.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming). Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
-| GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`) |
-| GET | `/v1/models/{id}` | Bearer | One model entry |
+| GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
+| GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
 | POST | `/v1/audio/transcriptions` | Bearer | Speech-to-text (multipart: `file`, `model?`, `language?`, `response_format?`) → `{text}` / plain text / `verbose_json` |
 | GET | `/v1/audio/voices` | Bearer | The account's TTS voice catalog (`{data:[{id,name,description,avatar,preview_audio}]}`) |
@@ -107,6 +107,25 @@ one-shot by design: no session, no store read or write, no header (ADR 0009).
 
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
+
+## Superseded models (ADR 0011)
+
+The upstream retires model ids and says so in its own catalog: the row keeps a
+`redirectTo` naming the id the platform serves instead (for the current account, 18
+of 25 rows, including the chat models `mimo-v2-flash`, `mimo-v2-pro`, `mimo-v2.5`
+and the TTS/VoiceDesign/VoiceClone v2.1 family). It then refuses the retired id —
+`400 model: [x] not support` on the audio surface, the busy frame on chat.
+
+- `/v1/models` lists only what the upstream will run (7 models for the current
+  account).
+- A request naming a retired id is resolved to its successor **before** it leaves,
+  transitively (`mimo-v2-flash-studio` → `mimo-v2-flash` → `mimo-v2.6-flash`), and
+  the response still echoes the id you asked for.
+- If the upstream retires a model between two refreshes, the refusal itself
+  rebuilds the map and the request is retried once on the successor.
+- Cadence: the list follows the catalog TTL (`MIMO2API_CATALOG_TTL_S`, default
+  600s), the resolution map the janitor tick (`MIMO2API_PROBE_INTERVAL_S`, default
+  60s). `MIMO2API_LOG_LEVEL=debug` logs every substitution.
 
 ## Configuration (environment)
 
@@ -226,7 +245,7 @@ cooldowns, disabled reasons survive restarts):
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
 | `docs/specs/session-identity.md` | Spec (accepted): how a request resolves to a session — identity ladder, isolation invariants, fork policy, one-shot non-streaming |
 | `docs/specs/account-pool.md` | Spec (proposed): pool failure attribution, the form of 451/461, per-account observability, per-account egress |
-| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split (superseded by 0010: the cap is refused, not split), session identity |
+| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split (superseded by 0010: the cap is refused, not split), session identity, speech as a refused limit, superseded models resolved and not advertised |
 
 ## Development
 

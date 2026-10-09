@@ -50,6 +50,92 @@ type Server struct {
 	asrTimeout     time.Duration
 	speechMaxChars int
 	defaultVoice   string
+
+	// redirects caches the upstream's deprecated-model map (`redirectTo`) for
+	// catalogTTL, so the request paths can resolve a superseded id without
+	// touching the upstream per request (M19 §3, model redirects).
+	redirects struct {
+		mu sync.Mutex
+		at time.Time
+		m  map[string]string
+	}
+}
+
+// modelRedirects returns the cached superseded-id map. It is memory-only and
+// does NOT read the account catalog: the request paths call it, and making a chat
+// request fetch a catalog would let it trigger a login — which is exactly what an
+// existing regression case caught (a chat call produced a second OTP challenge).
+// The map is warmed by RefreshModelRedirects at startup, by the janitor, and as a
+// side effect of reading the model list; a cold map (or one account whose catalog
+// is unreadable) simply leaves the requested id alone.
+func (s *Server) modelRedirects() map[string]string {
+	s.redirects.mu.Lock()
+	defer s.redirects.mu.Unlock()
+	return s.redirects.m
+}
+
+// RefreshModelRedirects rebuilds the map from the account catalogs, at most once
+// per catalog TTL. It is the exported warm-up main.go calls at startup and on its
+// janitor tick, so the request paths never pay for a catalog read.
+func (s *Server) RefreshModelRedirects(ctx context.Context) {
+	s.redirects.mu.Lock()
+	if s.redirects.m != nil && time.Since(s.redirects.at) < s.catalogWindow() {
+		s.redirects.mu.Unlock()
+		return
+	}
+	s.redirects.mu.Unlock()
+
+	m := s.redirectMapOf(s.catalogEntries(ctx))
+	s.redirects.mu.Lock()
+	s.redirects.m = m
+	s.redirects.at = time.Now()
+	s.redirects.mu.Unlock()
+	if len(m) > 0 {
+		s.debugf("models: %d superseded ids will be resolved before they reach the upstream", len(m))
+	}
+}
+
+// relearnModel is what a refusal teaches us: the map we hold was out of date, so
+// rebuild it (TTL bypassed) and resolve the id again. The floor keeps a burst of
+// refusals — several requests naming a model retired a moment ago — from
+// stampeding the catalog read.
+func (s *Server) relearnModel(ctx context.Context, id string) string {
+	s.redirects.mu.Lock()
+	tooSoon := !s.redirects.at.IsZero() && time.Since(s.redirects.at) < redirectRelearnFloor
+	s.redirects.mu.Unlock()
+	if tooSoon {
+		return adapter.ResolveRedirect(id, s.modelRedirects())
+	}
+	s.redirects.mu.Lock()
+	s.redirects.at = time.Time{} // expire, so the refresh below cannot short-circuit
+	s.redirects.mu.Unlock()
+	s.RefreshModelRedirects(ctx)
+	resolved := adapter.ResolveRedirect(id, s.modelRedirects())
+	if resolved != id {
+		s.debugf("model: the upstream refused %s, which is superseded by %s; retrying with %s", id, resolved, resolved)
+	} else {
+		s.debugf("model: the upstream refused %s and the catalog knows no successor", id)
+	}
+	return resolved
+}
+
+// redirectRelearnFloor bounds how often a refusal may trigger a rebuild.
+const redirectRelearnFloor = 5 * time.Second
+
+// resolveModel maps a client's model id onto the id the upstream accepts. Both
+// surfaces need it: the audio surface refuses a superseded id outright
+// ("model: [x] not support") and chat answers it with the busy frame, while the
+// Studio SPA never sends one (it resolves the same map client-side).
+// resolveModel maps a client's model id onto the id the upstream accepts. Both
+// surfaces need it: the audio surface refuses a superseded id outright
+// ("model: [x] not support") and chat answers it with the busy frame, while the
+// Studio SPA never sends one (it resolves the same map client-side).
+func (s *Server) resolveModel(id string) string {
+	resolved := adapter.ResolveRedirect(id, s.modelRedirects())
+	if resolved != id {
+		s.debugf("model: %s is superseded by %s upstream; sending %s", id, resolved, resolved)
+	}
+	return resolved
 }
 
 // debugf logs only when the server was built with Options.Debug
@@ -318,6 +404,10 @@ type modelJSON struct {
 	// Studio catalog) or "static" (the built-in fallback table, used only
 	// when the account read failed). Account wins on conflict.
 	Source string `json:"source"`
+	// RedirectTo is set only when a client asked for a superseded id: it names
+	// the model the upstream serves instead (the list itself never advertises a
+	// superseded id).
+	RedirectTo string `json:"redirect_to,omitempty"`
 }
 
 type modelCapabilities struct {
@@ -339,7 +429,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) modelsList(ctx context.Context) map[string]any {
-	entries := s.catalogEntries(ctx)
+	all := s.catalogEntries(ctx)
+	s.storeRedirects(s.redirectMapOf(all))
+	entries := adapter.Usable(all)
 	data := make([]modelJSON, 0, len(entries))
 	for _, e := range entries {
 		data = append(data, modelEntryDTO(e))
@@ -455,6 +547,9 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 	ids := make([]string, 0, len(cfg.Models)+len(cfg.ChatModels))
 	pages := make(map[string]string, len(cfg.Models)+len(cfg.ChatModels))
 	names := make(map[string]string, len(cfg.Models))
+	// redirects is the upstream's own deprecated-model map (`redirectTo`): the
+	// ids it has superseded, and the id it wants instead.
+	redirects := make(map[string]string, len(cfg.Models))
 	for _, m := range cfg.Models {
 		if m.Model == "" {
 			continue
@@ -465,6 +560,9 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 		pages[m.Model] = m.PageType
 		if m.Name != "" {
 			names[m.Model] = m.Name
+		}
+		if m.RedirectTo != "" {
+			redirects[m.Model] = m.RedirectTo
 		}
 	}
 	for _, r := range cfg.ChatModels {
@@ -495,13 +593,14 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 			}
 		}
 		out = append(out, adapter.CatalogEntry{
-			ID:     id,
-			Name:   names[id],
-			Page:   page,
-			Web:    adapter.WebSearchLevel(page, wsDefault),
-			Think:  think,
-			Audio:  adapter.AudioForPage(page),
-			NToken: row.NToken,
+			ID:         id,
+			Name:       names[id],
+			Page:       page,
+			Web:        adapter.WebSearchLevel(page, wsDefault),
+			Think:      think,
+			Audio:      adapter.AudioForPage(page),
+			NToken:     row.NToken,
+			RedirectTo: redirects[id],
 		})
 	}
 	return out
@@ -512,12 +611,24 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	entries := s.catalogEntries(r.Context())
+	s.storeRedirects(s.redirectMapOf(entries))
 	for _, e := range entries {
 		// Same source as the list: a model the account reports is known even
 		// when the static table has never heard of it (M19 §3).
 		if e.ID == id {
+			dto := modelEntryDTO(e)
+			if e.RedirectTo != "" {
+				// Superseded: the list hides it, but a client that asks for it by
+				// name is told what the upstream serves instead rather than
+				// getting a 404 for an id we clearly know about.
+				if target, _ := findEntry(entries, adapter.ResolveRedirect(e.ID, s.redirectMapOf(entries))); target.ID != "" {
+					dto = modelEntryDTO(target)
+					dto.ID = id
+					dto.RedirectTo = target.ID
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(modelEntryDTO(e))
+			_ = json.NewEncoder(w).Encode(dto)
 			return
 		}
 	}
@@ -526,13 +637,41 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{
-			Message: fmt.Sprintf("model %q not found; available models: %s", id, strings.Join(modelIDs(entries), ", ")),
+			Message: fmt.Sprintf("model %q not found; available models: %s", id, strings.Join(modelIDs(adapter.Usable(entries)), ", ")),
 			Type:    "invalid_request_error",
 		}})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(modelJSON{ID: model, Object: "model", Created: 1700000000, OwnedBy: "xiaomi"})
+}
+
+// storeRedirects caches the superseded-id map.
+func (s *Server) storeRedirects(m map[string]string) {
+	s.redirects.mu.Lock()
+	defer s.redirects.mu.Unlock()
+	s.redirects.m, s.redirects.at = m, time.Now()
+}
+
+// redirectMapOf builds the superseded-id map from an entry slice.
+func (s *Server) redirectMapOf(entries []adapter.CatalogEntry) map[string]string {
+	m := map[string]string{}
+	for _, e := range entries {
+		if e.RedirectTo != "" {
+			m[e.ID] = e.RedirectTo
+		}
+	}
+	return m
+}
+
+// findEntry returns the entry with an id, or a zero entry.
+func findEntry(entries []adapter.CatalogEntry, id string) (adapter.CatalogEntry, bool) {
+	for _, e := range entries {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return adapter.CatalogEntry{}, false
 }
 
 // modelIDs lists catalog ids for an error message, capped so a 25-model

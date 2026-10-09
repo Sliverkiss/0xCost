@@ -107,6 +107,9 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/api/errors_test.go` | api | ERRMAP-001..012 (table-driven, §7.4) |
 | `internal/accounts/accounts_test.go` | accounts | ACC-001..007 |
 | `internal/config/config_test.go` | config | CONF-001..007 |
+| `internal/adapter/redirect_test.go` | adapter | REDIR-UNIT (redirect chains, cycles, `Usable`, the floor merge keeping a superseded row superseded) |
+| `internal/api/models_redirect_test.go` | api | MODELS-014/015, CHAT-REDIR-001, AUDIO-REDIR-001 |
+| `internal/api/refresh_redirects_test.go` | api | REFRESH-001/002 (a retirement learned from the upstream's own refusal) |
 | `internal/testutil/testutil.go` (+ `testdata/`) | testutil | shared helpers (§2.2) |
 | `internal/live/live_test.go` | live | LIVE-001..010 + LIVE-SESS-001/002 (session chaining vs replay, one-shot) — separate package so it is never run implicitly; gated on `MIMO2API_LIVE=1` |
 | `docker/docker_test.sh` (invoked via `go test` wrapper or Makefile target) | — | DOCKER-001..006 — shell-driven, skipped when `docker` binary absent |
@@ -331,6 +334,18 @@ Wave order agreed with the owner: ① attribution → ② risk control → ③ o
 | LIVE-POOL-001 | The diagnostic view against the real account | per-account state matches what the requests actually did (in-flight returns to 0, cooldowns have reasons, no credential in the body) |
 | LIVE-POOL-002 | Passive risk-control observation | recorded **if and when** a 451/461 occurs; "no observation yet" is an acceptable result, because inducing one is forbidden (REQ-9) |
 | LIVE-EGRESS-001 | One account behind an operator-supplied egress | a chat turn and a TTS synthesis complete through the labelled endpoint; without an egress supplied by the owner this stays unverified and is reported as such |
+
+### 3.5.3 Model redirects (`redirectTo`)
+
+| ID | Description | Precondition | Stimulus | Expected result | Test |
+|---|---|---|---|---|---|
+| MODELS-014 | A superseded id is not advertised | account catalog carries `redirectTo` rows (live: 18 of 25) | `GET /v1/models` | superseded ids absent, usable ones present, and no row carries `redirect_to` | `TestModelsListOmitsSupersededIDs` |
+| MODELS-015 | Asking for a superseded id by name names its successor | as above | `GET /v1/models/mimo-v2-flash` | 200; the id asked for, plus `redirect_to: mimo-v2.6-flash` and the successor's real capabilities | `TestModelByIDResolvesSupersededID` |
+| CHAT-REDIR-001 | A superseded chat id reaches the upstream as its successor | warmed map | chat naming `mimo-v2-flash` | the upstream sees `mimo-v2.6-flash`; the response echoes the id the client asked for | `TestChatResolvesSupersededModel` |
+| AUDIO-REDIR-001 | The audio surface is where the upstream is strictest | warmed map | `/v1/audio/speech` naming `mimo-v2-tts` | the synthesis carries `modelCode: mimo-v2.5-tts`; the caller gets audio | `TestSpeechResolvesSupersededModel` |
+| REFRESH-001 | A retirement between refreshes is learned from the refusal | map deliberately cold; upstream answers the busy frame | chat naming a superseded id | first request carries the asked id, the retry carries the successor learned from the catalog | `TestChatLearnsModelFromBusyRefusal` |
+| REFRESH-002 | Same on the audio surface | map cold; first synthesis answers 400 `model: [x] not support` | `/v1/audio/speech` | the retry carries the successor's `modelCode`; the caller gets audio | `TestSpeechLearnsModelFromRefusal` |
+| REDIR-UNIT | Chains, cycles and the static floor | — | `ResolveRedirect`, `Usable`, `Merge` | two-hop chains resolve, cycles terminate, a superseded id stays superseded through the floor merge | `internal/adapter/redirect_test.go` |
 
 ### 3.6 OpenAI API surface (P0/P1)
 

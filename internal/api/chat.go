@@ -52,7 +52,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		search = "disabled"
 	}
 
-	// Model resolution (SDD §5.2, TDD API-013).
+	// Model resolution (SDD §5.2, TDD API-013). A superseded id is resolved onto
+	// the id the upstream serves first: it is not a model the platform will run
+	// (the audio surface refuses it, chat answers it with the busy frame), and the
+	// client keeps seeing the id it asked for in the response.
+	requested = s.resolveModel(requested)
 	model, fastchat, err := adapter.NormalizeModel(requested, s.defaultModel, nil)
 	if err != nil {
 		s.MapError(w, err)
@@ -394,7 +398,17 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 				s.MapError(w, err)
 				return
 			}
-			s.debugf("chat: upstream busy, retrying in %s (account=%s)", busyRetryBackoff, lease.ID)
+			// A retired model id is answered with this same busy frame (live
+			// 2026-10-09: a superseded id returned it 3/3 while the id it redirects
+			// to answered 3/3), so treat the refusal as information: rebuild the
+			// superseded-id map and re-resolve before the retry. If the id was
+			// retired between two refreshes, this is where the deployment notices.
+			if m := s.relearnModel(ctx, p.requested); m != p.model {
+				if nm, fc, nerr := adapter.NormalizeModel(m, s.defaultModel, nil); nerr == nil {
+					p.model, p.fastchat = nm, fc
+				}
+			}
+			s.debugf("chat: upstream busy, retrying in %s (account=%s, model=%s)", busyRetryBackoff, lease.ID, p.model)
 			stickyEntry = nil
 			attempts++
 			select {

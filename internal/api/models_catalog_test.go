@@ -42,7 +42,7 @@ func modelsIDs(t *testing.T, ts *testserver.TestServer) []string {
 func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 	ts := audioServer(t, oneAccount(), nil)
 	ids := strings.Join(modelsIDs(t, ts), ",")
-	for _, want := range []string{"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed-studio", "clawm-alpha"} {
+	for _, want := range []string{"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed-studio"} {
 		if !strings.Contains(ids, want) {
 			t.Errorf("catalog %s is missing chat model %q", ids, want)
 		}
@@ -50,7 +50,7 @@ func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 	// Audio rows belong in the catalog (M19 §3): they are usable through the
 	// audio endpoints and their capabilities say so (CAT-001 asserts the
 	// capability values; this only checks they are present).
-	for _, wantAudio := range []string{"mimo-v2-tts", "mimo-v2.5-asr"} {
+	for _, wantAudio := range []string{"mimo-v2.5-tts", "mimo-v2.5-asr"} {
 		if !strings.Contains(ids, wantAudio) {
 			t.Errorf("catalog %s is missing the audio row %q", ids, wantAudio)
 		}

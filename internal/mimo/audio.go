@@ -70,6 +70,23 @@ func IsUnknownModel(err error) bool {
 	return errors.As(err, &be) && strings.Contains(be.Msg, "modelCode cannot be empty")
 }
 
+// IsModelRefused reports the upstream refusing a modelCode it was sent: either
+// the explicit refusal ("model: [x] not support") or the misleading message it
+// uses for an id it cannot resolve at all ("modelCode cannot be empty"). Both are
+// what a retired id produces when the retirement happened after our map of
+// superseded ids was built, so the caller can re-learn and retry (ADR 0011).
+func IsModelRefused(err error) bool {
+	refused := func(s string) bool {
+		return strings.Contains(s, "not support") || strings.Contains(s, "modelCode cannot be empty")
+	}
+	var be *BizError
+	if errors.As(err, &be) && refused(be.Msg) {
+		return true
+	}
+	var ue *UpstreamError
+	return errors.As(err, &ue) && refused(ue.Body)
+}
+
 // Errors surfaced by the audio flows.
 var (
 	// ErrAudioFailed: the upstream task reported status=failed.

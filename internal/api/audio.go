@@ -223,15 +223,27 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		// the audio was tried and removed: a piece near the cap makes the
 		// upstream fail the task itself, so the workaround only delayed the
 		// error (ADR 0010, live 2026-10-09).
-		res, terr := s.synthesize(r.Context(), cookie, ph, accountID, mimo.TTSRequest{
+		wantModel := s.resolveModel(req.Model)
+		ttsReq := mimo.TTSRequest{
 			Text:        input,
 			Instruction: req.Instructions,
 			Voice:       voice,
 			Format:      format,
-			Model:       req.Model,
+			Model:       wantModel,
 			PollEvery:   s.audioPoll,
 			PollTimeout: s.ttsTimeoutFor(input),
-		})
+		}
+		res, terr := s.synthesize(r.Context(), cookie, ph, accountID, ttsReq)
+		if terr != nil && mimo.IsModelRefused(terr) {
+			// The upstream refused the model as such ("model: [x] not support" /
+			// "modelCode cannot be empty"): it was retired after our map was built.
+			// Learn from the refusal and try once on the id the upstream wants —
+			// otherwise the caller sees a 502 whose cause lives only in a log.
+			if m := s.relearnModel(r.Context(), req.Model); m != wantModel {
+				ttsReq.Model = m
+				res, terr = s.synthesize(r.Context(), cookie, ph, accountID, ttsReq)
+			}
+		}
 		if terr != nil {
 			// No partial audio: a half-spoken answer would be worse than an
 			// error the caller can retry.
@@ -335,11 +347,19 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 			FileName:    fileName,
 			Audio:       audio,
 			Language:    language,
-			Model:       model,
+			Model:       s.resolveModel(model),
 			PollEvery:   s.audioPoll,
 			PollTimeout: s.asrTimeout,
 		}
 		out, terr := s.clientForAccount(accountID).Transcribe(r.Context(), cookie, ph, conv, req)
+		if terr != nil && mimo.IsModelRefused(terr) {
+			// Same lesson as in TTS: a refusal means the id was retired after the
+			// map was built — re-learn and try once on the successor.
+			if m := s.relearnModel(r.Context(), req.Model); m != req.Model {
+				req.Model = m
+				out, terr = s.clientForAccount(accountID).Transcribe(r.Context(), cookie, ph, conv, req)
+			}
+		}
 		if terr != nil && mimo.IsConversationMissing(terr) {
 			s.audioConvs.Invalidate(accountID + "/" + kind)
 			conv, cerr = s.clientForAccount(accountID).EnsureConversation(r.Context(), cookie, ph, s.audioConvs, accountID, kind)

@@ -193,6 +193,20 @@ func (ts *TestServer) Chat(body string, apiKey string) (*http.Response, error) {
 	return ts.Server.Client().Do(req)
 }
 
+// Post sends a JSON body to a path with an optional key (audio surfaces, which
+// Chat does not cover).
+func (ts *TestServer) Post(path, apiKey, body string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, ts.URL()+path, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	return ts.Server.Client().Do(req)
+}
+
 // Get fetches a path with an optional key (models, healthz).
 func (ts *TestServer) Get(path, apiKey string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, ts.URL()+path, nil)

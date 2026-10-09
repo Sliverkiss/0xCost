@@ -190,8 +190,21 @@ func TestFetchBotConfigParsesRealShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchBotConfig: %v", err)
 	}
-	if len(cfg.Models) != 5 {
+	// The fixture mirrors the live payload, superseded rows included, so the count
+	// is the fixture's own and the redirect field must survive the parse — a
+	// fixture without `redirectTo` describes a service that does not exist and
+	// hides the resolution the request paths depend on (model redirects).
+	if len(cfg.Models) != 7 {
 		t.Errorf("models = %d, want the modelConfigListNg entries", len(cfg.Models))
+	}
+	redirects := map[string]string{}
+	for _, m := range cfg.Models {
+		if m.RedirectTo != "" {
+			redirects[m.Model] = m.RedirectTo
+		}
+	}
+	if redirects["mimo-v2-flash"] != "mimo-v2.6-flash" {
+		t.Errorf("the parse lost the superseded ids: %v", redirects)
 	}
 	// ultraspeed is a chat row without an Ng row in the live payload, so the two
 	// lists are parsed separately and the row keeps its own capability defaults.

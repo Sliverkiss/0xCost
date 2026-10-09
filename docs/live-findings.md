@@ -171,3 +171,44 @@ the four pool waves). Read-only except for one small chat turn.
   It needs an endpoint the owner supplies; labelling an account without one fails
   startup by design, so the labelled path is covered end to end by
   `internal/api/egress_e2e_test.go` against a real forwarding proxy, not live.
+
+## LIVE-MODEL-REDIRECT — retired ids, found while probing the egress (2026-10-09)
+
+Found by accident: a live `/v1/audio/speech` naming `mimo-v2-tts` answered **502**
+in 0.6 s, while `mimo-v2.5-tts` synthesised a 76 844-byte WAV. The same 502 occurred
+on an instance with no egress label at all, so it was not the egress work.
+
+With the upstream's own error body logged (`MIMO2API_LOG_LEVEL=debug`):
+
+- `mimo-v2-tts` → `400 {"code":400,"msg":"model: [mimo-v2-tts] not support"}`
+- `mimo-v2.1-tts` → `400 {"code":400,"msg":"modelCode cannot be empty"}`
+- `mimo-v2.5-tts` → 200, real RIFF WAV
+
+`bot/config` explains it: rows carry `redirectTo` and **18 of 25 are superseded**,
+including the chat models `mimo-v2-flash`, `mimo-v2-pro`, `mimo-v2.5`, `mimo-v2.5-pro`
+and the whole v2.1 audio family. The Studio SPA builds its
+`deprecatedModelRedirectMap` from that field and never sends a superseded id.
+
+Chat refuses a superseded id differently — with the busy frame. Three interleaved
+rounds inside one minute:
+
+| model | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| `mimo-v2.6-flash` (current) | 200 | 200 | 200 |
+| `mimo-v2-flash` (superseded) | 503 busy | 503 busy | 503 busy |
+| `mimo-v2.5` (superseded) | client timeout | 200 | 200 |
+
+After ADR 0011 (list cleaned, requests resolved, refusals learned from), the same
+live instance on port 18240:
+
+- `GET /v1/models` → **7** models, all `source=account`: `mimo-v2.6-pro`,
+  `mimo-v2.6-flash`, `mimo-v2.6-pro-ultraspeed-studio`, `mimo-v2.5-tts`,
+  `mimo-v2.5-tts-voiceclone`, `mimo-v2.5-tts-voicedesign`, `mimo-v2.5-asr`.
+  Startup logs `models: 18 superseded ids will be resolved before they reach the
+  upstream`.
+- `/v1/audio/speech` naming `mimo-v2-tts` → **200**, 76 844 bytes, real WAV
+  (was 502), log line `model: mimo-v2-tts is superseded by mimo-v2.5-tts upstream`.
+- chat naming `mimo-v2-flash` → **200** (was 3/3 busy); `mimo-v2.5` → 200; the
+  response echoes the id the caller asked for.
+- `GET /v1/models/mimo-v2-flash` → 200 with `"redirect_to":"mimo-v2.6-flash"` and the
+  successor's real capability bits.

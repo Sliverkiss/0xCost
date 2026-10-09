@@ -58,6 +58,16 @@ func (m *MockUpstream) SetAudioStatusScript(kind string, statuses ...string) {
 
 // SetAudioHTTPStatus makes the TTS generate endpoint answer a bare HTTP status
 // (e.g. 500) instead of a synthesis task. status <= 0 restores normal service.
+// SetTTSErrorOnce makes the next TTS generate call answer 400 with a body — the
+// shape a retired modelCode produces — and every call after it succeed.
+func (m *MockUpstream) SetTTSErrorOnce(body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ttsErrorOnce = body
+}
+
+// SetAudioHTTPStatus makes the TTS generate endpoint answer a bare HTTP status
+// (e.g. 500) instead of a synthesis task. status <= 0 restores normal service.
 func (m *MockUpstream) SetAudioHTTPStatus(status int, body string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -222,7 +232,15 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/open-apis/tts/v2/generate":
 		m.mu.Lock()
 		httpStatus, httpBody := m.audioHTTPStatus, m.audioHTTPBody
+		once := m.ttsErrorOnce
+		m.ttsErrorOnce = ""
 		m.mu.Unlock()
+		if once != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, once)
+			return
+		}
+		_ = once
 		if httpStatus > 0 {
 			w.WriteHeader(httpStatus)
 			_, _ = io.WriteString(w, httpBody)
@@ -342,12 +360,20 @@ func mockBotConfig() map[string]any {
 				"webSearchDefaultStatus": "auto",
 			},
 		},
+		// Live shape (2026-10-09): every superseded id carries `redirectTo` naming
+		// the id the platform actually serves. 18 of the real catalog's 25 rows are
+		// superseded, and the upstream refuses such an id on the audio surface
+		// ("model: [x] not support") and answers it with the busy frame on chat —
+		// so a fixture where those fields are empty describes a service that does
+		// not exist and hides both bugs.
 		"modelConfigListNg": []map[string]any{
 			{"name": "MiMo-V2.6-Flash", "model": "mimo-v2.6-flash", "pageType": "chat"},
 			{"name": "MiMo-V2.6-Pro", "model": "mimo-v2.6-pro", "pageType": "chat"},
-			{"name": "MiMo-TTS", "model": "mimo-v2-tts", "pageType": "tts"},
+			{"name": "MiMo-V2.5-TTS", "model": "mimo-v2.5-tts", "pageType": "tts"},
+			{"name": "MiMo-V2-TTS", "model": "mimo-v2-tts", "pageType": "tts", "redirectTo": "mimo-v2.5-tts"},
+			{"name": "MiMo-V2-Flash", "model": "mimo-v2-flash", "pageType": "chat", "redirectTo": "mimo-v2.6-flash"},
 			{"name": "MiMo-ASR", "model": "mimo-v2.5-asr", "pageType": "asr"},
-			{"name": "Claw-M", "model": "clawm-alpha", "pageType": "chat", "redirectTo": ""},
+			{"name": "Claw-M", "model": "clawm-alpha", "pageType": "chat", "redirectTo": "mimo-v2.6-flash"},
 		},
 		"ttsVoices": []map[string]any{
 			{"id": "冰糖", "name": "冰糖", "description": "活泼少女",

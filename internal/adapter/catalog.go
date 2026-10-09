@@ -40,7 +40,36 @@ type CatalogEntry struct {
 	Think  bool // default-on
 	Audio  string
 	NToken string // upstream context size when given ("1M")
-	Static bool   // from the built-in table, not the account catalog
+	// RedirectTo is the upstream's own `redirectTo`: the id this one has been
+	// superseded by. The upstream refuses the superseded id on the audio surface
+	// (400 "model: [x] not support" / "modelCode cannot be empty") and answers it
+	// with the busy frame on chat, and the Studio SPA never sends it — it sends
+	// the target (it builds a deprecatedModelRedirectMap from exactly this field).
+	// An entry with a target is therefore NOT advertised, and a request naming it
+	// is resolved before it reaches the upstream.
+	RedirectTo string
+	Static     bool // from the built-in table, not the account catalog
+}
+
+// Deprecated reports whether the upstream has superseded this id.
+func (e CatalogEntry) Deprecated() bool { return e.RedirectTo != "" }
+
+// ResolveRedirect follows `redirectTo` until it reaches an id the upstream
+// serves, guarding against cycles and against a chain that never lands (an
+// unknown id is returned unchanged — the upstream's own error is more
+// informative than one we invent). It is transitive because the upstream's own
+// map is: mimo-v2-flash-studio → mimo-v2-flash → mimo-v2.6-flash.
+func ResolveRedirect(id string, redirects map[string]string) string {
+	seen := map[string]bool{id: true}
+	for i := 0; i < 8; i++ {
+		next, ok := redirects[id]
+		if !ok || next == "" || seen[next] {
+			return id
+		}
+		seen[next] = true
+		id = next
+	}
+	return id
 }
 
 // Tasks maps a page type onto the OpenAI-adjacent task list we expose.
@@ -116,6 +145,13 @@ func (e CatalogEntry) Merge(o CatalogEntry) CatalogEntry {
 	if out.NToken == "" {
 		out.NToken = o.NToken
 	}
+	// A superseded id stays superseded: the static floor has no opinion about
+	// redirects, so it must never erase the account's. (The reverse — the account
+	// telling us an id is current — arrives as a row without the field, which
+	// this leaves alone too.)
+	if out.RedirectTo == "" {
+		out.RedirectTo = o.RedirectTo
+	}
 	// Only drop the static marker when the account itself reported the id.
 	if out.Static && !o.Static {
 		out.Static = false
@@ -142,6 +178,22 @@ func MergeCatalog(entries []CatalogEntry) []CatalogEntry {
 	out := make([]CatalogEntry, 0, len(order))
 	for _, id := range order {
 		out = append(out, byID[id])
+	}
+	return out
+}
+
+// Usable drops the ids the upstream has superseded. A superseded id is not a
+// model the deployment can serve: the audio surface refuses it outright and chat
+// answers it with the busy frame, so advertising it only invites a client to ask
+// for something that cannot work. It stays resolvable for a client that asks for
+// it anyway (ResolveRedirect), it just is not on the menu.
+func Usable(entries []CatalogEntry) []CatalogEntry {
+	out := make([]CatalogEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Deprecated() {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }
