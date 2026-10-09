@@ -102,10 +102,10 @@ func TestAbsPassportURLTable(t *testing.T) {
 // TestFindTokensTree: the tree scan must find tokens anywhere in a nested
 // body (string, number, case-insensitive keys) and never invent one.
 func TestFindTokensTree(t *testing.T) {
-	body := []byte(`{"a":{"b":[{"PassToken":"V1:tok","UserId":2652042633}]}}`)
+	body := []byte(`{"a":{"b":[{"PassToken":"V1:tok","UserId":1000000001}]}}`)
 	pt, uid := findTokens(body)
-	if pt != "V1:tok" || uid != "2652042633" {
-		t.Errorf("findTokens = (%q,%q), want (V1:tok,2652042633) — a numeric userId must be rendered", pt, uid)
+	if pt != "V1:tok" || uid != "1000000001" {
+		t.Errorf("findTokens = (%q,%q), want (V1:tok,1000000001) — a numeric userId must be rendered", pt, uid)
 	}
 	// XSSI prefix is stripped by parseLooseJSON.
 	if pt, uid := findTokens([]byte("&&&START&&&\n{\"passToken\":\"x\",\"userId\":\"9\"}")); pt != "x" || uid != "9" {

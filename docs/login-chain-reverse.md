@@ -65,7 +65,7 @@ GET  /open-apis/user/mi/get                                → 200 {"code":0,…
 Evidence: `[2] auth2 code=0 sec=16 …`, `[3.0] 200 …/identity/authStart`,
 `[6] identity/list → code=2 flag=4`, `[sendTicket] {"code":0,"data":{"wt":59}}`,
 `[verify] code=0 location=set`, hops 302→302→307→307→200, then
-`/open-apis/user/mi/get → 200 {"userId":"2652042633","idc":"China","bannedStatus":"NOT_BANNED"}`.
+`/open-apis/user/mi/get → 200 {"userId":"1000000001","idc":"China","bannedStatus":"NOT_BANNED"}`.
 
 ### 1.1 Properties worth pinning
 

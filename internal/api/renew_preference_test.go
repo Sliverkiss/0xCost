@@ -75,7 +75,7 @@ func newRenewStack(t *testing.T, userID, passToken string) *renewStack {
 // must re-mint the session by renewal — never by the password login, which
 // re-runs the verification chain and costs a human an OTP (TDD LIVE-006).
 func TestRenewBeforePasswordLogin(t *testing.T) {
-	s := newRenewStack(t, "2652042633", "V1:rt-live-1")
+	s := newRenewStack(t, "1000000001", "V1:rt-live-1")
 
 	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
 		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)
@@ -101,7 +101,7 @@ func TestRenewBeforePasswordLogin(t *testing.T) {
 	if acct.Session.PH == "" {
 		t.Error("persisted session has no ph")
 	}
-	if acct.UserID != "2652042633" || acct.PassToken != "V1:rt-live-1" {
+	if acct.UserID != "1000000001" || acct.PassToken != "V1:rt-live-1" {
 		t.Errorf("identity changed during renewal: %q / %q", acct.UserID, acct.PassToken)
 	}
 	if acct.Session.FetchedAt == 0 || time.Since(time.Unix(acct.Session.FetchedAt, 0)) > time.Minute {
@@ -113,7 +113,7 @@ func TestRenewBeforePasswordLogin(t *testing.T) {
 // password login is attempted — the account ends up disabled with an
 // operator-action reason rather than silently serving a stale session.
 func TestRenewFallbackToPasswordLogin(t *testing.T) {
-	s := newRenewStack(t, "2652042633", "V1:dead-token")
+	s := newRenewStack(t, "1000000001", "V1:dead-token")
 	// Make renewal fail: the passport answers serviceLogin with a dead-token
 	// error instead of an STS location.
 	// Exact passport shape (XSSI prefix required by parseXSSI) so the failure

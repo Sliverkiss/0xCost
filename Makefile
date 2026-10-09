@@ -59,25 +59,28 @@ fmt: ## Fail if gofmt -l internal cmd is non-empty.
 	echo "fmt: clean"
 
 # Repo hygiene (docs/TDD.md §6.7): no real credentials anywhere except the
-# git-ignored data/ (and references/). The two designated phone numbers are
-# search terms here, so this Makefile excludes itself from the scan.
-hygiene: ## Fail if real credentials (phones/password/pass+serviceToken) leak into the repo.
+# git-ignored data/ (and references/). The search terms come from the account file
+# itself — never hardcoded here, since this file is part of the repository.
+hygiene: ## Fail if real credentials (phone/user id/password/tokens) leak into the repo.
 	@fail=0; \
-	for t in 18278724616 19301307763; do \
-		if grep -rIn --exclude-dir=.git --exclude-dir=data --exclude-dir=references \
-			--exclude=Makefile --exclude=docker_test.sh -F -- "$$t" . ; then \
-			echo "hygiene: FAIL — real phone number present in repo"; fail=1; \
-		fi; \
-	done; \
 	if [ -f data/accounts.json ] && command -v python3 >/dev/null 2>&1; then \
-		real=$$(python3 -c 'import json,re;d=json.load(open("data/accounts.json"));[print(v) for a in d.get("accounts",[]) for v in [a.get("password"),a.get("pass_token")] if v];[print(m.group(1)) for a in d.get("accounts",[]) for m in [re.search(r"serviceToken=\"?([^\";]+)",(a.get("session") or {}).get("cookie","") or "")] if m]' 2>/dev/null); \
+		real=$$(python3 -c 'import json,re;\
+d=json.load(open("data/accounts.json"));\
+vals=[];\
+[vals.extend([a.get(k) for k in ("phone","user_id","id","password","pass_token")]) for a in d.get("accounts",[])];\
+[vals.append((a.get("session") or {}).get("ph")) for a in d.get("accounts",[])];\
+[vals.append(m.group(1)) for a in d.get("accounts",[]) for m in [re.search(r"serviceToken=\"?([^\";]+)",(a.get("session") or {}).get("cookie","") or "")] if m];\
+print("\n".join(str(v) for v in vals if v))' 2>/dev/null) \
+			$$MIMO2API_HYGIENE_EXTRA; \
 		for t in $$real; do \
 			[ -n "$$t" ] || continue; \
 			if grep -rIn --exclude-dir=.git --exclude-dir=data --exclude-dir=references \
 				--exclude=Makefile --exclude=docker_test.sh -F -- "$$t" . ; then \
-				echo "hygiene: FAIL — real credential value present in repo"; fail=1; \
+				echo "hygiene: FAIL — a real account identifier is present in the repo"; fail=1; \
 			fi; \
 		done; \
+	else \
+		echo "hygiene: no account file (or no python3) — only the static scans ran"; \
 	fi; \
 	[ $$fail -eq 0 ] || { echo "hygiene: FAILED (docs/TDD.md §6.7)"; exit 1; }; \
 	echo "hygiene: clean — no real credentials outside data/"
@@ -98,3 +101,23 @@ run: ## Run the gateway locally with the ambient env config.
 clean: ## Remove build and coverage artifacts.
 	@rm -rf $(COVER_DIR) cover.out mimo2api
 	@$(GO) clean ./... >/dev/null 2>&1 || true
+
+# The published mirror (see .gitattributes): the tree without the test suite, as a
+# single fresh commit, pushed to MIRROR_URL. It never sends the local history — older
+# commits predate the redaction of real account identifiers.
+MIRROR_URL ?= https://github.com/Sliverkiss/mimo2api
+MIRROR_DIR ?= $(CURDIR)/../.mimo2api-mirror
+MIRROR_MSG ?= mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
+
+mirror: ## Build the distribution mirror at $(MIRROR_DIR).
+	rm -rf $(MIRROR_DIR) && mkdir -p $(MIRROR_DIR)
+	git archive HEAD | tar -x -C $(MIRROR_DIR)
+	@echo "mirror built: $$(find $(MIRROR_DIR) -type f | wc -l) files"
+
+push-mirror: mirror ## Build it and push it to $(MIRROR_URL) as a single commit.
+	cd $(MIRROR_DIR) && git init -q && git add -A \
+		&& git -c user.name="$$(git -C $(CURDIR) config user.name || echo mimo2api)" \
+			-c user.email="$$(git -C $(CURDIR) config user.email || echo mimo2api@local)" \
+			commit -q -m "$$(printf '%s' '$(MIRROR_MSG)')" \
+		&& git branch -M main \
+		&& git push --force $(MIRROR_URL) main

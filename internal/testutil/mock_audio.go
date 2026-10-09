@@ -203,9 +203,9 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &req)
 		writeJSONEnvelope(w, 0, "成功", map[string]any{
 			"id":             9655605,
-			"creator":        "2652042633",
+			"creator":        "1000000001",
 			"createTime":     "2026-10-09 12:48:56",
-			"updater":        "2652042633",
+			"updater":        "1000000001",
 			"updateTime":     "2026-10-09 12:48:56",
 			"title":          req.Title,
 			"conversationId": req.ConversationID,
@@ -277,7 +277,7 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 			"resourceId":  "439c596b8e9b0c109ae0251f2b86006e",
 			"uploadUrl":   m.URL() + "/mock-upload/audio.wav",
 			"resourceUrl": m.URL() + "/mock-cdn/audio.wav",
-			"objectName":  "multimedia/2652042633/audio.wav",
+			"objectName":  "multimedia/1000000001/audio.wav",
 		})
 
 	case strings.HasPrefix(r.URL.Path, "/mock-upload/"):

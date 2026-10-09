@@ -125,7 +125,7 @@ A = S.searchParams.get("countryListOnlyCN") ?? ""
 ## 3. Where auth/callback/sign come from
 
 All four params are read **from the page URL query**. But our captured final
-URL was `/fe/service/userCross?needClose=false&userId=2652042633` — missing
+URL was `/fe/service/userCross?needClose=false&userId=1000000001` — missing
 `auth/callback/sign`. Provenance chain:
 
 - `GET /pass2/redirect?sid=passport&callback=<long-sign>` → **302** whose

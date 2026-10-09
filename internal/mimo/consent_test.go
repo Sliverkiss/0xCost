@@ -136,10 +136,10 @@ func TestAuthStartParamsIndirection(t *testing.T) {
 func TestIsConsentChain(t *testing.T) {
 	hops := []hopRecord{
 		{Status: 302, URL: "https://account.xiaomi.com/pass2/redirect?sid=passport",
-			Location: "https://account.xiaomi.com/pass2/userinfo/start?bizType=UserCross&userId=2652042633"},
+			Location: "https://account.xiaomi.com/pass2/userinfo/start?bizType=UserCross&userId=1000000001"},
 	}
-	if uid, ok := isConsentChain(hops, "https://account.xiaomi.com/fe/service/userCross?needClose=false&userId=2652042633"); !ok || uid != "2652042633" {
-		t.Fatalf("isConsentChain = (%q,%v), want (2652042633,true)", uid, ok)
+	if uid, ok := isConsentChain(hops, "https://account.xiaomi.com/fe/service/userCross?needClose=false&userId=1000000001"); !ok || uid != "1000000001" {
+		t.Fatalf("isConsentChain = (%q,%v), want (1000000001,true)", uid, ok)
 	}
 	if _, ok := isConsentChain(nil, "https://account.xiaomi.com/fe/service/identity/authStart?context=x"); ok {
 		t.Fatal("plain identity entry misclassified as consent")

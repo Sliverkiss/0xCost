@@ -39,7 +39,7 @@ func newRefreshStack(t *testing.T, passToken string) *otpAdminStack {
 		Enabled:   true,
 		Phone:     "13800000001",
 		Password:  "pw",
-		UserID:    "2652042633",
+		UserID:    "1000000001",
 		PassToken: passToken,
 		Session: &accounts.Session{
 			Cookie:    testutil.TestCookie,

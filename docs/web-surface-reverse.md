@@ -1,6 +1,6 @@
 # Web 面能力逆向（语音 / 检索 / Claw / 目录）
 
-状态：**真机实测**（现役测试账号，userID `2652042633`，2026-10-09）。账号标识不写入仓库（docs/TDD.md §6.7）。
+状态：**真机实测**（现役测试账号，2026-10-09）。真实账号标识（手机号、userID、凭据）一律不写入仓库，本文档中的 `1000000001` 等标识均为占位值（docs/TDD.md §6.7）。
 本文只记已实测的事实；未实测的以 `未验证` 标注。桌面面（`mimo-server-cn.xiaomimimo.com`）
 本轮明确不做，结论仅备查（见 §9）。
 
@@ -42,7 +42,7 @@
 `POST /open-apis/chat/conversation/save`（`type ∈ chat|tts|asr|tts-vd|tts-vc`，即页面类型）
 
 - **创建**：body **不带 `id`**，带 `{conversationId:<32hex 客户端自造>, title, type}`
-  → `200 {"code":0,"data":{"id":9655605,"conversationId":"<回显>","creator":"2652042633","createTime":"2026-10-09 12:48:56","title":"asr-probe","type":"asr"}}`
+  → `200 {"code":0,"data":{"id":9655605,"conversationId":"<回显>","creator":"1000000001","createTime":"2026-10-09 12:48:56","title":"asr-probe","type":"asr"}}`
 - **更新**：带上数字 `id` 即更新该行（同 type 复用时返回同一 `id`）。
 - 带 `id:0` 或引用不存在的会话 → `{"code":200,"msg":"参数校验失败，错误信息：会话不存在"}`。
 - `POST /open-apis/chat/conversation/list {pageInfo:{pageNum,pageSize}}`
@@ -78,7 +78,7 @@
   - chat 面对已废弃 id 的拒绝形态不同：不是 400，而是复用繁忙帧 `服务器繁忙，请稍后再试`（真机同一分钟交替 3 轮：当前 id 3/3 成功、废弃 id 3/3 繁忙）。
 2. 响应：`{"code":0,"data":{"taskId":16063236,"conversationId":"...","msgId":"1791521173154","status":"generating"}}`
 3. `GET /open-apis/tts/generateStatus?taskId=<n>&xiaomichatbot_ph=<ph>`
-   → `{"code":0,"data":{"status":"success","audioUrl":"https://alsgp0.fds.api.xiaomi.com/chatbot-prod/multimedia/2652042633/...","audit":{"status":"PASS","blocked":false}}}`
+   → `{"code":0,"data":{"status":"success","audioUrl":"https://alsgp0.fds.api.xiaomi.com/chatbot-prod/multimedia/1000000001/...","audit":{"status":"PASS","blocked":false}}}`
    - `status ∈ generating|success|failed`；`audit.status ∈ PASS|PROCESSING|...`（PROCESSING = 审核中，SPA 继续轮询）。
    - 合成 ~1–2 s 完成；实测 WAV 145,964 B（21 字）。
    - `audioUrl` 是**公共 FDS 直链**，无需 cookie 即可下载（WAV 头 `RIFF`）。

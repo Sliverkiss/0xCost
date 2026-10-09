@@ -109,6 +109,17 @@ one-shot by design: no session, no store read or write, no header (ADR 0009).
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
 
+## Published mirror
+
+`.gitattributes` marks the test suite `export-ignore`, so `make push-mirror`
+publishes the code and the docs as one fresh commit and never the local history.
+The working repository — tests included — stays with the operators; `go build ./...`
+works in the mirror without the test-only packages.
+
+Real account identifiers (phone, user id, password, tokens) are never written into
+the repository: they live in the git-ignored `data/accounts.json`, and `make hygiene`
+reads its values from there and fails if any of them appears in a tracked file.
+
 ## Function calling (ADR 0012)
 
 MiMo Studio has no native function calling, so `tools` is served by a middleware that
