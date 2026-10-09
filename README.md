@@ -197,8 +197,8 @@ cooldowns, disabled reasons survive restarts):
 | `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
 | `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010) |
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
-| `docs/specs/session-identity.md` | Spec (proposed): how a request resolves to a session — identity ladder, isolation invariants, fork/non-stream policy, open questions |
-| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates |
+| `docs/specs/session-identity.md` | Spec (accepted): how a request resolves to a session — identity ladder, isolation invariants, fork policy, one-shot non-streaming |
+| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split, session identity |
 
 ## Development
 

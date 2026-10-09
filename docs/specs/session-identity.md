@@ -1,6 +1,8 @@
 # Spec — Session identity and isolation
 
-Status: **proposed** (design only; no implementation yet)
+Status: **accepted** — the owner's decisions are recorded in §9 and ADR
+[0009](../decisions/0009-sessions-are-streaming-only-and-verified.md);
+implementation follows the SESS cases in `docs/TDD.md` §3.5.1
 Applies to: `/v1/chat/completions` conversation chaining, the sticky store, and
 everything that keys per-conversation state
 Author: Hermes (for review by the project owner)
@@ -114,10 +116,11 @@ Identity
 - **REQ-1** Identity has a defined ladder: (a) an explicit session id from the
   client, (b) a derived key, (c) a fresh session. Each request resolves to
   exactly one, and the resolution is observable (REQ-12).
-- **REQ-2** The explicit id may arrive as a request extension (`session_id`),
-  a header (`X-Mimo-Session-Id`), or the OpenAI `user` field as a *weaker*
-  hint. Precedence is fixed and documented; conflicting sources resolve
-  deterministically without erroring.
+- **REQ-2** The explicit id arrives either as the `X-Mimo-Session-Id` header or
+  as a body extension `session_id` — two carriers for one extension. Precedence
+  is fixed (header first) and conflicting sources resolve deterministically
+  without erroring. The OpenAI `user` field is **not** an identity source: its
+  semantics are caller-defined and it is commonly a per-request nonce.
 - **REQ-3** The derived key is namespaced by the calling credential (API key
   identity) so two tenants with byte-identical prompts cannot collide.
 - **REQ-4** The derived key is a hash over bounded, canonical inputs — model,
@@ -144,11 +147,13 @@ Chaining and forks
   silently interleaves into one upstream dialogue.
 - **REQ-9** A fork is visible: the response (header/extension) and the debug
   log say the request forked, with the reason.
-- **REQ-10** Non-streaming participates in the same session identity: it may
-  reuse and advance an existing session, and it may create one. The previous
-  "non-streaming never consults the store" rule is replaced by an explicit
-  policy with a config switch, because the current rule makes a client's
-  continuity depend on whether it asked for `stream`.
+- **REQ-10** Non-streaming requests are **one-shot**: they resolve no session
+  identity, read nothing from the session store, write nothing to it, and return
+  no session header. A session id supplied on a non-streaming request is
+  ignored (logged at debug, no error), because a one-shot turn must never
+  advance or fork someone else's chain. Chaining is a streaming-only capability
+  — this preserves today's `NOSTICK-003` rule permanently rather than relaxing
+  it.
 
 Account affinity
 
@@ -202,11 +207,12 @@ Compatibility
 
 **Identity ladder** (evaluated once per request):
 
-1. `X-Mimo-Session-Id` header, else `session_id` body extension, else OpenAI
-   `user` (weak hint, namespaced).
+1. Explicit: `X-Mimo-Session-Id` header, else the `session_id` body extension.
 2. Derived: `sha256(credential_id ‖ model ‖ system ‖ tools ‖ first non-system
    message)`, opaque 32-hex.
 3. Fresh: mint a new session id (returned in the response header).
+
+Identity resolution happens on the **streaming path only** (REQ-10).
 
 **Entry shape** (per credential scope):
 
@@ -234,9 +240,12 @@ the same session takes one of `wait` (bounded, default for short streams),
 default justified in review. A fork mints a new session id and a fresh upstream
 conversation; the original chain stays intact for its owner.
 
-**Non-stream policy**: `auto` (default) — a non-streaming request reuses and
-advances a verified session, and may create one; `off` restores today's
-behaviour (`NOSTICK-003`) for operators who need the old semantics.
+**Non-streaming is one-shot (REQ-10)**: the identity ladder and the store are
+reachable only from the streaming path. A non-streaming request always does a
+full replay into a fresh upstream conversation, leaves the store untouched, and
+gets no session header — a supplied session id is ignored and noted at debug.
+`NOSTICK-003` stays the permanent contract, not a default we intend to relax:
+a one-shot turn cannot be allowed to advance or fork a chain it does not own.
 
 **Cost note**: chaining is the point of the design — the upstream really does
 keep server-side context, verified over a 6-turn chain, and the fastchat channel
@@ -267,42 +276,41 @@ reach that path, which is what REQ-10 fixes.
   not guesswork).
 - Rewriting a client's history (trimming/summarising) on its behalf.
 
-## 9. Open questions for the owner
+## 9. Decisions (owner, 2026-10-09)
 
-1. **Explicit id surface**: response header `X-Mimo-Session-Id` plus body
-   `session_id` and header `X-Mimo-Session-Id` on input — is a header-only
-   contract preferred, or do we also want a documented body field?
-   *Recommendation: header in, header out; body field accepted as a convenience.*
-2. **Default fork policy**: `fork` (safe, costs a fresh conversation) versus
-   `wait` (keeps one chain, adds latency). *Recommendation: `fork` for
-   non-streaming and `wait` (2s bound) for streaming, chosen by whether the
-   client asked for a stream.*
-3. **Derived-key inputs**: include tool schema? It changes rarely but silently
-   invalidates sessions when it does. *Recommendation: include it — a changed
+1. **Explicit id surface**: *decided: both carriers accepted on input
+   (`X-Mimo-Session-Id` header, `session_id` body field), header on output.*
+2. **Concurrent same-session policy**: *decided: `wait` with a 2-second bound,
+   then fork.* Interactive streams may wait briefly for their own chain; they
+   never queue indefinitely, and a fork is always reported. Non-streaming is out
+   of scope here — it has no session at all (REQ-10).
+3. **Derived-key inputs**: include the tool schema? *Decided: yes — a changed
    tool set genuinely is a different agent session.*
-4. **Restart durability**: persist a session snapshot for a warm restart, or
-   declare sessions volatile? *Recommendation: volatile now, with a documented
-   one-replay cold start; a session id from the client survives the restart by
-   re-establishing itself.*
-5. **`user` field as identity**: accept it, or ignore it as the OpenAI spec's
-   ambiguous field? *Recommendation: accept as a weak namespace-scoped hint,
-   documented as "not a security boundary".*
+4. **Restart durability**: *decided: sessions are volatile.* Session state is
+   in-process; a restart costs one replay per live session, and a client that
+   re-pins its own id re-establishes its session on the next turn. No snapshot
+   file, so no stale snapshot can resurrect a conversation the upstream has
+   already dropped.
+5. **`user` field**: *decided: not an identity source* (it is usually a
+   per-request nonce).
 
 ## 10. Acceptance plan
 
 TDD cases (to be written into `docs/TDD.md` before implementation; ids fixed so
 the RED phase is reviewable):
 
-- Identity: `SESS-001` explicit header wins; `SESS-002` body field; `SESS-003`
-  `user` hint; `SESS-004` derived key includes the credential; `SESS-005`
-  deterministic precedence on conflicting sources.
+- Identity: `SESS-001` explicit header wins; `SESS-002` body field accepted;
+  `SESS-003` `user` is not an identity source; `SESS-004` derived key includes
+  the credential; `SESS-005` deterministic precedence on conflicting carriers.
 - Isolation: `SESS-010` cross-credential lookup is impossible; `SESS-011`
   frontier mismatch ⇒ replay, never chain; `SESS-012` history rewrite ⇒ replay;
   `SESS-013` regeneration (identical history) ⇒ replay.
 - Forks: `SESS-020` concurrent same-session ⇒ policy honoured; `SESS-021` fork
   minted id returned; `SESS-022` original chain intact after a fork.
-- Non-stream: `SESS-030` non-stream reuses and advances; `SESS-031`
-  `MIMO2API_STICKY_NONSTREAM=off` restores today's behaviour.
+- One-shot non-streaming: `SESS-030` a non-streaming request resolves no
+  session, touches the store zero times and returns no session header;
+  `SESS-031` a session id supplied to a non-streaming request is ignored
+  (debug note, no error) and cannot advance a chain.
 - Migration: `SESS-040` unusable account ⇒ new conversation + replay, logged.
 - Lifecycle: `SESS-050` expiry ⇒ miss; `SESS-051` LRU eviction; `SESS-052`
   restart ⇒ defined behaviour; `SESS-053` lookup is keyed (no full scan; assert

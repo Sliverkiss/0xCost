@@ -243,7 +243,7 @@ Payload (`mimo-web-api/src/upstream.js:140-164`; confirmed
   `mimo-web-proxy/internal/mimo/web_client.go:37-49` adds `sec-ch-ua`/`sec-fetch-*` —
   UA version should match `sec-ch-ua` for risk-control consistency, `web_client.go:30-33`).
 
-#### 2.4.1 Session extensions (proposed)
+#### 2.4.1 Session extensions (proposed, streaming only)
 
 Client→gateway extensions that let a caller pin which conversation it is
 continuing, so identity stops being a guess over message content
@@ -252,10 +252,15 @@ continuing, so identity stops being a guess over message content
 | Direction | Surface | Meaning |
 |---|---|---|
 | in | header `X-Mimo-Session-Id` | explicit session id (highest precedence) |
-| in | body `session_id` | same, for clients that cannot set headers |
-| in | body `user` (OpenAI field) | weak hint; namespaced by credential, not a security boundary |
+| in | body `session_id` | same extension, for clients that cannot set headers |
 | out | header `X-Mimo-Session-Id` | the effective id, so the client can pin it next turn |
 | out | header `X-Mimo-Session-Mode` | `chain` \| `replay` \| `fork` (debug/ops value) |
+
+**Streaming only.** `stream:false` is a one-shot request: no identity is
+resolved, the store is not read or written, no session header is returned, and a
+supplied session id is ignored with a debug note (REQ-10; `NOSTICK-003` remains
+the permanent contract). The OpenAI `user` field is deliberately not an identity
+source — it is usually a per-request nonce.
 
 Additive only: with no new fields and no new headers, the request behaves
 exactly as today (REQ-17).
@@ -590,9 +595,10 @@ requests for the same head silently fork; and non-streaming clients are excluded
 from chaining entirely (`NOSTICK-003`), even though the upstream keeps
 server-side context (`web-surface-reverse.md` §11.1).
 
-**Identity ladder** (exactly one result per request, REQ-1):
+**Identity ladder** (exactly one result per request, and streaming requests
+only, REQ-1/REQ-10):
 
-1. explicit — `X-Mimo-Session-Id` → body `session_id` → body `user` (weak hint);
+1. explicit — `X-Mimo-Session-Id` → body `session_id`;
 2. derived — `sha256(credential_id ‖ model ‖ system ‖ tools ‖ first non-system
    message)`, opaque 32-hex, namespaced by the calling API key so identical
    prompts from two tenants cannot collide (REQ-3/REQ-4);
@@ -617,17 +623,19 @@ message count strictly increased. Verification covers the whole frontier rather
 than a truncated window, so editing history near the start invalidates the
 session (falling back to replay) instead of silently matching a lookalike.
 
-**Fork policy (REQ-8/REQ-9)**: while a session has an in-flight request, a
-second request for it does not interleave — it follows
-`MIMO2API_SESSION_FORK_POLICY` = `wait` (bounded by
-`MIMO2API_SESSION_WAIT_MS`, then fork) or `fork` (new session id + fresh
-conversation immediately). A fork is reported in `X-Mimo-Session-Mode` and the
-debug log; the original chain is untouched.
+**Fork policy (REQ-8/REQ-9, decided: wait-then-fork)**: while a session has an
+in-flight request, a second streaming request for it waits up to
+`MIMO2API_SESSION_WAIT_MS` (default 2000) for the chain to free; if the bound
+expires it forks — a new session id and a fresh conversation
+(`MIMO2API_SESSION_FORK_POLICY=fork` skips the wait). A fork is reported in
+`X-Mimo-Session-Mode` and the debug log; the original chain is untouched.
+Interactive streams may wait briefly for their own chain, never indefinitely.
 
-**Non-streaming parity (REQ-10)**: `MIMO2API_STICKY_NONSTREAM=auto` (default)
-lets non-streaming requests reuse and advance a verified session — a client that
-alternates `stream` true/false keeps one upstream chain; `off` restores the
-deployed rule (`NOSTICK-003`).
+**Non-streaming is one-shot (REQ-10, decided)**: `stream:false` never resolves
+an identity and never touches the store, so `NOSTICK-003` stays the permanent
+contract. A client that alternates `stream` true/false therefore gets a chained
+turn followed by a fresh one — deliberate: a one-shot request must not advance
+or fork a chain it does not own.
 
 **Account migration (REQ-11)**: if the pinned account is unavailable, the
 session moves by minting a **new** `conversationId` and replaying the full
@@ -964,8 +972,7 @@ MIMO2API_SSE_IDLE_TIMEOUT_S=180      # no-event watchdog (mimo-web-proxy chat.go
 MIMO2API_SESSION_REFRESH_HOURS=6     # timer sweep (session.js:203-230)
 MIMO2API_STICKY_TTL_S=1800           # §4.3
 MIMO2API_STICKY_MAX=500
-MIMO2API_STICKY_NONSTREAM=auto       # auto|off — non-streaming may chain (§4.3.1, REQ-10)
-MIMO2API_SESSION_FORK_POLICY=wait    # wait|fork — concurrent same-session (§4.3.1, REQ-8)
+MIMO2API_SESSION_FORK_POLICY=wait    # wait|fork — concurrent same-session, streaming (§4.3.1, REQ-8)
 MIMO2API_SESSION_WAIT_MS=2000        # bound for `wait` before forking
 MIMO2API_MAX_INFLIGHT_PER_ACCOUNT=2
 MIMO2API_QUEUE_WAIT_S=15
