@@ -62,19 +62,25 @@ func (e *unknownVoiceError) Error() string {
 }
 
 // botConfigCache holds the last catalog fetched from an account.
+// botConfigCache holds one account's catalog, keyed by account id (M19 §3): a
+// deployment with several accounts needs each account's own view so /v1/models
+// can union them.
 type botConfigCache struct {
-	mu  sync.Mutex
+	mu   sync.Mutex
+	byID map[string]cachedBotConfig
+}
+
+type cachedBotConfig struct {
 	cfg *mimo.BotConfig
 	at  time.Time
 }
 
-// botConfig returns the account catalog, fetching at most once per TTL.
-func (s *Server) botConfig(ctx context.Context, cookie, ph string) (*mimo.BotConfig, error) {
+// botConfigFor returns the account catalog, fetching at most once per TTL.
+func (s *Server) botConfigFor(ctx context.Context, accountID, cookie, ph string) (*mimo.BotConfig, error) {
 	s.botCfg.mu.Lock()
-	if s.botCfg.cfg != nil && time.Since(s.botCfg.at) < botConfigTTL {
-		cfg := s.botCfg.cfg
+	if c, ok := s.botCfg.byID[accountID]; ok && c.cfg != nil && time.Since(c.at) < s.catalogWindow() {
 		s.botCfg.mu.Unlock()
-		return cfg, nil
+		return c.cfg, nil
 	}
 	s.botCfg.mu.Unlock()
 
@@ -83,7 +89,10 @@ func (s *Server) botConfig(ctx context.Context, cookie, ph string) (*mimo.BotCon
 		return nil, err
 	}
 	s.botCfg.mu.Lock()
-	s.botCfg.cfg, s.botCfg.at = cfg, time.Now()
+	if s.botCfg.byID == nil {
+		s.botCfg.byID = map[string]cachedBotConfig{}
+	}
+	s.botCfg.byID[accountID] = cachedBotConfig{cfg: cfg, at: time.Now()}
 	s.botCfg.mu.Unlock()
 	return cfg, nil
 }
@@ -182,7 +191,7 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 
 	var result *mimo.TTSResult
 	err = s.withAccount(r.Context(), func(cookie, ph, accountID string) error {
-		cfg, cerr := s.botConfig(r.Context(), cookie, ph)
+		cfg, cerr := s.botConfigFor(r.Context(), accountID, cookie, ph)
 		if cerr != nil {
 			return cerr
 		}
@@ -190,19 +199,48 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		if verr != nil {
 			return verr
 		}
-		res, terr := s.synthesize(r.Context(), cookie, ph, accountID, mimo.TTSRequest{
-			Text:        input,
-			Instruction: req.Instructions,
-			Voice:       voice,
-			Format:      format,
-			Model:       req.Model,
-			PollEvery:   s.audioPoll,
-			PollTimeout: s.ttsTimeout,
-		})
-		if terr != nil {
-			return terr
+		// The upstream caps one synthesis at SpeechTextLimit characters, so
+		// longer input is split on sentence boundaries and the audio joined
+		// (M-TTS hardening; the caller should not have to know the upstream's
+		// limit, and forwarding it raw produced an opaque 502).
+		pieces := mimo.SplitSpeech(input, mimo.SpeechTextLimit)
+		if len(pieces) == 0 {
+			pieces = []string{input}
 		}
-		result = res
+		if len(pieces) > 1 {
+			s.debugf("audio: input is %d characters; synthesising %d pieces of at most %d",
+				mimo.RuneLen(input), len(pieces), mimo.SpeechTextLimit)
+		}
+		parts := make([][]byte, 0, len(pieces))
+		var last *mimo.TTSResult
+		for i, piece := range pieces {
+			res, terr := s.synthesize(r.Context(), cookie, ph, accountID, mimo.TTSRequest{
+				Text:        piece,
+				Instruction: req.Instructions,
+				Voice:       voice,
+				Format:      format,
+				Model:       req.Model,
+				PollEvery:   s.audioPoll,
+				PollTimeout: s.ttsTimeoutFor(piece),
+			})
+			if terr != nil {
+				// No partial audio: a half-spoken answer would be worse than
+				// an error the caller can retry.
+				return fmt.Errorf("piece %d/%d: %w", i+1, len(pieces), classifyAudioUpstream(terr))
+			}
+			parts = append(parts, res.Audio)
+			last = res
+		}
+		joined, jerr := mimo.JoinAudio(format, parts)
+		if jerr != nil {
+			return jerr
+		}
+		result = &mimo.TTSResult{
+			Audio:       joined,
+			ContentType: last.ContentType,
+			AudioURL:    last.AudioURL,
+			TaskID:      last.TaskID,
+		}
 		return nil
 	})
 	if err != nil {
@@ -354,8 +392,8 @@ func (s *Server) handleVoices(w http.ResponseWriter, r *http.Request) {
 		PreviewAudio string `json:"preview_audio,omitempty"`
 	}
 	var out []voiceDTO
-	err := s.withAccount(r.Context(), func(cookie, ph, _ string) error {
-		cfg, cerr := s.botConfig(r.Context(), cookie, ph)
+	err := s.withAccount(r.Context(), func(cookie, ph, accountID string) error {
+		cfg, cerr := s.botConfigFor(r.Context(), accountID, cookie, ph)
 		if cerr != nil {
 			return cerr
 		}
@@ -417,3 +455,47 @@ func (s *Server) resolveVoice(cfg *mimo.BotConfig, requested string) (string, er
 	sort.Strings(available)
 	return "", &unknownVoiceError{requested: req, available: available}
 }
+
+// errAudioTextTooLong marks the upstream's own spoken-text cap: a client error,
+// not a platform fault.
+var errAudioTextTooLong = errors.New("text exceeds the upstream speech limit")
+
+// classifyAudioUpstream turns the upstream's business errors into typed errors
+// where the correct client-facing answer differs from "bad gateway". The TTS
+// length cap is the one worth naming: it is the caller's text, not a platform
+// fault (verified live: "播报内容长度不能超过1024，当前长度为：1500").
+func classifyAudioUpstream(err error) error {
+	var ue *mimo.UpstreamError
+	if !errors.As(err, &ue) {
+		return err
+	}
+	if strings.Contains(ue.Body, "长度不能超过") || strings.Contains(ue.Body, "too long") {
+		return fmt.Errorf("%w: %s", errAudioTextTooLong, err)
+	}
+	return err
+}
+
+// ttsTimeoutFor scales one synthesis piece's poll budget with the spoken text.
+//
+// The upstream publishes no rate and its cost grows faster than the character
+// count: measured live at 12.8s for 128 runes, 17.8s for 384, and over 220s for
+// 700 (the last is likely load- and queue-dependent). A flat 60s deadline — the
+// old default — expired on a 1024-character piece, so long input produced a 504
+// instead of audio. The per-character budget is therefore deliberately generous
+// and capped, rather than fitted to a model the upstream does not guarantee.
+func (s *Server) ttsTimeoutFor(text string) time.Duration {
+	base := s.ttsTimeout
+	if base <= 0 {
+		base = DefaultCatalogTTL // unreachable guard; TTS budget is always set
+	}
+	budget := base + time.Duration(mimo.RuneLen(text))*ttsPerRuneBudget
+	if max := s.ttsMaxTimeout; max > 0 && budget > max {
+		return max
+	}
+	return budget
+}
+
+// ttsPerRuneBudget is the added poll budget per spoken character. 500ms/char is
+// ~5x the best observed throughput (0.1s/char) because the observed cost is
+// superlinear and varies with platform load.
+const ttsPerRuneBudget = 500 * time.Millisecond

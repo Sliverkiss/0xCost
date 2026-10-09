@@ -46,6 +46,12 @@ event:web_search data:[{"id":"...","text":"<网页正文>","metadata":"{}",
 
 ## 3. `/v1/models` 真实目录
 
+> **状态：已实施且真机验证（2026-10-09）**。目录按账号并集 + 静态兜底，`capabilities`
+> 依据真机 `modelConfigList`（`modelConfigListNg` 实测**无** `features`）；引用面：
+> 非流式 13 条、流式 chunk 11 条真机跑通（详细边界见 ADR 0007 与
+> `docs/web-surface-reverse.md` §5）。踩坑：`usedContent` 是布尔、`metadata` 是对象，
+> 写错类型会毁掉整个数组——解析已改为逐字段容错。
+
 - 上游：`GET /open-apis/bot/config?xiaomichatbot_ph=<ph>`（§7），解析
   `data.modelConfigListNg[]`（24 个模型）+ `data.ttsVoices[]` + `data.ext.*`。
 - 缓存：**按账号**缓存（TTL 默认 10 分钟，可配），失败时回退到现有静态表并记 warning

@@ -124,6 +124,8 @@ func run() error {
 
 		// Audio surface (M18).
 		AudioPoll:      cfg.AudioPoll(),
+		TTSMaxTimeout:  cfg.TTSMaxTimeout(),
+		CatalogTTL:     cfg.CatalogTTL(),
 		TTSTimeout:     cfg.TTSTimeout(),
 		ASRTimeout:     cfg.ASRTimeout(),
 		SpeechMaxChars: cfg.SpeechMaxChars(),

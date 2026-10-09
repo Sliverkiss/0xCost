@@ -37,8 +37,21 @@ const (
 
 	// Audio surface (M18): the Studio's own poll cadence is 1s and its task
 	// deadlines are tens of seconds, so these are the honest defaults.
-	DefaultAudioPoll      = time.Second
-	DefaultTTSTimeout     = 60 * time.Second
+	DefaultAudioPoll = time.Second
+	// DefaultCatalogTTL is how long an account's Studio catalog is cached
+	// (M19 §3).
+	DefaultCatalogTTL = 10 * time.Minute
+	// DefaultTTSTimeout is the BASE poll budget for one synthesis piece; the
+	// effective budget grows with the text (see TTSTimeoutBudget) because the
+	// upstream synthesises roughly in real time — a 1024-character passage
+	// needs minutes, not the 60s that suits a one-line prompt.
+	DefaultTTSTimeout = 60 * time.Second
+	// DefaultTTSPerRuneBudget is the added budget per spoken character. Live
+	// timings: 128 runes ≈ 12.8s, 384 ≈ 17.8s, 700 > 220s — the upstream's
+	// cost is superlinear and load-dependent, so the budget is generous.
+	DefaultTTSPerRuneBudget = 500 * time.Millisecond
+	// DefaultTTSMaxTimeout caps one piece's budget.
+	DefaultTTSMaxTimeout  = 900 * time.Second
 	DefaultASRTimeout     = 120 * time.Second
 	DefaultSpeechMaxChars = 10000
 	DefaultReplayCap      = 20
@@ -66,7 +79,9 @@ type Config struct {
 	queueWait        time.Duration
 	keepalive        time.Duration
 	audioPoll        time.Duration
+	catalogTTL       time.Duration
 	ttsTimeout       time.Duration
+	ttsMaxTimeout    time.Duration
 	asrTimeout       time.Duration
 	speechMaxChars   int
 	ttsVoice         string
@@ -107,7 +122,9 @@ func Load() (*Config, error) {
 		queueWait:        DefaultQueueWait,
 		keepalive:        DefaultKeepalive,
 		audioPoll:        DefaultAudioPoll,
+		catalogTTL:       DefaultCatalogTTL,
 		ttsTimeout:       DefaultTTSTimeout,
+		ttsMaxTimeout:    DefaultTTSMaxTimeout,
 		asrTimeout:       DefaultASRTimeout,
 		speechMaxChars:   DefaultSpeechMaxChars,
 		ttsVoice:         getenv("MIMO2API_TTS_VOICE", ""),
@@ -161,10 +178,16 @@ func Load() (*Config, error) {
 	if c.probeInterval, err = getenvSeconds("MIMO2API_PROBE_INTERVAL_S", DefaultProbeInterval); err != nil {
 		return nil, err
 	}
+	if c.catalogTTL, err = getenvSeconds("MIMO2API_CATALOG_TTL_S", DefaultCatalogTTL); err != nil {
+		return nil, err
+	}
 	if c.audioPoll, err = getenvMillis("MIMO2API_AUDIO_POLL_MS", DefaultAudioPoll); err != nil {
 		return nil, err
 	}
 	if c.ttsTimeout, err = getenvSeconds("MIMO2API_AUDIO_TTS_TIMEOUT_S", DefaultTTSTimeout); err != nil {
+		return nil, err
+	}
+	if c.ttsMaxTimeout, err = getenvSeconds("MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S", DefaultTTSMaxTimeout); err != nil {
 		return nil, err
 	}
 	if c.asrTimeout, err = getenvSeconds("MIMO2API_AUDIO_ASR_TIMEOUT_S", DefaultASRTimeout); err != nil {
@@ -202,19 +225,25 @@ func (c *Config) MaxInflight() int              { return c.maxInflight }
 func (c *Config) QueueWait() time.Duration      { return c.queueWait }
 func (c *Config) Keepalive() time.Duration      { return c.keepalive }
 func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
-func (c *Config) TTSTimeout() time.Duration     { return c.ttsTimeout }
-func (c *Config) ASRTimeout() time.Duration     { return c.asrTimeout }
-func (c *Config) SpeechMaxChars() int           { return c.speechMaxChars }
-func (c *Config) TTSVoice() string              { return c.ttsVoice }
-func (c *Config) Timezone() string              { return c.timezone }
-func (c *Config) UserAgent() string             { return c.userAgent }
-func (c *Config) SecChUA() string               { return c.secChUA }
-func (c *Config) ReplayCap() int                { return c.replayCap }
-func (c *Config) Cooldown429() time.Duration    { return c.cooldown429 }
-func (c *Config) Cooldown5xx() time.Duration    { return c.cooldown5xx }
-func (c *Config) CooldownCap() time.Duration    { return c.cooldownCap }
-func (c *Config) ProbeInterval() time.Duration  { return c.probeInterval }
-func (c *Config) LogLevel() string              { return c.logLevel }
+
+// CatalogTTL is the per-account catalog cache lifetime (M19 §3).
+func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
+func (c *Config) TTSTimeout() time.Duration { return c.ttsTimeout }
+
+// TTSMaxTimeout caps the per-piece poll budget (see TTSTimeout).
+func (c *Config) TTSMaxTimeout() time.Duration { return c.ttsMaxTimeout }
+func (c *Config) ASRTimeout() time.Duration    { return c.asrTimeout }
+func (c *Config) SpeechMaxChars() int          { return c.speechMaxChars }
+func (c *Config) TTSVoice() string             { return c.ttsVoice }
+func (c *Config) Timezone() string             { return c.timezone }
+func (c *Config) UserAgent() string            { return c.userAgent }
+func (c *Config) SecChUA() string              { return c.secChUA }
+func (c *Config) ReplayCap() int               { return c.replayCap }
+func (c *Config) Cooldown429() time.Duration   { return c.cooldown429 }
+func (c *Config) Cooldown5xx() time.Duration   { return c.cooldown5xx }
+func (c *Config) CooldownCap() time.Duration   { return c.cooldownCap }
+func (c *Config) ProbeInterval() time.Duration { return c.probeInterval }
+func (c *Config) LogLevel() string             { return c.logLevel }
 
 // Debug reports whether the operator asked for the verbose tracing level.
 // Anything other than "debug" (case-insensitive) keeps the default quiet

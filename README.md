@@ -36,8 +36,8 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming) |
-| GET | `/v1/models` | Bearer | Model catalog: the account's live Studio catalog (chat-capable rows) merged with the static floor; falls back to the static list if the upstream read fails |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming). Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
+| GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`) |
 | GET | `/v1/models/{id}` | Bearer | One model entry |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
 | POST | `/v1/audio/transcriptions` | Bearer | Speech-to-text (multipart: `file`, `model?`, `language?`, `response_format?`) → `{text}` / plain text / `verbose_json` |
@@ -67,6 +67,26 @@ accepted and ignored (the upstream has no rate control). Transcriptions accept
 files up to 25 MB (gateway-side limit), `language` is passed through
 (upstream accepts `auto|zh|en`), and `verbose_json` reports only what the
 upstream actually returns (`text`, plus `language`) — no invented durations.
+**Long text**: the upstream refuses any single synthesis over 1024 characters, so
+`/v1/audio/speech` splits longer `input` on sentence boundaries (a sentence over
+the limit is hard-split), synthesises each piece and joins the audio — WAV is
+rebuilt from the first piece's own header, MP3 is a frame concatenation. If any
+piece fails, the client gets an error rather than the part spoken so far.
+Synthesis costs roughly real time upstream (live timings: 128 characters ≈ 13 s,
+384 ≈ 18 s), so a long passage takes minutes; the per-piece deadline is
+`MIMO2API_AUDIO_TTS_TIMEOUT_S` plus 100 ms per character, capped by
+`MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S`, and `MIMO2API_SPEECH_MAX_CHARS` bounds the
+total.
+
+**Web search**: with `web_search_status: enabled` (or the `:online` suffix) the
+upstream searches and returns results inline. The gateway surfaces them as
+OpenAI `annotations` on the message plus a top-level `citations` array; on a
+stream they arrive as one extra chunk with `choices: []` before the finish
+chunk. The page bodies the upstream sends (tens of KB each) are deliberately not
+forwarded. `include_citations: false` keeps the search but drops the payload.
+Citations are best-effort: the upstream also answers with `(citation:N)` markers
+when it returns no result set at all.
+
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
 
@@ -98,11 +118,13 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
 | `MIMO2API_AUDIO_POLL_MS` | `1000` | TTS/ASR task status poll interval (the Studio's own cadence is 1s) |
-| `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | Synthesis task deadline |
+| `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | **Base** synthesis deadline for one piece; the effective budget grows with the spoken text plus 500 ms per character: measured live at 12.8 s for 128 characters, 17.8 s for 384 and >220 s for 700, so the budget is deliberately generous |
 | `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
-| `MIMO2API_SPEECH_MAX_CHARS` | `10000` | `/v1/audio/speech` input cap (gateway-side guard; the upstream publishes no number) |
+| `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the per-piece synthesis budget |
+| `MIMO2API_SPEECH_MAX_CHARS` | `10000` | `/v1/audio/speech` input cap. The upstream refuses any single synthesis over **1024 characters** ("播报内容长度不能超过1024"), so the gateway splits longer text on sentence boundaries, speaks the pieces and joins the audio — this cap only bounds the total |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
-| `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (sticky continuation with conversation/dialog id and delta size, or full replay with the replay cap) — the first thing to look at when a conversation seems to lose context. |
+| `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
+| `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (sticky continuation with conversation/dialog id and delta size, or full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —
 open auth never reaches the network (SDD §5.1).

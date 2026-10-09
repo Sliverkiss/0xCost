@@ -24,13 +24,16 @@ type RecordedRequest struct {
 	Query          string
 	Model          string
 	EnableThinking bool
-	Temperature    *float64
-	TopP           *float64
-	Cookie         string
-	Headers        http.Header
-	RawBody        string
-	Cancelled      bool // request context cancelled before completion
-	At             time.Time
+	// WebSearchStatus is the upstream search switch the gateway sent
+	// (M19, TDD WS-001/003).
+	WebSearchStatus string
+	Temperature     *float64
+	TopP            *float64
+	Cookie          string
+	Headers         http.Header
+	RawBody         string
+	Cancelled       bool // request context cancelled before completion
+	At              time.Time
 }
 
 // ScriptStep is one scripted upstream response for an account.
@@ -73,6 +76,9 @@ type MockUpstream struct {
 	uploaded     []byte
 	saveErrors   []string
 	botConfigErr string
+	// catalogOverrides: per-account bot/config model lists (keyed by ph)
+	// so /v1/models union behaviour can be exercised (M19 §3).
+	catalogOverrides map[string]catalogOverride
 }
 
 // SetLoginURL overrides the loginUrl in the /open-apis/user/mi/get 401
@@ -250,10 +256,11 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		Query            string  `json:"query"`
 		PreviousDialogID *string `json:"previousDialogueId"`
 		ModelConfig      struct {
-			Model          string   `json:"model"`
-			EnableThinking bool     `json:"enableThinking"`
-			Temperature    *float64 `json:"temperature"`
-			TopP           *float64 `json:"topP"`
+			Model           string   `json:"model"`
+			EnableThinking  bool     `json:"enableThinking"`
+			WebSearchStatus string   `json:"webSearchStatus"`
+			Temperature     *float64 `json:"temperature"`
+			TopP            *float64 `json:"topP"`
 		} `json:"modelConfig"`
 	}
 	_ = json.Unmarshal(body, &payload)
@@ -269,21 +276,22 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		step = m.nextStep(a)
 	}
 	rec := &RecordedRequest{
-		Method:         r.Method,
-		Path:           r.URL.Path,
-		PH:             ph,
-		MsgID:          payload.MsgID,
-		ConvID:         payload.ConvID,
-		PrevDlg:        deref(payload.PreviousDialogID),
-		Query:          payload.Query,
-		Model:          payload.ModelConfig.Model,
-		EnableThinking: payload.ModelConfig.EnableThinking,
-		Temperature:    payload.ModelConfig.Temperature,
-		TopP:           payload.ModelConfig.TopP,
-		Cookie:         r.Header.Get("Cookie"),
-		Headers:        r.Header.Clone(),
-		RawBody:        string(body),
-		At:             time.Now(),
+		Method:          r.Method,
+		Path:            r.URL.Path,
+		PH:              ph,
+		MsgID:           payload.MsgID,
+		ConvID:          payload.ConvID,
+		PrevDlg:         deref(payload.PreviousDialogID),
+		Query:           payload.Query,
+		Model:           payload.ModelConfig.Model,
+		EnableThinking:  payload.ModelConfig.EnableThinking,
+		WebSearchStatus: payload.ModelConfig.WebSearchStatus,
+		Temperature:     payload.ModelConfig.Temperature,
+		TopP:            payload.ModelConfig.TopP,
+		Cookie:          r.Header.Get("Cookie"),
+		Headers:         r.Header.Clone(),
+		RawBody:         string(body),
+		At:              time.Now(),
 	}
 	m.requests = append(m.requests, rec)
 	unknown := a == nil

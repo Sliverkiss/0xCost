@@ -16,3 +16,5 @@ rather than at chat history.
 | [0004](0004-no-auto-solve-human-gates.md) | Never auto-solve a human gate; hand it to the operator | accepted |
 | [0005](0005-exact-byte-protocol-fixtures.md) | Protocol fixtures live as committed exact-byte files | accepted |
 | [0006](0006-acceptance-gates-and-coverage-floors.md) | Acceptance runs through Makefile gates with per-package coverage floors | accepted |
+| [0007](0007-search-results-parsed-per-field.md) | Search results are parsed per field from live evidence; missing results are not a failure | accepted |
+| [0008](0008-long-speech-split-and-rejoined.md) | Long speech is split on sentence boundaries and rejoined, never truncated | accepted |

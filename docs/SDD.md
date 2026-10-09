@@ -270,7 +270,8 @@ data:{"type":null,"content":"[DONE]","usage":null}
 | `usage` | Token counts; **emitted multiple times, last one wins** (`mimo-web-proxy/internal/handler/chat.go:156-159`) | Keep last |
 | `error` | Upstream error, `content` = message | **Classified** (see §7.1): transient throttle → one retry after 800ms; model-name rejection → 400, never retried; anything else → fail turn |
 | `sensitive_query` / `sensitive_title` | Content-moderation block | Fail turn with content-filter error |
-| `web_search`, `doc`, `tip_ratio`, `tip_truncate` | Search/parse progress | Ignore (web search disabled in v1) |
+| `web_search` | Search results: a JSON array (live: ≤16 entries, one frame ≈94 KB; `usedContent` is a **JSON boolean**, `metadata` an **object**) | Parse with per-field tolerance (ADR 0007) → citations/annotations. The page body (`text`) is not forwarded |
+| `doc`, `tip_ratio`, `tip_truncate` | Search/parse progress | Ignore (nothing client-visible) |
 | `finish` | `content:"[DONE]"` | End of turn |
 
 **Reasoning markers**: thinking arrives inline in `message` deltas, delimited by
@@ -289,11 +290,45 @@ Static list as of the references (`mimo-web-api/src/config.js:139-149`,
 `mimo-v2.5-pro`, `mimo-v2.5`, `mimo-v2.1-pro`, `mimo-v2.1-pro-preview`,
 `mimo-v2-pro`, `mimo-v2-flash`.
 
-mimo2api: static default list in config, with optional live refresh from
-`/open-apis/bot/config` (cached 5 min, like `xm2api/server.mjs:280-317`) — plus alias
-normalization (strip `-studio` suffix etc., per `multimodal.go:50-85`).
+mimo2api: the account's own catalog is the authority (M19, live-verified):
 
-### 2.7 Rate limits & anti-bot considerations
+- `modelConfigListNg[]` carries `{model, name, pageType, redirectTo, intro}` —
+  live-verified to have **no** `features` field. `pageType` ∈
+  `chat | tts | tts-vd | tts-vc | asr` (live: 14/3/3/3/1 of 24 entries).
+- Capability defaults live in `modelConfigList[]` (the chat rows):
+  `webSearchDefaultStatus` (`auto`/`disabled`/absent), `thinkingDefaultOn`,
+  `nToken`, `showWebSearch` (a UI switch — live-verified `false` everywhere, so
+  it does **not** mean "search unsupported").
+- `/v1/models` unions rows per id across accounts (capabilities at their
+  maximum) and merges the static list as a floor that is marked
+  `source:"static"`. `/v1/models/{id}` reads the same source, so an id the static
+  table does not know still resolves.
+- Capability semantics follow the Studio's own enum
+  (`DISABLED=0 / ENABLED=1 / ENABLED_BY_DEFAULT=2`): `capabilities.web_search`
+  is 0 for non-chat page types, 1 when searchable but off by default, 2 when
+  `webSearchDefaultStatus` is `auto`/`enabled`. `capabilities.audio` collapses
+  the TTS variants onto `tts` and maps `asr` to `asr`.
+- Caching is per account (`MIMO2API_CATALOG_TTL_S`, default 10m) and a failed
+  read degrades to the static floor instead of failing the endpoint.
+
+### 2.7 Audio surface (TTS/ASR)
+
+Live-verified protocol (`docs/web-surface-reverse.md` §3/§4):
+
+- TTS: `POST /open-apis/tts/v2/generate` (needs a real conversation entity, which
+  `POST /open-apis/chat/conversation/save` without an `id` creates) → poll
+  `GET /open-apis/tts/generateStatus?taskId=` → fetch the returned audio URL.
+  `taskId` is a JSON **number**.
+- Formats: `wav` and `mp3` only, selected by `content.audio.format`.
+  **The upstream refuses spoken text over 1024 characters**; longer input is
+  split on sentence boundaries and rejoined (ADR 0008).
+- Synthesis cost grows faster than the text and is load-dependent (live: 12.8s
+  for 128 characters, 17.8s for 384, >220s for 700), so the per-piece deadline
+  scales with length.
+- ASR: `POST /open-apis/resource/genUploadInfo` → `PUT` → `POST /open-apis/asr/recognize`
+  → poll `/open-apis/asr/recognizeStatus`.
+
+### 2.8 Rate limits & anti-bot considerations
 
 - Upstream HTTP semantics: `302/401` session expiry (body carries `loginUrl`), `429`
   rate limit, `451/461` account restricted — 461 permanent (`PROTOCOL.md:132-139`).
@@ -844,7 +879,14 @@ MIMO2API_QUEUE_WAIT_S=15
 MIMO2API_KEEPALIVE_INTERVAL_MS=15000
 MIMO2API_X_TIMEZONE=Asia/Shanghai
 MIMO2API_USER_AGENT=<Chrome UA, matched to sec-ch-ua>
-MIMO2API_LOG_LEVEL=info
+MIMO2API_AUDIO_POLL_MS=1000          # TTS/ASR status poll cadence (§2.7)
+MIMO2API_AUDIO_TTS_TIMEOUT_S=60      # base per-piece deadline; +500ms per character, capped below
+MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S=900 # cap on one piece's deadline (ADR 0008)
+MIMO2API_AUDIO_ASR_TIMEOUT_S=120
+MIMO2API_SPEECH_MAX_CHARS=10000      # gateway total cap; the upstream refuses >1024 per synthesis
+MIMO2API_TTS_VOICE=                  # empty = the account catalog's first voice
+MIMO2API_CATALOG_TTL_S=600           # per-account bot/config cache for /v1/models (§2.6)
+MIMO2API_LOG_LEVEL=info              # info|debug; debug adds the routing trace and upstream event names
 ```
 
 Default `ACCOUNTS_FILE` moves under `/data` (the container volume mount) rather than
@@ -863,6 +905,7 @@ the source-tree `data/` — same file, container-native path.
 | Upstream sick | 5xx, transport, non-SSE 200 body (`upstream.js:208-223`), stall > 180s | 1 retry, another account, pre-first-byte only | cooldown from 30s |
 | Account dead | 451/461, STS 70016, login captcha/OTP demand | no | disabled (+permanent flag for 461) |
 | Upstream busy (transient) | `event:error` "服务器繁忙，请稍后再试" | 1 retry after 800ms, pre-first-byte only | none — the account is healthy |
+| Speech too long | upstream business error "播报内容长度不能超过..." | no | none — 400 `input_too_long` (the gateway splits first, ADR 0008) |
 | Model rejected | `event:error` "模型名称错误" | no | none — 400 to the client, warn |
 | Content-level | other `event:error`, `sensitive_query` | no | none — fail request |
 | Empty response | SSE completes, zero text, no error | 1 retry, fresh `msgId` + fresh `conversationId`, full replay (`chat.go:283-324`) | none |
@@ -911,7 +954,7 @@ the source-tree `data/` — same file, container-native path.
 | Upstream 401 after refresh retry | 401 | invalid_request_error | upstream_auth_expired |
 | Upstream 5xx / transport | 502 | api_error | upstream_failure |
 | Content filter | 400 | invalid_request_error | content_filter |
-| Query exceeds channel char cap (§2.7) | 400 | invalid_request_error | context_too_long |
+| Query exceeds channel char cap (§2.8) | 400 | invalid_request_error | context_too_long |
 
 Codes `pool_parked` / `pool_busy` / `no_accounts` borrowed from simple-chat's mapping
 (`server.go:923-959`); `Retry-After` always reflects **local** recovery deadlines and
