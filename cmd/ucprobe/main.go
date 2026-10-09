@@ -1,6 +1,8 @@
-// ucprobe: live probe of the UserCross (repeated-phone) verification flow,
-// per docs/usercross-reverse.md §7 P0-P2. Manual redirect following only —
-// auth/callback/sign ride on the hop-2 Location header.
+// ucprobe: live probe of the cross-region consent chain
+// (/pass2/redirect → userinfo/start?bizType=UserCross → /fe/service/userCross
+// → POST /pass2/userCrossAgreement/update → /pass2/userinfo/check?callback=…).
+// See docs/login-chain-reverse.md §1 shape A. Manual redirect following only —
+// sign/token/context ride on the intermediate Location headers.
 package main
 
 import (
