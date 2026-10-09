@@ -139,3 +139,35 @@ Reading it:
   upstream work, the splitter is deleted, and `MIMO2API_SPEECH_MAX_CHARS` is
   clamped to 1024 (ADR 0010). The old path cost ~278 s of upstream time per
   over-length request and then failed anyway.
+
+## LIVE-POOL-001 — the pool view against the real account (2026-10-09)
+
+Run: `MIMO2API_PORT=18210 MIMO2API_API_KEYS=live-probe
+MIMO2API_ACCOUNTS_FILE=/root/mimo2api/data/accounts.json ./mimo2api` (HEAD `139d796`,
+the four pool waves). Read-only except for one small chat turn.
+
+- `GET /healthz` → `{"status":"ok","accounts":{"total":1,"available":1,"cooldown":0,"disabled":0}}` —
+  the frozen four-aggregate shape is intact.
+- `GET /v1/admin/pool` without a key → 401; with the key → 200.
+- Before any request: `{"id":"acct-40f3e6eb","egress":"direct","state":"available",
+  "in_flight":0,"max_in_flight":2,"ewma_latency_ms":0,"failures":{},
+  "credential_age_s":9356}`, `invariant_ok: true`. The real account carries no
+  egress label, so it reports `direct` — which is the intended default.
+- One real non-streaming turn (`mimo-v2.6-flash`, `max_tokens: 16`, `"hi"`) →
+  200, `chatcmpl-11ab70195f20c4ef…`, content `Hi there! How can I help you today?`.
+  The view afterwards: `ewma_latency_ms: 848`, `in_flight: 0`, `state: available`,
+  `failures: {}` — the accounting reflects what the request actually did.
+- Credential scan of the view body: the cookie (`serviceToken=…`), the `ph`, the
+  passToken, the phone number and the raw account id are all absent. The id appears
+  only as the stable mask `acct-40f3e6eb`, and `credential_age_s` matches the real
+  session age.
+
+### Still unverified, and why
+
+- **LIVE-POOL-002 (passive 451/461 observation)**: not observed. The real service
+  has never returned 451/461 to this gateway, and inducing one is forbidden
+  (REQ-9). "No observation yet" is the expected result, not a gap in the run.
+- **LIVE-EGRESS-001 (a real account behind an operator-supplied egress)**: not run.
+  It needs an endpoint the owner supplies; labelling an account without one fails
+  startup by design, so the labelled path is covered end to end by
+  `internal/api/egress_e2e_test.go` against a real forwarding proxy, not live.
