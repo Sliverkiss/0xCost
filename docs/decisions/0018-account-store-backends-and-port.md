@@ -32,7 +32,7 @@ toml 也要写好来，纯 go 服务，然后端口改成 3000".
    - `RedisBackend` (Upstash): `DS_REDIS_HOST` (+ `DS_REDIS_TOKEN`), one JSON key
      per account (`mimo2api:accounts:<id>`) plus an index set.
 2. **The variable names are the reference deployment's, unprefixed**
-   (`DS_REDIS_HOST`, `DS_REDIS_TOKEN`, `DS_REDIS_INSECURE`), so one Upstash
+   (`DS_REDIS_HOST`, `DS_REDIS_TOKEN`, `DS_REDIS_INSECURE`, `DS_REDIS_CA_FILE`), so one Upstash
    instance can serve both projects; the rest of the config stays
    `MIMO2API_`-prefixed.
 3. **A configured-but-unusable Redis is fatal at startup.** Never a silent

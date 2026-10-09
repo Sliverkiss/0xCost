@@ -3,10 +3,17 @@ package accounts
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -387,6 +394,78 @@ func TestRedisBackendPlaintextRefusedOffLoopback(t *testing.T) {
 	if _, err := NewRedisBackend("not-a-url", nil); err == nil {
 		t.Error("a malformed url must be refused")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// DS_REDIS_CA_FILE (ADR 0018): a private CA must be loaded, and a broken
+// configuration must fail loudly instead of falling back to the system roots.
+// ---------------------------------------------------------------------------
+
+func TestLoadRedisCAFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := loadRedisCAFile(""); err != nil {
+		t.Fatalf("empty path must be a no-op: %v", err)
+	}
+	if redisRootCAs != nil {
+		t.Fatal("empty path must leave the system roots in place")
+	}
+
+	err := loadRedisCAFile(filepath.Join(dir, "missing.crt"))
+	if err == nil || !strings.Contains(err.Error(), "DS_REDIS_CA_FILE") {
+		t.Fatalf("missing CA file: err = %v, want a DS_REDIS_CA_FILE error", err)
+	}
+
+	notPEM := filepath.Join(dir, "garbage.crt")
+	if err := os.WriteFile(notPEM, []byte("not a certificate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = loadRedisCAFile(notPEM)
+	if err == nil || !strings.Contains(err.Error(), "no PEM certificates") {
+		t.Fatalf("non-PEM CA file: err = %v, want a \"no PEM certificates\" error", err)
+	}
+
+	// A real (self-signed) CA installs an extra root pool, and the hook is
+	// restored so it cannot leak into another case.
+	certPEM, err := generateSelfSignedCert(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadRedisCAFile(caPath); err != nil {
+		t.Fatalf("valid CA: %v", err)
+	}
+	if redisRootCAs == nil {
+		t.Fatal("valid CA must install a root pool")
+	}
+	t.Cleanup(func() { redisRootCAs = nil })
+}
+
+// generateSelfSignedCert mints a throwaway CA-shaped certificate for the CA
+// case, so the suite never depends on a fixture file on disk.
+func generateSelfSignedCert(t *testing.T) ([]byte, error) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "mimo2api-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
 }
 
 func TestRedisBackendSkipsBadRows(t *testing.T) {

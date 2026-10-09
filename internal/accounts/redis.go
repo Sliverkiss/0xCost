@@ -41,9 +41,32 @@ const (
 	redisIndexKey  = "mimo2api:accounts:index"
 )
 
-// redisRootCAs is an optional extra CA pool (a test hook for a self-signed
-// test server); nil in production, where the system roots verify Upstash.
+// redisRootCAs is an optional extra CA pool: nil means the system roots, which
+// is what a public Upstash endpoint needs. A private Redis behind a private CA
+// (or a self-signed test server) is verified by loading that CA instead of
+// disabling verification.
 var redisRootCAs *x509.CertPool
+
+// loadRedisCAFile installs an extra root pool from DS_REDIS_CA_FILE. A
+// configured-but-unreadable file is an error: silently falling back to the
+// system roots would turn a trust configuration mistake into an auth failure
+// that looks like a credential problem.
+func loadRedisCAFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("DS_REDIS_CA_FILE: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return fmt.Errorf("DS_REDIS_CA_FILE %s: no PEM certificates found", path)
+	}
+	redisRootCAs = pool
+	return nil
+}
 
 // ErrTokenRequired reports a DS_REDIS_HOST without DS_REDIS_TOKEN: the host
 // needs assembly into a connection string, and dialing unauthenticated would
@@ -305,6 +328,9 @@ type Logger interface {
 // startup: when a Redis host is configured it IS the source of truth, and
 // starting on an empty fallback would silently serve nobody.
 func NewRedisBackend(rawURL string, logger Logger) (*RedisBackend, error) {
+	if err := loadRedisCAFile(os.Getenv("DS_REDIS_CA_FILE")); err != nil {
+		return nil, err
+	}
 	_, _, _, useTLS, err := parseRedisURL(rawURL)
 	if err != nil {
 		return nil, err

@@ -1163,6 +1163,7 @@ MIMO2API_UPSTREAM_BASE=https://aistudio.xiaomimimo.com
 MIMO2API_ACCOUNTS_FILE=data/accounts.json  # relative default: no /data mount needed (ADR 0018)
 DS_REDIS_HOST=                       # Upstash: when set, Redis is the account store (§4.7)
 DS_REDIS_TOKEN=                      # its token (required for a bare host / https URL)
+DS_REDIS_CA_FILE=                    # extra root CAs for rediss:// (private Redis; never disables verification)
 MIMO2API_DEFAULT_MODEL=mimo-v2.6-pro
 MIMO2API_REQUEST_TIMEOUT_MS=300000   # upstream idle/stream timeout (mimo-web-api config.js:127)
 MIMO2API_SSE_IDLE_TIMEOUT_S=180      # no-event watchdog (mimo-web-proxy chat.go:62)

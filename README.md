@@ -234,6 +234,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `DS_REDIS_HOST` | *(empty)* | Upstash/Redis host for the account store (ADR 0018). Set → Redis **is** the account store (a file fallback would silently serve nobody); a bare host or `https://…` URL is assembled with the token, a full `rediss://`/`redis://` string is used as-is. Note the name has no `MIMO2API_` prefix: the reference deployment uses the same pair |
 | `DS_REDIS_TOKEN` | *(empty)* | Token for the assembled connection string (required unless `DS_REDIS_HOST` is already a full redis URL) |
 | `DS_REDIS_INSECURE` | *(unset)* | Set to `1` to allow a plaintext `redis://` to a **non-loopback** host (local dev only). The store refuses it by default: credentials and session cookies live in Redis |
+| `DS_REDIS_CA_FILE` | *(unset)* | PEM bundle of extra root CAs for `rediss://` (a private/self-hosted Redis). Verification is never disabled; an unreadable or non-PEM file fails startup |
 | `MIMO2API_DEFAULT_MODEL` | `mimo-v2.6-pro` | Model for unknown/missing ids |
 | `MIMO2API_REQUEST_TIMEOUT_MS` | `300000` | Upstream request timeout |
 | `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | Upstream no-SSE-event watchdog: MiMo streams its answer to us, so this aborts a stalled upstream read (it is not a client-facing keepalive) |
