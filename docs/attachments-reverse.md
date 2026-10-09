@@ -79,15 +79,18 @@ The check that settles it: upload a file whose text is impossible to guess
 | file | marker position | result |
 | --- | --- | --- |
 | 60,022 chars (180 KB) | last line | **PASS** — the model answered `ZQ-7788` |
+| 100,036 chars (300 KB) | last line | **PASS** (6.8s) |
+| 110,000 / 120,030 / 126,036 / 130,040 chars | last line | NO-MARKER — delivered, truncated before its tail |
 | 150,033 chars (450 KB) | first line | **PASS** — 1.5× the query ceiling, read in full |
-| 150,034 chars (450 KB) | last line | NO-MARKER — the attachment was delivered but truncated before its tail |
-| 200,032 chars (600 KB) | last line | NO-MARKER — same, the model reported the document exists but lacks the number |
+| 200,032 chars (600 KB) | last line | NO-MARKER — the model reported the document exists but lacks the number |
 
 So the query ceiling is genuinely out of the picture: `resource/parse` accepted a
 200,032-character file and reported `tokenUsage=200032`, i.e. accounted it
 separately, and the model answered from a 150,033-character document. What bounds
-a single attachment is the model's own ingest window (between 60,022 and 150,034
-characters of CJK), not the 102,400-character query cap.
+a single attachment is the model's ingest window — served at 100,036 CJK
+characters, truncated at 110,000 and above — not the 102,400-character query cap;
+and what survives truncation is the head (the 150,033-character file answered its
+first line).
 
 Two more findings from the same runs:
 
