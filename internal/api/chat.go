@@ -86,6 +86,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		topP:      req.TopP,
 		stream:    req.Stream,
 		requested: req.Model,
+		sessionID: req.SessionID,
+		tools:     string(req.Tools),
+		cred:      credentialOf(r),
 	}
 	p.run(w, r)
 }
@@ -106,6 +109,12 @@ type chatPipeline struct {
 	// citations says whether citations are returned (M19).
 	search    string
 	citations bool
+	// sessionID / tools / cred feed the identity ladder (SDD §4.3.1). tools is
+	// part of the derived key because a changed tool set is a different agent
+	// session (ADR 0009 decision 2).
+	sessionID string
+	tools     string
+	cred      string
 }
 
 // attemptPlan is the resolved plan for one upstream attempt.
@@ -113,7 +122,8 @@ type attemptPlan struct {
 	queries        []string
 	conversationID string
 	prevDialogID   string
-	entry          *session.Entry // sticky hit (streaming only); nil = fresh
+	entry          *session.Entry // verified session hit (streaming only); nil = replay
+	sessionKey     string         // store key for the finished turn (streaming only)
 }
 
 // sseWriter serializes SSE writes: the keepalive goroutine writes comments
@@ -145,18 +155,50 @@ func (s *sseWriter) comment(text string) {
 	}
 }
 
-// run: sticky lookup (streaming only), acquire, execution with §7.1
+// run: resolve the session (streaming only), claim it, then execute with §7.1
 // classification and §7.2 retry policy.
 func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	s := p.srv
 	ctx := r.Context()
 
-	// Non-streaming NEVER consults the session store (SDD §4.2, TDD
-	// NOSTICK-003).
+	// Non-streaming is one-shot: no identity is resolved, the session store is
+	// never read or written, and no session header is returned (SDD §4.3.1,
+	// REQ-10). A session id supplied here is ignored, on purpose.
 	var stickyEntry *session.Entry
+	var ident session.Identity
+	var sessionKey string
+	var forkedSession bool
+	var forkWaited bool
+	var forkFrom string
 	if p.stream {
-		if e, ok := s.sessions.Lookup(p.msgs); ok {
-			stickyEntry = &e
+		ident = session.Resolve(session.ResolveInput{
+			Credential: p.cred,
+			HeaderID:   r.Header.Get("X-Mimo-Session-Id"),
+			BodyID:     p.sessionID,
+			Model:      p.model,
+			System:     adapter.SystemPreamble(p.msgs),
+			Tools:      p.tools,
+			FirstMsg:   firstNonSystem(p.msgs),
+			Mint:       adapter.RandomHex32,
+		})
+		sessionKey = ident.Key
+		w.Header().Set("X-Mimo-Session-Id", ident.PublicID)
+
+		// Fork policy (REQ-8): one live chain writer per session. A second
+		// request waits for the bound, then forks onto a fresh session instead
+		// of interleaving into someone else's upstream dialogue.
+		held, waited := s.sessions.Acquire(ctx, sessionKey, s.forkWait())
+		if !held {
+			forkedSession, forkWaited, forkFrom = true, waited, ident.PublicID
+			ident = session.Resolve(session.ResolveInput{Credential: p.cred, Mint: adapter.RandomHex32})
+			sessionKey = ident.Key
+			w.Header().Set("X-Mimo-Session-Id", ident.PublicID)
+			s.sessions.Acquire(ctx, sessionKey, 0)
+		} else {
+			defer s.sessions.Release(sessionKey)
+			if e, ok := s.sessions.Lookup(sessionKey, p.msgs); ok {
+				stickyEntry = &e
+			}
 		}
 	}
 
@@ -185,6 +227,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 						conversationID: stickyEntry.ConversationID,
 						prevDialogID:   stickyEntry.PreviousDialogID,
 						entry:          stickyEntry,
+						sessionKey:     sessionKey,
 					}
 				}
 			}
@@ -207,13 +250,34 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			plan = &attemptPlan{
 				queries:        fp.Queries,
 				conversationID: adapter.RandomHex32(), // fresh every attempt (SDD §4.2)
+				sessionKey:     sessionKey,
 			}
 		}
 
 		if plan.entry != nil {
+			w.Header().Set("X-Mimo-Session-Mode", "chain")
+			s.debugf("session: decision=chain session=%s source=%s frontier=%d history=%d",
+				ident.PublicID, ident.Source, plan.entry.MsgCount, adapter.CountNonSystem(p.msgs))
 			s.debugf("chat: sticky continuation account=%s conversation=%s prevDialog=%s deltaQueries=%d msgCount=%d",
 				lease.ID, plan.conversationID, plan.prevDialogID, len(plan.queries), plan.entry.MsgCount)
 		} else {
+			decision := "replay"
+			switch {
+			case !p.stream:
+				decision = "one-shot"
+			case forkedSession:
+				decision = "fork"
+			}
+			if p.stream {
+				w.Header().Set("X-Mimo-Session-Mode", decision)
+				if forkedSession {
+					s.debugf("session: decision=%s session=%s source=%s pinned=%s waited=%v frontier=0 history=%d",
+						decision, ident.PublicID, ident.Source, forkFrom, forkWaited, adapter.CountNonSystem(p.msgs))
+				} else {
+					s.debugf("session: decision=%s session=%s source=%s frontier=0 history=%d",
+						decision, ident.PublicID, ident.Source, adapter.CountNonSystem(p.msgs))
+				}
+			}
 			s.debugf("chat: full replay account=%s conversation=%s (fresh) queries=%d replayCap=%d",
 				lease.ID, plan.conversationID, len(plan.queries), s.replayCap)
 		}
@@ -342,7 +406,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			if stickyEntry != nil {
 				// The sticky slot pointed at a sick account: discard it so
 				// the retry builds a fresh conversation (TDD STICKY-008).
-				s.sessions.Delete(stickyEntry.AccountID, stickyEntry.ConversationID)
+				s.sessions.Delete(stickyEntry.SessionKey)
 				stickyEntry = nil
 			}
 			excluded = append(excluded, lease.ID)
@@ -491,7 +555,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 				// entry when a dialogId exists, count neither success nor
 				// failure.
 				if plan.entry != nil && lastDialogID != "" {
-					s.sessions.UpdateDialog(plan.entry.AccountID, plan.entry.ConversationID, lastDialogID)
+					s.sessions.UpdateDialog(plan.sessionKey, lastDialogID, p.msgs)
 				}
 				return committed, ctx.Err()
 			}
@@ -503,7 +567,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 					s.pool.Report5xx(lease.ID)
 				}
 				if plan.entry != nil {
-					s.sessions.Delete(plan.entry.AccountID, plan.entry.ConversationID)
+					s.sessions.Delete(plan.sessionKey)
 				}
 				s.terminateStream(sw, id, modelEcho, created, err)
 				return true, err
@@ -569,9 +633,9 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 	return true, nil
 }
 
-// finishTurn records success and advances the sticky store (SDD §4.3, TDD
-// STICKY-011). Miss-path streaming turns store a fresh entry; non-streaming
-// never touches the store (SDD §4.2).
+// finishTurn records success and advances the session store (SDD §4.3.1, TDD
+// STICKY-011). Streaming turns advance the verified session or store a fresh
+// one; non-streaming is one-shot and never touches the store (REQ-10).
 func (p *chatPipeline) finishTurn(lease *pool.Lease, plan *attemptPlan, lastDialogID string) {
 	p.srv.pool.ReportSuccess(lease.ID)
 	if !p.stream {
@@ -579,20 +643,32 @@ func (p *chatPipeline) finishTurn(lease *pool.Lease, plan *attemptPlan, lastDial
 		return
 	}
 	if plan.entry != nil {
-		p.srv.sessions.UpdateDialog(plan.entry.AccountID, plan.entry.ConversationID, lastDialogID)
+		p.srv.sessions.UpdateDialog(plan.sessionKey, lastDialogID, p.msgs)
 	} else if lastDialogID != "" {
 		now := time.Now().Unix()
 		p.srv.sessions.Save(session.Entry{
+			SessionKey:       plan.sessionKey,
 			AccountID:        lease.ID,
 			ConversationID:   plan.conversationID,
 			PreviousDialogID: lastDialogID,
-			Fingerprint:      adapter.Fingerprint(p.msgs),
+			FrontierHash:     adapter.FrontierHash(p.msgs),
 			MsgCount:         adapter.CountNonSystem(p.msgs),
 			CreatedAt:        now,
 			UpdatedAt:        now,
 		})
 	}
 	lease.Release()
+}
+
+// firstNonSystem returns the first non-system message content — a derived-key
+// input (REQ-4).
+func firstNonSystem(msgs []adapter.Msg) string {
+	for _, m := range msgs {
+		if m.Role != "system" {
+			return m.Content
+		}
+	}
+	return ""
 }
 
 // terminateStream appends the honest error-termination frames (SDD §7.3:

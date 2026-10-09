@@ -1,12 +1,16 @@
+// Package adapter message projections: the canonical hashes and counters that
+// session identity and turn planning are built on. Content-derived fingerprint
+// lookups were retired in favour of a keyed store with whole-frontier
+// verification (ADR 0009).
 package adapter
 
 import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,10 +21,30 @@ type Msg struct {
 	Content string
 }
 
-const (
-	fingerprintWindow = 5   // last N non-system messages counted (SDD §4.2)
-	fingerprintCut    = 200 // content truncated to this many chars (SDD §4.2)
-)
+// SystemPreamble returns the canonical system preamble: every system message's
+// content, length-prefixed and in order. It is a derived-key input (REQ-4): two
+// clients with different instructions are different sessions, and the
+// canonical form keeps the key stable when a client merely reorders nothing.
+func SystemPreamble(msgs []Msg) string {
+	var parts []string
+	for _, m := range msgs {
+		if m.Role != "system" {
+			continue
+		}
+		parts = append(parts, m.Content)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(strconv.Itoa(len(p)))
+		b.WriteByte(':')
+		b.WriteString(p)
+		b.WriteByte('|')
+	}
+	return b.String()
+}
 
 // FrontierHash is the canonical hash of a message frontier: every non-system
 // message up to and including the last consumed turn, each length-prefixed.
@@ -48,36 +72,6 @@ func FrontierHash(msgs []Msg) string {
 	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
-// Fingerprint computes the conversation fingerprint: SHA-256 over the last
-// ≤5 non-system messages' (role, content) pairs, content truncated to 200
-// chars, first 16 bytes hex. System messages are ignored. Deterministic and
-// independent of any system preamble (TDD STICKY-001).
-func Fingerprint(msgs []Msg) string {
-	var recent []Msg
-	for _, m := range msgs {
-		if m.Role == "system" {
-			continue
-		}
-		c := m.Content
-		if len(c) > fingerprintCut {
-			c = truncateUTF8(c, fingerprintCut)
-		}
-		recent = append(recent, Msg{Role: m.Role, Content: c})
-	}
-	if len(recent) == 0 {
-		return ""
-	}
-	if len(recent) > fingerprintWindow {
-		recent = recent[len(recent)-fingerprintWindow:]
-	}
-	b, err := json.Marshal(recent)
-	if err != nil {
-		return ""
-	}
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:16])
-}
-
 // CountNonSystem returns the number of non-system messages — the replay-guard
 // counter stored alongside fingerprints (SDD §4.2, TDD STICKY-003).
 func CountNonSystem(msgs []Msg) int {
@@ -88,41 +82,6 @@ func CountNonSystem(msgs []Msg) int {
 		}
 	}
 	return n
-}
-
-// Continuation reports whether the current message list extends a stored
-// frontier: some prefix of the current list (dropping 1..5 tail messages)
-// fingerprints to lastFp (SDD §4.2, convstore.go:124-149 analogue).
-func Continuation(msgs []Msg, lastFp string) bool {
-	if lastFp == "" {
-		return false
-	}
-	var non []Msg
-	for _, m := range msgs {
-		if m.Role == "system" {
-			continue
-		}
-		non = append(non, m)
-	}
-	if len(non) == 0 {
-		return false
-	}
-	for drop := 1; drop <= fingerprintWindow && drop <= len(non); drop++ {
-		if Fingerprint(non[:len(non)-drop]) == lastFp {
-			return true
-		}
-	}
-	return false
-}
-
-// truncateUTF8 cuts s to at most n runes without splitting a multi-byte
-// character.
-func truncateUTF8(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
 }
 
 // RandomHex32 returns a fresh 32-char lowercase hex string (uuid4 with dashes

@@ -136,6 +136,19 @@ func TestIdentityPublicIDRoundTrip(t *testing.T) {
 	if f2.Key != f.Key {
 		t.Errorf("pinning a minted id did not restore the session: %s vs %s", f2.Key, f.Key)
 	}
+
+	// A derived id pins the session only while the request's derived inputs still
+	// agree (same model, system, tools, opening). With a rewritten history the
+	// pin is honoured as an opaque id of its own — stable, isolated, and never a
+	// chain into the original session.
+	rewritten := derived(t, session.ResolveInput{Credential: credA, HeaderID: first.PublicID, Model: "m", System: "s", FirstMsg: "a different opening"})
+	if rewritten.Key == first.Key {
+		t.Error("a pinned derived id chained onto a session whose derived inputs no longer match")
+	}
+	again := derived(t, session.ResolveInput{Credential: credA, HeaderID: first.PublicID, Model: "m", System: "s", FirstMsg: "a different opening"})
+	if again.Key != rewritten.Key {
+		t.Error("an opaque pinned id must be stable across turns")
+	}
 }
 
 // Opacity (INV-3): the internal key never equals a client-supplied value, is

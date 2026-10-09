@@ -52,8 +52,10 @@ type TestServerOptions struct {
 	Now          func() time.Time
 	Probe        pool.ProbeFunc
 	Renew        pool.RenewFunc
-	Debug        bool      // MIMO2API_LOG_LEVEL=debug equivalent
-	LogSink      io.Writer // nil = discard-free default logger; set to capture trace lines
+	Debug        bool          // MIMO2API_LOG_LEVEL=debug equivalent
+	SessionWait  time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
+	ForkPolicy   string        // "wait" (default) or "fork"
+	LogSink      io.Writer     // nil = discard-free default logger; set to capture trace lines
 
 	// Audio surface (M18). Tests keep the poll interval tiny so the
 	// generate → poll → download loop does not cost real seconds.
@@ -140,6 +142,9 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Keepalive:    keepalive,
 		Logger:       logger,
 		Debug:        opts.Debug,
+
+		SessionWait: opts.SessionWait,
+		ForkPolicy:  opts.ForkPolicy,
 
 		AudioPoll:      opts.AudioPoll,
 		TTSTimeout:     opts.TTSTimeout,

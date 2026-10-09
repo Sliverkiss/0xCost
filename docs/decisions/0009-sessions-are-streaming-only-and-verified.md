@@ -80,9 +80,15 @@ prefix. Two of its ideas transfer, and one of its properties does not.
 - Chaining stays unreachable for non-streaming clients, which was the cheaper
   option for them; the owner chose the simpler one-shot contract instead, and
   this ADR is the record of that trade.
-- The previous identity helpers (`Fingerprint`/`Continuation`) remain as the
-  compatibility path for the deployed semantics the STICKY tests describe, but
-  they no longer decide identity on their own.
+- The previous identity helpers (`Fingerprint`/`Continuation`) are **removed**:
+  with a keyed store and whole-frontier verification they had no caller left, and
+  keeping a second identity path alive is how a lossy match creeps back in. TDD
+  `STICKY-001`/`STICKY-004` are retired with them; `STICKY-002` is restated over
+  the keyed lookup.
+- Public ids name their own scope (`ms-d-` derived, `ms-f-` minted). Without that
+  distinction a client pinning a derived id would be read as a minted token and
+  silently land in a different session — found by the SESS-061 case while
+  implementing this record.
 
 ## Rejected alternatives
 

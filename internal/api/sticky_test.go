@@ -66,8 +66,9 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
 
 // STICKY-011: miss path — empty store, streaming request with 2 user
 // messages → fresh 32-hex conversationId, full chain replay (2 upstream
-// calls, 2nd chained via 1st's dialogId), entry stored with fingerprint +
-// msg_count + previousDialogID (SDD §5.3).
+// calls, 2nd chained via 1st's dialogId), entry stored under the resolved
+// session key with its frontier hash, msg_count and previousDialogID
+// (SDD §4.3.1/§5.3).
 func TestStickyMissPathMintAndStore(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true,
@@ -108,8 +109,8 @@ func TestStickyMissPathMintAndStore(t *testing.T) {
 	if e.MsgCount != 2 {
 		t.Errorf("entry msg_count = %d, want 2", e.MsgCount)
 	}
-	if e.Fingerprint == "" {
-		t.Error("entry fingerprint empty")
+	if e.FrontierHash == "" || e.SessionKey == "" {
+		t.Errorf("entry is missing its session key or frontier hash: %+v", e)
 	}
 }
 

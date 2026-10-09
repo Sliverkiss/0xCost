@@ -31,8 +31,14 @@ const (
 )
 
 // PublicPrefix marks ids this gateway minted, so a pinned id is recognisable
-// without consulting any state.
-const PublicPrefix = "ms-"
+// without consulting any state. The scope is part of the id: a pinned derived
+// id and a pinned fresh token must never be confused for one another, or a
+// client's pin would silently resolve to a different session.
+const (
+	PublicPrefix  = "ms-"
+	derivedPrefix = PublicPrefix + "d-"
+	freshPrefix   = PublicPrefix + "f-"
+)
 
 // Identity is the resolution result.
 type Identity struct {
@@ -78,7 +84,7 @@ func Resolve(in ResolveInput) Identity {
 			// The caller pinned the id we handed out for this very history.
 			return Identity{Key: derivedKey, PublicID: derivedPublic, Source: SourceExplicit}
 		}
-		if token, ok := strings.CutPrefix(raw, PublicPrefix); ok {
+		if token, ok := strings.CutPrefix(raw, freshPrefix); ok {
 			// An id this gateway minted for a fresh session. The prefix carries
 			// its own scope, so recognition needs no stored state and survives a
 			// restart; a token from another credential still hashes elsewhere.
@@ -96,7 +102,7 @@ func Resolve(in ResolveInput) Identity {
 		mint = adapter.RandomHex32
 	}
 	token := mint()
-	return Identity{Key: hashKey(in.Credential, "fresh", token), PublicID: PublicPrefix + token, Source: SourceFresh}
+	return Identity{Key: hashKey(in.Credential, "fresh", token), PublicID: freshPrefix + token, Source: SourceFresh}
 }
 
 // derivedIdentity computes the credential-scoped derived key and the public id
@@ -113,7 +119,7 @@ func derivedIdentity(in ResolveInput) (key string, public string) {
 	// The public id is derived from the key rather than from the credential, so
 	// it leaks nothing about the credential but is still recomputable by a
 	// later request that presents the same inputs.
-	return PublicPrefix + hashKey("public", key), key
+	return derivedPrefix + hashKey("public", key), key
 }
 
 // hashKey builds a length-prefixed SHA-256 digest (first 16 bytes, lowercase

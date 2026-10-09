@@ -118,48 +118,6 @@ func TestPlanDeltaEdgeBranches(t *testing.T) {
 }
 
 // truncateUTF8 must pass short strings through untouched and never split a
-// multi-byte rune (used by Fingerprint on the 200-char boundary).
-func TestTruncateUTF8(t *testing.T) {
-	if got := truncateUTF8("hello", 10); got != "hello" {
-		t.Errorf("short string = %q, want unchanged", got)
-	}
-	if got := truncateUTF8("hello", 5); got != "hello" {
-		t.Errorf("exact-length string = %q, want unchanged", got)
-	}
-	multi := strings.Repeat("é", 5) // 5 runes, 10 bytes
-	got := truncateUTF8(multi, 3)
-	if want := strings.Repeat("é", 3); got != want {
-		t.Errorf("truncate = %q, want %q", got, want)
-	}
-	if n := len([]rune(got)); n != 3 {
-		t.Errorf("rune count = %d, want 3 (no split rune)", n)
-	}
-}
-
-// Fingerprint returns "" when there is nothing to fingerprint (no non-system
-// messages) rather than hashing an empty object.
-func TestFingerprintEmpty(t *testing.T) {
-	if got := Fingerprint(nil); got != "" {
-		t.Errorf("nil messages fingerprint = %q, want empty", got)
-	}
-	if got := Fingerprint([]Msg{{Role: "system", Content: "s"}}); got != "" {
-		t.Errorf("system-only fingerprint = %q, want empty", got)
-	}
-}
-
-// Continuation false branches: empty stored fingerprint, and histories with no
-// non-system message.
-func TestContinuationBranches(t *testing.T) {
-	if Continuation([]Msg{{Role: "user", Content: "q"}}, "") {
-		t.Error("empty lastFp must not be a continuation")
-	}
-	if Continuation(nil, "deadbeef") {
-		t.Error("nil history must not be a continuation")
-	}
-	if Continuation([]Msg{{Role: "system", Content: "s"}}, "deadbeef") {
-		t.Error("system-only history must not be a continuation")
-	}
-}
 
 // NormalizeModel: nil catalog falls back to DefaultModels, an empty catalog is
 // an error, a default not in the catalog falls back to the first entry, and
@@ -316,4 +274,63 @@ func TestPlanDeltaCarriesTrailingSystemMessage(t *testing.T) {
 			t.Errorf("queries = %+v, want exactly [q2] with no system prefix", plan.Queries)
 		}
 	})
+}
+
+// FrontierHash / SystemPreamble (SDD §4.3.1): the canonical, untruncated
+// inputs session identity and frontier verification are built on.
+func TestFrontierHashCanonical(t *testing.T) {
+	base := []Msg{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}}
+	if got := FrontierHash(base); len(got) != 32 {
+		t.Errorf("FrontierHash = %q, want 32 hex chars", got)
+	}
+	if FrontierHash(nil) != "" || FrontierHash([]Msg{{Role: "system", Content: "s"}}) != "" {
+		t.Error("an empty (or system-only) history must hash to the empty string")
+	}
+	// System messages do not participate, so a preamble change cannot alter the
+	// frontier's identity.
+	withSystem := append([]Msg{{Role: "system", Content: "you are terse"}}, base...)
+	if FrontierHash(withSystem) != FrontierHash(base) {
+		t.Error("the system preamble changed the frontier hash")
+	}
+	// Deterministic across calls.
+	if FrontierHash(base) != FrontierHash(base) {
+		t.Error("FrontierHash is not deterministic")
+	}
+	// An edited early turn changes the hash — the property the old 5-message
+	// window lacked (SESS-012).
+	grown := append(append([]Msg{}, base...), Msg{Role: "user", Content: "q2"})
+	edited := append([]Msg{{Role: "user", Content: "EDITED"}}, grown[1:]...)
+	if FrontierHash(edited) == FrontierHash(grown) {
+		t.Error("an edited early turn did not change the frontier hash")
+	}
+	// Length-prefixing keeps field boundaries unambiguous.
+	if FrontierHash([]Msg{{Role: "user", Content: "ab"}, {Role: "user", Content: "c"}}) ==
+		FrontierHash([]Msg{{Role: "user", Content: "a"}, {Role: "user", Content: "bc"}}) {
+		t.Error("content boundaries are not respected in the frontier hash")
+	}
+	// Unicode content is hashed as-is (no rune truncation).
+	long := strings.Repeat("长", 500)
+	if FrontierHash([]Msg{{Role: "user", Content: long}}) == FrontierHash([]Msg{{Role: "user", Content: strings.Repeat("长", 250)}}) {
+		t.Error("long content collided with a prefix of itself")
+	}
+}
+
+func TestSystemPreambleCanonical(t *testing.T) {
+	if got := SystemPreamble(nil); got != "" {
+		t.Errorf("SystemPreamble(nil) = %q, want empty", got)
+	}
+	if got := SystemPreamble([]Msg{{Role: "user", Content: "hi"}}); got != "" {
+		t.Errorf("SystemPreamble without a system message = %q, want empty", got)
+	}
+	one := SystemPreamble([]Msg{{Role: "system", Content: "be terse"}})
+	two := SystemPreamble([]Msg{{Role: "system", Content: "be terse"}, {Role: "system", Content: "and kind"}})
+	if one == "" || two == "" || one == two {
+		t.Errorf("preambles = %q / %q, want distinct non-empty values", one, two)
+	}
+	if SystemPreamble([]Msg{{Role: "system", Content: "be terse"}}) != one {
+		t.Error("SystemPreamble is not deterministic")
+	}
+	if !strings.Contains(one, "be terse") {
+		t.Errorf("preamble %q does not carry the system text", one)
+	}
 }

@@ -122,6 +122,10 @@ func run() error {
 		Keepalive:    cfg.Keepalive(),
 		Debug:        cfg.Debug(),
 
+		// Session identity (SDD §4.3.1, ADR 0009).
+		SessionWait: cfg.SessionWait(),
+		ForkPolicy:  cfg.SessionForkPolicy(),
+
 		// Audio surface (M18).
 		AudioPoll:      cfg.AudioPoll(),
 		TTSMaxTimeout:  cfg.TTSMaxTimeout(),

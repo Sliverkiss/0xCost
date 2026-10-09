@@ -17,6 +17,7 @@ func testEnv(t *testing.T, kv map[string]string) {
 		"MIMO2API_STICKY_MAX", "MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", "MIMO2API_QUEUE_WAIT_S",
 		"MIMO2API_KEEPALIVE_INTERVAL_MS", "MIMO2API_X_TIMEZONE", "MIMO2API_USER_AGENT",
 		"MIMO2API_LOG_LEVEL", "MIMO2API_REPLAY_CAP", "MIMO2API_PROBE_INTERVAL_S",
+		"MIMO2API_SESSION_WAIT_MS", "MIMO2API_SESSION_FORK_POLICY",
 	}
 	for _, k := range vars {
 		os.Unsetenv(k)
@@ -278,5 +279,44 @@ func TestLogLevelDebugAccessor(t *testing.T) {
 		if got := cfg.LogLevel(); got != wantLevel {
 			t.Errorf("LogLevel() = %q, want %q", got, wantLevel)
 		}
+	}
+}
+
+// CONF-007: session fork policy and its wait bound (SDD §4.3.1, ADR 0009).
+func TestSessionForkPolicy(t *testing.T) {
+	testEnv(t, nil)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.SessionForkPolicy(); got != "wait" {
+		t.Errorf("default fork policy = %q, want wait", got)
+	}
+	if got := c.SessionWait(); got != 2*time.Second {
+		t.Errorf("default session wait = %s, want 2s", got)
+	}
+
+	testEnv(t, map[string]string{"MIMO2API_SESSION_FORK_POLICY": "FORK", "MIMO2API_SESSION_WAIT_MS": "750"})
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.SessionForkPolicy(); got != "fork" {
+		t.Errorf("policy = %q, want the lower-cased fork", got)
+	}
+	if got := c.SessionWait(); got != 750*time.Millisecond {
+		t.Errorf("session wait = %s, want 750ms", got)
+	}
+
+	// An unknown policy is a startup error: a typo must never silently pick a
+	// different concurrency contract.
+	testEnv(t, map[string]string{"MIMO2API_SESSION_FORK_POLICY": "yolo"})
+	if _, err := Load(); err == nil {
+		t.Error("an unknown fork policy was accepted")
+	}
+
+	testEnv(t, map[string]string{"MIMO2API_SESSION_WAIT_MS": "soon"})
+	if _, err := Load(); err == nil {
+		t.Error("a non-numeric wait bound was accepted")
 	}
 }

@@ -5,7 +5,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -35,6 +37,8 @@ type Server struct {
 	keepalive    time.Duration
 	logger       *log.Logger
 	debug        bool
+	sessionWait  time.Duration
+	forkPolicy   string
 
 	// Web-surface audio + catalog (audio.go).
 	audioConvs     *mimo.ConversationCache
@@ -69,8 +73,13 @@ type Options struct {
 	DefaultModel string        // "auto"/missing model resolution (SDD §5.2)
 	ReplayCap    int           // max replayed user turns (SDD §5.3B, default 20)
 	Keepalive    time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
-	Logger       *log.Logger
-	Debug        bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
+	// SessionWait bounds how long a second streaming request waits for its own
+	// session before forking (SDD §4.3.1, REQ-8, default 2s).
+	SessionWait time.Duration
+	// ForkPolicy is "wait" (default) or "fork" (SDD §4.3.1).
+	ForkPolicy string
+	Logger     *log.Logger
+	Debug      bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
 
 	// Audio surface (M18): poll cadence and per-flow deadlines.
 	AudioPoll time.Duration // TTS/ASR status poll interval (default 1s)
@@ -89,6 +98,12 @@ type Options struct {
 // New builds a Server. All collaborators must be wired (real or test
 // doubles).
 func New(opts Options) *Server {
+	if opts.SessionWait <= 0 {
+		opts.SessionWait = 2 * time.Second
+	}
+	if opts.ForkPolicy == "" {
+		opts.ForkPolicy = "wait"
+	}
 	if opts.DefaultModel == "" {
 		opts.DefaultModel = adapter.DefaultModels[0]
 	}
@@ -127,6 +142,8 @@ func New(opts Options) *Server {
 		pool:           opts.Pool,
 		store:          opts.Accounts,
 		sessions:       opts.Sessions,
+		sessionWait:    opts.SessionWait,
+		forkPolicy:     opts.ForkPolicy,
 		client:         opts.Client,
 		otp:            newOTPStore(),
 		apiKeys:        keys,
@@ -179,9 +196,44 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 					"missing or invalid API key", 0)
 				return
 			}
+			// Session state is scoped to the calling credential (spec REQ-3,
+			// INV-2). Only a one-way handle is carried, never the key itself.
+			r = r.WithContext(context.WithValue(r.Context(), credentialCtxKey{}, credentialHandle(token)))
 		}
 		next(w, r)
 	}
+}
+
+// forkWait returns how long a second streaming request waits for its own
+// session before forking: the configured bound, or zero when the policy is
+// "fork" (SDD §4.3.1, REQ-8).
+func (s *Server) forkWait() time.Duration {
+	if s.forkPolicy == "fork" {
+		return 0
+	}
+	return s.sessionWait
+}
+
+// credentialCtxKey is the request-context key for the calling credential's
+// non-reversible handle.
+type credentialCtxKey struct{}
+
+// credentialHandle derives the opaque credential identity used to scope session
+// keys. Hashed so a session key can never be inverted into an API key (INV-3);
+// a deployment without auth has a single, empty scope.
+func credentialHandle(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("mimo2api-credential|" + token))
+	return hex.EncodeToString(sum[:16])
+}
+
+// credentialOf returns the calling credential's handle, empty when the
+// deployment runs without auth.
+func credentialOf(r *http.Request) string {
+	h, _ := r.Context().Value(credentialCtxKey{}).(string)
+	return h
 }
 
 // parseBearer extracts the token from "Authorization: Bearer <key>".

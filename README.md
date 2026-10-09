@@ -87,6 +87,18 @@ forwarded. `include_citations: false` keeps the search but drops the payload.
 Citations are best-effort: the upstream also answers with `(citation:N)` markers
 when it returns no result set at all.
 
+**Sessions (streaming only)**: a streaming request continues an upstream
+conversation when it can prove it owns one. The gateway resolves the session
+from `X-Mimo-Session-Id` (header) or `session_id` (body field), else derives one
+from the model, system preamble, tools and first message — scoped to your API
+key. Every streaming response returns `X-Mimo-Session-Id` (pin it next turn to
+own the session) and `X-Mimo-Session-Mode` (`chain`, `replay` or `fork`).
+Reuse requires the stored frontier to verify against your history, so a
+rewritten history replays rather than chaining onto a lookalike, and a second
+concurrent request for a busy session waits `MIMO2API_SESSION_WAIT_MS` and then
+forks onto its own session instead of interleaving. `stream: false` is
+one-shot by design: no session, no store read or write, no header (ADR 0009).
+
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
 
@@ -105,8 +117,10 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_REQUEST_TIMEOUT_MS` | `300000` | Upstream request timeout |
 | `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | No-SSE-event watchdog (stream stall abort) |
 | `MIMO2API_SESSION_REFRESH_HOURS` | `6` | Background STS renewal sweep |
-| `MIMO2API_STICKY_TTL_S` | `1800` | Sticky-session idle TTL |
-| `MIMO2API_STICKY_MAX` | `500` | Sticky-session LRU cap |
+| `MIMO2API_STICKY_TTL_S` | `1800` | Session idle TTL |
+| `MIMO2API_STICKY_MAX` | `500` | Session LRU cap |
+| `MIMO2API_SESSION_WAIT_MS` | `2000` | How long a second streaming request waits for its own session before forking |
+| `MIMO2API_SESSION_FORK_POLICY` | `wait` | `wait` (then fork) or `fork` (never wait) when a session is already streaming |
 | `MIMO2API_MAX_INFLIGHT_PER_ACCOUNT` | `2` | Per-account concurrency semaphore |
 | `MIMO2API_QUEUE_WAIT_S` | `15` | Acquire queue wait bound |
 | `MIMO2API_KEEPALIVE_INTERVAL_MS` | `15000` | SSE keepalive comment interval |
@@ -124,7 +138,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_SPEECH_MAX_CHARS` | `10000` | `/v1/audio/speech` input cap. The upstream refuses any single synthesis over **1024 characters** ("播报内容长度不能超过1024"), so the gateway splits longer text on sentence boundaries, speaks the pieces and joins the audio — this cap only bounds the total |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
-| `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (sticky continuation with conversation/dialog id and delta size, or full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |
+| `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (session decision with the resolved id/source/frontier, the conversation/dialog id and delta size, or a full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —
 open auth never reaches the network (SDD §5.1).

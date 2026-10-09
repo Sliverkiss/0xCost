@@ -31,9 +31,12 @@ const (
 	DefaultSessionRefresh = 6 * time.Hour
 	DefaultStickyTTL      = 30 * time.Minute
 	DefaultStickyMax      = 500
-	DefaultMaxInflight    = 2
-	DefaultQueueWait      = 15 * time.Second
-	DefaultKeepalive      = 15 * time.Second
+	// DefaultSessionWait bounds how long a second streaming request waits for
+	// its own session before forking (ADR 0009 decision 5).
+	DefaultSessionWait = 2 * time.Second
+	DefaultMaxInflight = 2
+	DefaultQueueWait   = 15 * time.Second
+	DefaultKeepalive   = 15 * time.Second
 
 	// Audio surface (M18): the Studio's own poll cadence is 1s and its task
 	// deadlines are tens of seconds, so these are the honest defaults.
@@ -75,6 +78,8 @@ type Config struct {
 	sessionRefresh   time.Duration
 	stickyTTL        time.Duration
 	stickyMax        int
+	sessionWait      time.Duration
+	sessionFork      string
 	maxInflight      int
 	queueWait        time.Duration
 	keepalive        time.Duration
@@ -118,6 +123,7 @@ func Load() (*Config, error) {
 		sessionRefresh:   DefaultSessionRefresh,
 		stickyTTL:        DefaultStickyTTL,
 		stickyMax:        DefaultStickyMax,
+		sessionWait:      DefaultSessionWait,
 		maxInflight:      DefaultMaxInflight,
 		queueWait:        DefaultQueueWait,
 		keepalive:        DefaultKeepalive,
@@ -158,6 +164,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.stickyTTL, err = getenvSeconds("MIMO2API_STICKY_TTL_S", DefaultStickyTTL); err != nil {
+		return nil, err
+	}
+	if c.sessionWait, err = getenvMillis("MIMO2API_SESSION_WAIT_MS", DefaultSessionWait); err != nil {
+		return nil, err
+	}
+	if c.sessionFork, err = getenvEnum("MIMO2API_SESSION_FORK_POLICY", "wait", "wait", "fork"); err != nil {
 		return nil, err
 	}
 	if c.stickyMax, err = getenvInt("MIMO2API_STICKY_MAX", DefaultStickyMax); err != nil {
@@ -221,10 +233,18 @@ func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
 func (c *Config) SessionRefresh() time.Duration { return c.sessionRefresh }
 func (c *Config) StickyTTL() time.Duration      { return c.stickyTTL }
 func (c *Config) StickyMax() int                { return c.stickyMax }
-func (c *Config) MaxInflight() int              { return c.maxInflight }
-func (c *Config) QueueWait() time.Duration      { return c.queueWait }
-func (c *Config) Keepalive() time.Duration      { return c.keepalive }
-func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
+
+// SessionWait is the bound a second streaming request waits for its session
+// before forking (SDD §4.3.1, REQ-8).
+func (c *Config) SessionWait() time.Duration { return c.sessionWait }
+
+// SessionForkPolicy is "wait" (default) or "fork": whether a busy session is
+// waited for or forked immediately.
+func (c *Config) SessionForkPolicy() string { return c.sessionFork }
+func (c *Config) MaxInflight() int          { return c.maxInflight }
+func (c *Config) QueueWait() time.Duration  { return c.queueWait }
+func (c *Config) Keepalive() time.Duration  { return c.keepalive }
+func (c *Config) AudioPoll() time.Duration  { return c.audioPoll }
 
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
@@ -288,6 +308,19 @@ func ParseAPIKeys(s string) []string {
 		}
 	}
 	return out
+}
+
+// getenvEnum parses one of a fixed set of values (case-insensitive); a value
+// outside the set is a startup error rather than a silent fallback, so a typo
+// can never quietly change policy.
+func getenvEnum(name, def string, allowed ...string) (string, error) {
+	v := strings.ToLower(getenv(name, def))
+	for _, a := range allowed {
+		if v == strings.ToLower(a) {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("%s=%q is not one of %v", name, v, allowed)
 }
 
 func getenv(name, def string) string {

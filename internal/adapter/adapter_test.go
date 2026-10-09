@@ -154,65 +154,6 @@ func TestSplitterMultipleThinkBlocks(t *testing.T) {
 }
 
 // ============================================================================
-// Fingerprint — TDD STICKY-001 (SDD §4.2)
-// ============================================================================
-
-func TestFingerprint(t *testing.T) {
-	base := []Msg{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "hi"},
-	}
-	withSystem := append([]Msg{{Role: "system", Content: "you are helpful"}}, base...)
-
-	t.Run("system prepended does not change fingerprint", func(t *testing.T) {
-		if Fingerprint(base) != Fingerprint(withSystem) {
-			t.Errorf("system message leaked into fingerprint")
-		}
-	})
-
-	t.Run("only last 5 non-system messages counted", func(t *testing.T) {
-		var eight []Msg
-		for i := 0; i < 8; i++ {
-			eight = append(eight, Msg{Role: "user", Content: strings.Repeat("m", i+1)})
-		}
-		var last5 []Msg
-		for i := 3; i < 8; i++ {
-			last5 = append(last5, eight[i])
-		}
-		if Fingerprint(eight) != Fingerprint(last5) {
-			t.Errorf("8-msg fingerprint != last-5 fingerprint")
-		}
-	})
-
-	t.Run("content truncated to 200 chars", func(t *testing.T) {
-		long := []Msg{{Role: "user", Content: strings.Repeat("x", 500)}}
-		trunc := []Msg{{Role: "user", Content: strings.Repeat("x", 200)}}
-		if Fingerprint(long) != Fingerprint(trunc) {
-			t.Errorf("500-char content not truncated to 200")
-		}
-	})
-
-	t.Run("16-byte hex output, deterministic", func(t *testing.T) {
-		fp := Fingerprint(base)
-		if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(fp) {
-			t.Errorf("fingerprint %q not 32 hex chars (16 bytes)", fp)
-		}
-		if fp != Fingerprint(base) {
-			t.Errorf("not deterministic")
-		}
-	})
-}
-
-func TestContinuation(t *testing.T) {
-	t1 := []Msg{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}}
-	t2 := []Msg{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}, {Role: "user", Content: "q2"}}
-	if !Continuation(t2, Fingerprint(t1)) {
-		t.Errorf("t2 should continue t1")
-	}
-	if Continuation(t1, Fingerprint(t1)) {
-		t.Errorf("identical history must not be a continuation (drop>=1 required)")
-	}
-}
 
 // ============================================================================
 // Chunk shaping — TDD API-003 (SDD §5.4)

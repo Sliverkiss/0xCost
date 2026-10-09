@@ -227,10 +227,21 @@ InFlight     int      // fork policy
 CreatedAt / UpdatedAt int64
 ```
 
+**Public ids carry their own scope.** An id we hand out is recognisable without
+stored state: derived ids are `ms-d-<hash of the key>` and minted ids are
+`ms-f-<token>`. A pinned derived id resolves to its session while the request's
+derived inputs still agree (same model, system, tools, opening) — which is the
+normal case, because a client resends its history. If a client pins a derived id
+with a *rewritten* history, the pin is honoured as an opaque id of its own: a
+stable, isolated session that is **never** a chain into the original (the
+alternative is a silent lookalike match, which is the failure this design
+exists to remove). A pinned `ms-f-` token resolves to the same fresh session
+that produced it.
+
 **Verification**: `FrontierHash` is the canonical hash of every non-system
-message up to the frontier (role + content hash, length-prefixed). A request
-chains only if the stored frontier equals a *prefix* of the current history and
-the message count strictly increased. Unlike the current design, verification is
+message up to the frontier (role + content, length-prefixed). A request chains
+only if the stored frontier equals a *prefix* of the current history and the
+message count strictly increased. Unlike the current design, verification is
 over the whole frontier rather than a truncated 5-message window, so history
 edits near the start invalidate the session instead of silently matching.
 

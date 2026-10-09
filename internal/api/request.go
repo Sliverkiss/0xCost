@@ -32,6 +32,12 @@ type chatRequest struct {
 	Temperature *float64        `json:"temperature"`
 	TopP        *float64        `json:"top_p"`
 
+	// SessionID pins the session this request continues (SDD §2.4.1, spec
+	// REQ-2). It is the body carrier of the same extension the
+	// X-Mimo-Session-Id header carries; the header wins when both are present.
+	// Ignored on a one-shot (stream:false) request (REQ-10).
+	SessionID string `json:"session_id"`
+
 	// Thinking opt-ins (SDD §5.2): enable_thinking or
 	// reasoning:{"type":"enabled"}.
 	EnableThinking bool `json:"enable_thinking"`

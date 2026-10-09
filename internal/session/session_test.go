@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -24,19 +25,33 @@ func msgs(pairs ...[2]string) []adapter.Msg {
 	return out
 }
 
-// STICKY-002: continuation match returns the stored slot (SDD §4.2).
+// save stores a slot whose frontier is exactly the given history — what
+// finishTurn does after a completed turn.
+func save(s *Store, key, account, conv, dialog string, frontier []adapter.Msg) {
+	s.Save(Entry{
+		SessionKey:       key,
+		AccountID:        account,
+		ConversationID:   conv,
+		PreviousDialogID: dialog,
+		FrontierHash:     adapter.FrontierHash(frontier),
+		MsgCount:         adapter.CountNonSystem(frontier),
+	})
+}
+
+func turn(n int) []adapter.Msg {
+	out := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
+	for i := 2; i <= n; i++ {
+		out = append(out, adapter.Msg{Role: "user", Content: "q" + strconv.Itoa(i)})
+		out = append(out, adapter.Msg{Role: "assistant", Content: "a" + strconv.Itoa(i)})
+	}
+	return out
+}
+
+// STICKY-002 (keyed): a verified continuation returns the stored slot.
 func TestLookupContinuationMatch(t *testing.T) {
 	s, _ := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{
-		AccountID:        "acc1",
-		ConversationID:   "conv1",
-		PreviousDialogID: "dlg1",
-		Fingerprint:      adapter.Fingerprint(t1),
-		MsgCount:         2,
-	})
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	got, ok := s.Lookup(t2)
+	save(s, "key-1", "acc1", "conv1", "dlg1", turn(1))
+	got, ok := s.Lookup("key-1", turn(2))
 	if !ok {
 		t.Fatal("expected hit on continuation")
 	}
@@ -48,40 +63,84 @@ func TestLookupContinuationMatch(t *testing.T) {
 // STICKY-003: replay guard — identical history is a miss.
 func TestLookupReplayGuard(t *testing.T) {
 	s, _ := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{
-		AccountID:      "acc1",
-		ConversationID: "conv1",
-		Fingerprint:    adapter.Fingerprint(t1),
-		MsgCount:       2,
-	})
-	if _, ok := s.Lookup(t1); ok {
+	save(s, "key-1", "acc1", "conv1", "dlg1", turn(1))
+	if _, ok := s.Lookup("key-1", turn(1)); ok {
 		t.Error("identical history must be a miss (regeneration, not continuation)")
 	}
 }
 
-// STICKY-004: multiple matches → newest UpdatedAt wins.
-func TestLookupNewestWins(t *testing.T) {
-	s, fc := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "old", ConversationID: "c-old", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
-	fc.Advance(10 * time.Minute)
-	s.Save(Entry{AccountID: "new", ConversationID: "c-new", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	got, ok := s.Lookup(t2)
-	if !ok || got.AccountID != "new" {
-		t.Errorf("expected newest entry to win, got %+v ok=%v", got, ok)
+// STICKY-004 is retired (ADR 0009): with a session-keyed index there is no
+// "multiple matches → newest wins" — two sessions are simply two entries. What
+// replaces it is that entries never leak across keys.
+func TestLookupIsScopedToItsKey(t *testing.T) {
+	s, _ := newTestStore(t)
+	save(s, "key-1", "acc1", "conv1", "dlg1", turn(1))
+	if _, ok := s.Lookup("key-2", turn(2)); ok {
+		t.Error("a different session key must not see key-1's entry")
+	}
+	got, ok := s.Lookup("key-1", turn(2))
+	if !ok || got.AccountID != "acc1" {
+		t.Errorf("key-1 lookup = %+v ok=%v", got, ok)
+	}
+}
+
+// SESS-011: verification over the whole frontier — a stored frontier that is
+// not a prefix of this history is a miss, even under the right key.
+func TestSess011FrontierMismatchIsAMiss(t *testing.T) {
+	s, _ := newTestStore(t)
+	save(s, "key-1", "acc1", "conv1", "dlg1", turn(1))
+	other := msgs([2]string{"user", "different"}, [2]string{"assistant", "a1"},
+		[2]string{"user", "q2"}, [2]string{"assistant", "a2"})
+	if _, ok := s.Lookup("key-1", other); ok {
+		t.Error("a different history must not chain, even with the same length")
+	}
+}
+
+// SESS-012: editing history near the start invalidates the session — the old
+// 5-message/200-rune window would have matched a lookalike.
+func TestSess012EditedEarlyTurnIsAMiss(t *testing.T) {
+	s, _ := newTestStore(t)
+	long := make([]adapter.Msg, 0, 12)
+	long = append(long, adapter.Msg{Role: "user", Content: "original first question"})
+	long = append(long, adapter.Msg{Role: "assistant", Content: "first answer"})
+	for i := 2; i <= 6; i++ {
+		long = append(long, adapter.Msg{Role: "user", Content: "q" + strconv.Itoa(i)})
+		long = append(long, adapter.Msg{Role: "assistant", Content: "a" + strconv.Itoa(i)})
+	}
+	save(s, "key-1", "acc1", "conv1", "dlg1", long)
+
+	edited := append([]adapter.Msg{{Role: "user", Content: "EDITED first question"}}, long[1:]...)
+	edited = append(edited, adapter.Msg{Role: "user", Content: "q7"})
+	if _, ok := s.Lookup("key-1", edited); ok {
+		t.Error("editing the first turn must force a replay, not a chain")
+	}
+}
+
+// SESS-053: lookup cost is independent of how many sessions are stored. A
+// content-scanning implementation (the design this replaces) grows with the
+// store; a keyed one computes at most two frontier hashes.
+func TestSess053LookupCostIsConstant(t *testing.T) {
+	s, _ := newTestStore(t)
+	for i := 0; i < 500; i++ {
+		key := "key-" + strconv.Itoa(i)
+		save(s, key, "acc"+strconv.Itoa(i), "conv"+strconv.Itoa(i), "dlg", turn(1))
+	}
+	save(s, "target", "acc-t", "conv-t", "dlg-t", turn(1))
+	before := s.HashOps()
+	if _, ok := s.Lookup("target", turn(2)); !ok {
+		t.Fatal("expected a hit on the target session")
+	}
+	if ops := s.HashOps() - before; ops > 2 {
+		t.Errorf("lookup computed %d frontier hashes with 500 sessions stored, want ≤2 (a scan would scale)", ops)
 	}
 }
 
 // STICKY-006: TTL expiry — entry expires after idle TTL.
 func TestTTLExpiry(t *testing.T) {
 	s, fc := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
+	save(s, "key-1", "a", "c", "d", turn(1))
 	fc.Advance(31 * time.Minute)
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	if _, ok := s.Lookup(t2); ok {
+	if _, ok := s.Lookup("key-1", turn(2)); ok {
 		t.Error("expired entry must not hit")
 	}
 	if n := s.Sweep(); n != 1 {
@@ -95,17 +154,14 @@ func TestTTLExpiry(t *testing.T) {
 // STICKY-012: idle-based (sliding) TTL — activity slides UpdatedAt forward.
 func TestSlidingTTL(t *testing.T) {
 	s, fc := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
+	save(s, "key-1", "a", "c", "d", turn(1))
 	fc.Advance(29 * time.Minute)
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	if _, ok := s.Lookup(t2); !ok {
+	if _, ok := s.Lookup("key-1", turn(2)); !ok {
 		t.Fatal("expected hit at age 29m")
 	}
 	// The hit slid updated_at forward; advancing another 2m must stay inside TTL.
 	fc.Advance(2 * time.Minute)
-	t3 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"}, [2]string{"assistant", "a2"}, [2]string{"user", "q3"})
-	if _, ok := s.Lookup(t3); !ok {
+	if _, ok := s.Lookup("key-1", turn(3)); !ok {
 		t.Error("expected hit after activity slid TTL forward (29m + 2m)")
 	}
 }
@@ -114,31 +170,17 @@ func TestSlidingTTL(t *testing.T) {
 func TestLRUEviction(t *testing.T) {
 	fc := testutil.NewFakeClock()
 	s := New(Options{TTL: time.Hour, Max: 500, Now: fc.Now})
-	var firstFp []adapter.Msg
 	for i := 0; i < 501; i++ {
-		m := msgs([2]string{"user", "q" + strconv.Itoa(i)}, [2]string{"assistant", "a" + strconv.Itoa(i)})
-		if i == 0 {
-			firstFp = m
-		}
-		s.Save(Entry{
-			AccountID:      "a",
-			ConversationID: "c" + strconv.Itoa(i),
-			Fingerprint:    adapter.Fingerprint(m),
-			MsgCount:       2,
-		})
+		save(s, "key-"+strconv.Itoa(i), "a", "c"+strconv.Itoa(i), "d", turn(1))
 		fc.Advance(time.Second)
 	}
 	if s.Len() != 500 {
 		t.Fatalf("Len = %d, want 500", s.Len())
 	}
-	// The oldest entry (c0) must be gone; a continuation of its history misses.
-	ext := append(append([]adapter.Msg{}, firstFp...), adapter.Msg{Role: "user", Content: "next"})
-	if _, ok := s.Lookup(ext); ok {
+	if _, ok := s.Lookup("key-0", turn(2)); ok {
 		t.Error("evicted entry must not hit")
 	}
-	// The newest entry (c500) must still be present.
-	last := msgs([2]string{"user", "q500"}, [2]string{"assistant", "a500"}, [2]string{"user", "x"})
-	if _, ok := s.Lookup(last); !ok {
+	if _, ok := s.Lookup("key-500", turn(2)); !ok {
 		t.Error("newest entry must survive eviction")
 	}
 }
@@ -146,8 +188,7 @@ func TestLRUEviction(t *testing.T) {
 // STICKY-013: persistence round-trip.
 func TestPersistenceRoundTrip(t *testing.T) {
 	s, _ := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", PreviousDialogID: "d", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
+	save(s, "key-1", "a", "c", "d", turn(1))
 	snap := s.Snapshot()
 
 	s2, _ := newTestStore(t)
@@ -155,8 +196,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if s2.Len() != 1 {
 		t.Fatalf("restored Len = %d", s2.Len())
 	}
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	got, ok := s2.Lookup(t2)
+	got, ok := s2.Lookup("key-1", turn(2))
 	if !ok || got.ConversationID != "c" || got.PreviousDialogID != "d" {
 		t.Errorf("restored lookup = %+v ok=%v", got, ok)
 	}
@@ -165,11 +205,9 @@ func TestPersistenceRoundTrip(t *testing.T) {
 // Delete removes the slot so subsequent lookups miss.
 func TestDelete(t *testing.T) {
 	s, _ := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
-	s.Delete("a", "c")
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	if _, ok := s.Lookup(t2); ok {
+	save(s, "key-1", "a", "c", "d", turn(1))
+	s.Delete("key-1")
+	if _, ok := s.Lookup("key-1", turn(2)); ok {
 		t.Error("deleted entry must not hit")
 	}
 }
@@ -177,31 +215,80 @@ func TestDelete(t *testing.T) {
 // UpdateDialog advances the chaining anchor and refreshes activity.
 func TestUpdateDialog(t *testing.T) {
 	s, fc := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
+	save(s, "key-1", "a", "c", "d1", turn(1))
 	fc.Advance(29 * time.Minute)
-	s.UpdateDialog("a", "c", "dlg-2")
+	s.UpdateDialog("key-1", "dlg-2", turn(1))
 	fc.Advance(29 * time.Minute) // 58m total, but UpdateDialog slid updated_at
-	t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-	got, ok := s.Lookup(t2)
+	got, ok := s.Lookup("key-1", turn(2))
 	if !ok || got.PreviousDialogID != "dlg-2" {
 		t.Errorf("lookup after UpdateDialog = %+v ok=%v", got, ok)
 	}
 }
 
+// The frontier advances when a turn starts, so a client that disconnects after
+// its message was consumed does not re-send it next time (STICKY-010).
+func TestLookupAdvancesTheFrontier(t *testing.T) {
+	s, _ := newTestStore(t)
+	save(s, "key-1", "a", "c", "d", turn(1))
+	if _, ok := s.Lookup("key-1", turn(2)); !ok {
+		t.Fatal("expected a hit")
+	}
+	e, _ := s.Get("key-1")
+	if e.MsgCount != adapter.CountNonSystem(turn(2)) {
+		t.Errorf("stored frontier count = %d, want %d", e.MsgCount, adapter.CountNonSystem(turn(2)))
+	}
+	if e.FrontierHash != adapter.FrontierHash(turn(2)) {
+		t.Error("stored frontier hash did not advance to the consumed history")
+	}
+}
+
+// SESS-020/021 at the store level: one holder at a time, waiters either get the
+// session or give up at the bound (the fork decision is the caller's).
+func TestAcquireSerialisesOneSession(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	if held, waited := s.Acquire(ctx, "key-1", time.Second); !held || waited {
+		t.Fatalf("first acquire = held=%v waited=%v, want a free session", held, waited)
+	}
+	if held, _ := s.Acquire(ctx, "key-1", 0); held {
+		t.Error("second acquire must not hold the session while the first does")
+	}
+	if s.InFlight("key-1") != 1 {
+		t.Errorf("in-flight = %d, want 1", s.InFlight("key-1"))
+	}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		s.Release("key-1")
+	}()
+	held, waited := s.Acquire(ctx, "key-1", time.Second)
+	if !held || !waited {
+		t.Errorf("waiter = held=%v waited=%v, want it to acquire after the release", held, waited)
+	}
+	s.Release("key-1")
+
+	if held, _ := s.Acquire(ctx, "key-1", 0); !held {
+		t.Fatal("expected to hold the now-free session")
+	}
+	if held, waited := s.Acquire(ctx, "key-1", 20*time.Millisecond); held || !waited {
+		t.Errorf("Acquire with a held session and a short bound = held=%v waited=%v, want a fork decision", held, waited)
+	}
+	s.Release("key-1")
+}
+
 // Concurrent access under -race (TDD §1.5).
 func TestConcurrentAccess(t *testing.T) {
 	s, _ := newTestStore(t)
-	t1 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"})
-	s.Save(Entry{AccountID: "a", ConversationID: "c", Fingerprint: adapter.Fingerprint(t1), MsgCount: 2})
+	save(s, "key-1", "a", "c", "d", turn(1))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for i := 0; i < 500; i++ {
-			t2 := msgs([2]string{"user", "q1"}, [2]string{"assistant", "a1"}, [2]string{"user", "q2"})
-			s.Lookup(t2)
+			s.Lookup("key-1", turn(2))
 			s.Len()
 			s.Sweep()
+			s.Acquire(context.Background(), "key-1", 0)
+			s.Release("key-1")
 		}
 	}()
 	<-done
