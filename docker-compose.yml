@@ -61,8 +61,12 @@ services:
     image: mimo2api-toolforge
     container_name: mimo2api-toolforge
     ports:
-      # the deployment's single entry point: host 21223 -> the tool layer's 8080
-      - "21223:8080"
+      # The deployment's single entry point, on the LOOPBACK ONLY: TLS and the
+      # public hostname belong to the reverse proxy in front (Caddy terminates
+      # :443 and proxies to 127.0.0.1:21223), so nothing needs to reach this port
+      # from outside. Keep it off 0.0.0.0 — an exposed API port is an exposed
+      # credential, and every other service on this host binds 127.0.0.1 too.
+      - "127.0.0.1:21223:8080"
     environment:
       - MIMO2API_TOOL_KEY=${MIMO2API_TOOL_KEY:-}
       - MIMO2API_UPSTREAM_URL=http://mimo2api:8080/v1

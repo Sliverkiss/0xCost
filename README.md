@@ -22,8 +22,11 @@ printf 'MIMO2API_TOOL_KEY=%s\n' "your-key" > data/deploy.env
 # failure — `open /data/accounts.json: permission denied`, restart loop.
 chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/accounts.json
 
-# 3. run — publishes host 21223 → the tool layer, which serves /v1/chat/completions
-#    with function calling, and proxies every other path to the gateway verbatim
+# 3. run — publishes host 21223 on the LOOPBACK ONLY → the tool layer, which serves
+#    /v1/chat/completions with function calling and proxies every other path to the
+#    gateway verbatim. TLS and the public hostname are the reverse proxy's job
+#    (Caddy terminates :443 and proxies to 127.0.0.1:21223), so this port never
+#    needs to be reachable from outside — an exposed API port is an exposed key.
 docker compose --env-file data/deploy.env up -d --build
 
 # 4. use — same key and same base_url for chat, audio and the admin surface
@@ -41,7 +44,9 @@ If the very first `up` prints `dependency failed to start: container mimo2api
 is unhealthy`, run `up -d` once more: the gateway's health window (30 s
 `start_period`) can outlast the dependency wait on a cold start. The gateway's
 own 8080 is deliberately **not** published — the compose network is its only
-route, and 21223 is the deployment's single entry point.
+route — and 21223 is bound to `127.0.0.1`, so the only public path in is the
+reverse proxy. Verify with `ss -ltn | grep 21223` (want `127.0.0.1`) and
+`curl --max-time 5 http://<public-ip>:21223/healthz` (want a refusal).
 
 The image is a multi-stage build: `golang:1.25-alpine` compile
 (`CGO_ENABLED=0`, static) into `distroless/static-debian12:nonroot` (~10 MB).
