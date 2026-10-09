@@ -14,8 +14,8 @@ import (
 	"github.com/yg/mimo2api/internal/api"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/testutil"
 	"github.com/yg/mimo2api/internal/session"
+	"github.com/yg/mimo2api/internal/testutil"
 )
 
 // TestAccount describes one scripted account for NewTestServer.
@@ -165,4 +165,3 @@ func (ts *TestServer) Get(path, apiKey string) (*http.Response, error) {
 	}
 	return ts.Server.Client().Do(req)
 }
-

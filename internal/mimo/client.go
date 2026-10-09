@@ -232,10 +232,14 @@ type ChatResult struct {
 
 // UpstreamError is a non-200 chat response. StatusCode drives pool health
 // (429/5xx cooldown, 401 auth refresh, 451/461 disable) and API error
-// mapping (SDD §7.4, TDD ERRMAP-006..008).
+// mapping (SDD §7.4, TDD ERRMAP-006..008). Headers are kept for diagnostics
+// only — a Retry-After is never echoed to the client (TDD ERRMAP-011 privacy
+// invariant), but it is what an operator needs in the log and what LIVE-007
+// inspects for a structured 429 deadline.
 type UpstreamError struct {
 	StatusCode int
 	Body       string
+	Headers    http.Header
 }
 
 func (e *UpstreamError) Error() string {
@@ -326,7 +330,7 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		ue := &UpstreamError{StatusCode: resp.StatusCode, Body: string(errBody)}
+		ue := &UpstreamError{StatusCode: resp.StatusCode, Body: string(errBody), Headers: resp.Header.Clone()}
 		if resp.StatusCode == http.StatusUnauthorized {
 			return nil, AuthError(ue)
 		}

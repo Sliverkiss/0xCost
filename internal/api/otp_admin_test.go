@@ -66,11 +66,11 @@ func newOTPAdminStack(t *testing.T) *otpAdminStack {
 		PassportHosts: []string{passport.Host()},
 	})
 	apiSrv := New(Options{
-		APIKeys:   []string{"sk-admin-test"},
-		Pool:      p,
-		Accounts:  store,
-		Sessions:  session.New(session.Options{}),
-		Client:    client,
+		APIKeys:  []string{"sk-admin-test"},
+		Pool:     p,
+		Accounts: store,
+		Sessions: session.New(session.Options{}),
+		Client:   client,
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)

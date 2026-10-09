@@ -520,6 +520,20 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 	if acct.Phone == "" || acct.Password == "" {
 		return "", "", fmt.Errorf("account %s has no session and no login credentials", accountID)
 	}
+	// Renewal before password login: a stored passToken re-mints the session
+	// with no user interaction, while the password path re-runs the whole
+	// verification chain (new-device OTP = a human, SDD §2.3 / TDD LIVE-006).
+	if acct.UserID != "" && acct.PassToken != "" {
+		sess, rerr := s.client.Renew(ctx, acct.UserID, acct.PassToken)
+		if rerr == nil {
+			acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
+			if uerr := s.store.Update(acct); uerr != nil {
+				s.logger.Printf("accounts: persist renewed session for %s: %v", accountID, uerr)
+			}
+			return sess.Cookie, sess.PH, nil
+		}
+		s.logger.Printf("accounts: renewal for %s failed (%v), falling back to password login", accountID, rerr)
+	}
 	sess, err := s.client.Login(ctx, acct.Phone, acct.Password)
 	if err != nil {
 		// New-device OTP demand auto-started a challenge: register it for

@@ -104,7 +104,7 @@ func TestEnvOverrides(t *testing.T) {
 		"MIMO2API_LOG_LEVEL":                "debug",
 		"MIMO2API_REPLAY_CAP":               "3",
 		"MIMO2API_PROBE_INTERVAL_S":         "11",
-		"MIMO2API_OTP_AUTO":                "false",
+		"MIMO2API_OTP_AUTO":                 "false",
 	})
 	c, err := Load()
 	if err != nil {

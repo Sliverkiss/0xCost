@@ -36,13 +36,13 @@ type Server struct {
 
 // Options configures a Server.
 type Options struct {
-	APIKeys      []string     // parsed list; empty = open auth
+	APIKeys      []string // parsed list; empty = open auth
 	Pool         *pool.Pool
 	Accounts     *accounts.Store
 	Sessions     *session.Store
 	Client       *mimo.Client
-	DefaultModel string       // "auto"/missing model resolution (SDD §5.2)
-	ReplayCap    int          // max replayed user turns (SDD §5.3B, default 20)
+	DefaultModel string        // "auto"/missing model resolution (SDD §5.2)
+	ReplayCap    int           // max replayed user turns (SDD §5.3B, default 20)
 	Keepalive    time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
 	Logger       *log.Logger
 }

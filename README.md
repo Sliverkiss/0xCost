@@ -132,10 +132,25 @@ cooldowns, disabled reasons survive restarts):
 ## Development
 
 ```bash
-go build ./... && go vet ./...
-go test -race ./...                 # full suite (LIVE excluded by default)
-MIMO2API_LIVE=1 go test ./internal/live -v -count=1 -timeout 30m  # live protocol suite
-make test-docker                    # DOCKER-001..006 (skips without docker)
+make help          # list every target
+make build vet fmt # compile, vet, gofmt gate
+make test          # go test ./... (LIVE-*/DOCKER-* skips are expected)
+make test-race     # required gate: the whole suite under -race
+make cover-check   # per-package coverage floors (docs/TDD.md §6.2)
+make hygiene       # §6.7: no real credentials anywhere outside data/
+make test-docker   # DOCKER-001..006 (skips when docker is absent)
 ```
 
-Stdlib only — `go.mod` carries zero dependencies.
+Live protocol suite (real upstream, real account, opt-in):
+
+```bash
+MIMO2API_LIVE=1 go test ./internal/live -v -count=1 -timeout 30m
+```
+
+It runs against a **copy** of the operator's `data/accounts.json`, paces its
+upstream calls, and never auto-solves a challenge — a new-device OTP demand
+skips unless `MIMO2API_LIVE_OTP_CODE` is supplied. Switches and the last
+run's findings: `internal/live/README.md`, `docs/live-findings.md`.
+
+Stdlib only — `go.mod` carries zero dependencies (the docker harness adds a
+throwaway Python mock upstream on the *host* side; the image stays distroless).

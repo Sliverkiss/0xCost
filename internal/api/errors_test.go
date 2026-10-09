@@ -48,8 +48,8 @@ func TestERRMAPBadKey(t *testing.T) {
 func TestERRMAPMalformedAndNoUser(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	for _, body := range []string{
-		`{"messages":[`,                           // broken JSON
-		`{"model":"mimo-v2.6-pro","messages":[]}`,  // empty messages
+		`{"messages":[`, // broken JSON
+		`{"model":"mimo-v2.6-pro","messages":[]}`,                                          // empty messages
 		`{"model":"mimo-v2.6-pro","messages":[{"role":"system","content":"only system"}]}`, // no user turn
 	} {
 		resp, err := ts.Chat(body, "")

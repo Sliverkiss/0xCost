@@ -72,9 +72,9 @@ type RenewFunc func(ctx context.Context, accountID string) error
 // authError marks probe errors that warrant an STS renewal attempt.
 type authError struct{ err error }
 
-func (authError) Error() string         { return "auth expired" }
-func (a authError) Unwrap() error       { return a.err }
-func (authError) IsAuthExpired() bool   { return true }
+func (authError) Error() string       { return "auth expired" }
+func (a authError) Unwrap() error     { return a.err }
+func (authError) IsAuthExpired() bool { return true }
 
 // AuthError wraps an error as an auth-expired signal (used by the mimo
 // client and probes).
@@ -103,19 +103,19 @@ type account struct {
 	disabled      bool
 	permanent     bool // 461: never auto-recovers (SDD §4.6, TDD POOL-012)
 	reason        string
-	failStreak    int     // consecutive cooldown-triggering failures
+	failStreak    int           // consecutive cooldown-triggering failures
 	sem           chan struct{} // in-flight semaphore; len() is the inflight count
-	ewmaLatency   float64 // seconds, EWMA alpha 0.2 (SDD §4.4)
+	ewmaLatency   float64       // seconds, EWMA alpha 0.2 (SDD §4.4)
 }
 
 // Pool is the account pool. One mutex guards selection and state; in-flight
 // slots are buffered channels, so Release needs no lock (SDD §3: pool ops
 // are microseconds).
 type Pool struct {
-	mu        sync.Mutex
-	accounts  []*account // stable order (selection tie-break)
-	byID      map[string]*account
-	cursor    int // round-robin rotation within the selection band
+	mu          sync.Mutex
+	accounts    []*account // stable order (selection tie-break)
+	byID        map[string]*account
+	cursor      int // round-robin rotation within the selection band
 	maxInflight int
 	queueWait   time.Duration
 	cd429       time.Duration
@@ -172,8 +172,8 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 			continue
 		}
 		acc := &account{
-			id:   a.ID,
-			sem:  make(chan struct{}, opts.MaxInflight),
+			id:  a.ID,
+			sem: make(chan struct{}, opts.MaxInflight),
 		}
 		switch State(a.State) {
 		case StateDisabled:

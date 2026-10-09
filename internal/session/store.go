@@ -24,18 +24,18 @@ type Entry struct {
 // Store is the in-process sticky-session store. Own mutex; TTL + LRU enforced
 // lazily on access plus via an explicit Sweep for the background janitor.
 type Store struct {
-	mu       sync.Mutex
-	entries  map[string]*Entry // key: accountID + ":" + conversationID
-	ttl      time.Duration
-	max      int
-	now      func() time.Time
-	lookups  int // total Lookup calls (test instrument, TDD NOSTICK-003)
+	mu      sync.Mutex
+	entries map[string]*Entry // key: accountID + ":" + conversationID
+	ttl     time.Duration
+	max     int
+	now     func() time.Time
+	lookups int // total Lookup calls (test instrument, TDD NOSTICK-003)
 }
 
 // Options configures a Store.
 type Options struct {
-	TTL time.Duration   // idle TTL (default 30m, SDD §4.3)
-	Max int             // LRU cap (default 500, SDD §4.3)
+	TTL time.Duration // idle TTL (default 30m, SDD §4.3)
+	Max int           // LRU cap (default 500, SDD §4.3)
 	Now func() time.Time
 }
 

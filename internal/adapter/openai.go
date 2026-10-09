@@ -124,11 +124,11 @@ type MiMoUsage struct {
 
 // NativeUsage mirrors upstream nativeUsage (snake_case fields).
 type NativeUsage struct {
-	PromptTokens      int             `json:"prompt_tokens"`
-	CompletionTokens  int             `json:"completion_tokens"`
-	TotalTokens       int             `json:"total_tokens"`
-	PromptDetails     *NativeCached  `json:"prompt_tokens_details,omitempty"`
-	CompletionDetails *NativeThink   `json:"completion_tokens_details,omitempty"`
+	PromptTokens      int           `json:"prompt_tokens"`
+	CompletionTokens  int           `json:"completion_tokens"`
+	TotalTokens       int           `json:"total_tokens"`
+	PromptDetails     *NativeCached `json:"prompt_tokens_details,omitempty"`
+	CompletionDetails *NativeThink  `json:"completion_tokens_details,omitempty"`
 }
 
 // NativeCached is nativeUsage.prompt_tokens_details.
