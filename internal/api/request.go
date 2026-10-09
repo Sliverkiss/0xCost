@@ -38,13 +38,21 @@ type chatRequest struct {
 	// Ignored on a one-shot (stream:false) request (REQ-10).
 	SessionID string `json:"session_id"`
 
-	// Thinking opt-ins (SDD §5.2): enable_thinking or
-	// reasoning:{"type":"enabled"}.
-	EnableThinking bool `json:"enable_thinking"`
-	// Search controls (M19). web_search_status maps 1:1 onto the upstream
-	// modelConfig.webSearchStatus; the model suffix ":online" is shorthand
-	// for "enabled" (TDD WS-001/003).
-	WebSearchStatus string `json:"web_search_status"`
+	// Thinking controls. The OpenAI-standard spelling is `reasoning_effort`
+	// (none|minimal|low|medium|high): anything but "none" turns the model's
+	// thinking on. The upstream switch is a boolean, so the level itself has
+	// nothing to map onto and is accepted as the opt-in it implies. The two
+	// spellings this API carried first — `enable_thinking` and
+	// reasoning:{"type":"enabled"} — still work when the standard field is
+	// absent (SDD §5.2).
+	ReasoningEffort string `json:"reasoning_effort"`
+	EnableThinking  bool   `json:"enable_thinking"`
+	// Search controls. OpenAI's `web_search_options` is the standard spelling
+	// (present = search this turn); `web_search_status` keeps the finer
+	// disabled|auto|enabled control and wins when both are given; the ":online"
+	// model suffix stays as the shorthand (TDD WS-001/003, OSTD-004..006).
+	WebSearchOptions *webSearchOptions `json:"web_search_options"`
+	WebSearchStatus  string            `json:"web_search_status"`
 	// IncludeCitations defaults to true: false suppresses the citations /
 	// annotations in the response while the upstream still searches.
 	IncludeCitations *bool          `json:"include_citations"`
@@ -70,11 +78,20 @@ type reasoningBody struct {
 	Type string `json:"type"`
 }
 
+// webSearchOptions is OpenAI's search knob for chat/completions. The upstream
+// switch knows only disabled|auto|enabled, so search_context_size is accepted,
+// validated and then reported as dropped (X-Mimo-Warnings) rather than silently
+// pretended to matter (SDD §5.2).
+type webSearchOptions struct {
+	SearchContextSize string `json:"search_context_size"`
+}
+
 // knownRequestFields is the set of top-level fields this API understands;
 // anything outside it is reported (never rejected, SDD §5.2).
 var knownRequestFields = map[string]bool{
 	"model": true, "messages": true, "stream": true, "temperature": true,
 	"top_p": true, "enable_thinking": true, "reasoning": true,
+	"reasoning_effort": true, "web_search_options": true,
 	"web_search_status": true, "include_citations": true,
 	"max_tokens": true, "max_completion_tokens": true, "tools": true,
 	"tool_choice": true, "functions": true, "response_format": true,
@@ -107,13 +124,44 @@ func decodeChatRequest(r *http.Request) (*chatRequest, error) {
 	return req, nil
 }
 
-// thinkingEnabled resolves the two opt-in spellings (SDD §5.2, TDD
-// API-010/011).
+// thinkingEnabled resolves the thinking opt-ins (SDD §5.2, TDD API-010/011,
+// OSTD-001..003). The standard `reasoning_effort` decides whenever it is
+// present — including "none", which is the explicit off switch — and the older
+// spellings only apply when it is absent.
 func (req *chatRequest) thinkingEnabled() bool {
+	if v := strings.ToLower(strings.TrimSpace(req.ReasoningEffort)); v != "" {
+		return v != "none"
+	}
 	if req.EnableThinking {
 		return true
 	}
 	return req.Reasoning != nil && strings.EqualFold(req.Reasoning.Type, "enabled")
+}
+
+// reasoningEffortErr validates the standard field's value (OpenAI: minimal,
+// low, medium, high; "none" is the explicit off switch). A typo is a 400 naming
+// the accepted values — never a knob that is quietly ignored.
+func (r chatRequest) reasoningEffortErr() error {
+	switch strings.ToLower(strings.TrimSpace(r.ReasoningEffort)) {
+	case "", "none", "minimal", "low", "medium", "high":
+		return nil
+	default:
+		return errUnsupportedReasoningEffort
+	}
+}
+
+// webSearchOptionsErr validates OpenAI's search_context_size (low|medium|high).
+// The size has no upstream equivalent and is reported through X-Mimo-Warnings.
+func (r chatRequest) webSearchOptionsErr() error {
+	if r.WebSearchOptions == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(r.WebSearchOptions.SearchContextSize)) {
+	case "", "low", "medium", "high":
+		return nil
+	default:
+		return errUnsupportedSearchContextSize
+	}
 }
 
 // toAdapterMsgs flattens content parts: string content passes through;
@@ -196,6 +244,12 @@ func (req *chatRequest) droppedFields() []string {
 	}
 	if req.User != "" {
 		dropped = append(dropped, "user")
+	}
+	// OpenAI's search_context_size has no upstream counterpart (the switch is
+	// disabled|auto|enabled): search happens as asked, and the client is told
+	// the granularity was not honoured instead of assuming it was.
+	if req.WebSearchOptions != nil && strings.TrimSpace(req.WebSearchOptions.SearchContextSize) != "" {
+		dropped = append(dropped, "web_search_options.search_context_size")
 	}
 	return append(dropped, req.Other...)
 }

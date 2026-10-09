@@ -1005,11 +1005,21 @@ Supported request fields:
 | `temperature`, `top_p` | Forwarded inside `modelConfig` (mimo-web-proxy sends `temperature:0.8, top_p:0.95` defaults, `web_client.go:127-140`); pass through when provided, else omit. |
 | `max_tokens` / `max_completion_tokens` | Not supported upstream; ignored (warning header). |
 | `tools`, `tool_choice`, `functions`, `response_format`, `n`, `seed`, ... | Stripped, not rejected. `X-Mimo-Warnings` response header lists dropped fields. |
+| `reasoning_effort` | **Standard thinking knob.** `none` → `enableThinking:false`; `minimal`/`low`/`medium`/`high` → `true` (the upstream switch is boolean, so the level itself has nothing to map onto). Anything else → 400 `unsupported_reasoning_effort`, before any account work. |
+| `web_search_options` | **Standard search knob.** Presence → `modelConfig.webSearchStatus:"enabled"`. `search_context_size` (`low`/`medium`/`high`) is validated and then reported in `X-Mimo-Warnings`, because the upstream switch has no size axis; an unknown size → 400 `unsupported_search_context_size`. |
 
-`reasoning_effort`/thinking: expose a non-standard opt-in — request field
-`enable_thinking: true` (or `reasoning: {"type":"enabled"}` a la simple-chat
-`openai.go:355-417`) → `modelConfig.enableThinking: true` → reasoning surfaced as
-`reasoning_content` deltas (marker splitting per §2.5). Default: off.
+Thinking and search both lead with the **standard** OpenAI field (see the
+table). The two thinking spellings this API carried first — `enable_thinking: true`
+and `reasoning: {"type":"enabled"}` (a la simple-chat `openai.go:355-417`) — still
+work when `reasoning_effort` is absent; whenever it is present it decides,
+including `none` as the explicit off switch. Either opt-in →
+`modelConfig.enableThinking: true` → reasoning surfaced as `reasoning_content`
+(marker splitting per §2.5). Default: off.
+
+Search: `web_search_options` (presence = search this turn) is the standard
+spelling; `web_search_status` remains for the finer `disabled`/`auto`/`enabled`
+control and wins when both are given, and the `:online` model suffix stays as the
+shorthand. **The model id is never renamed to carry an option.**
 
 ### 5.3 Turn planning (the multi-turn problem)
 

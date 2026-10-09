@@ -50,6 +50,12 @@ func writeError(w http.ResponseWriter, status int, typ, code, message string, re
 var (
 	errUnsupportedContent = errors.New("unsupported content part")
 	errMalformedRequest   = errors.New("malformed request body")
+	// errUnsupportedReasoningEffort: a reasoning_effort outside the OpenAI set
+	// (none|minimal|low|medium|high).
+	errUnsupportedReasoningEffort = errors.New("unsupported reasoning_effort")
+	// errUnsupportedSearchContextSize: web_search_options.search_context_size
+	// outside low|medium|high.
+	errUnsupportedSearchContextSize = errors.New("unsupported search_context_size")
 	// errUnsupportedSearchStatus: a search switch outside disabled|auto|
 	// enabled would be silently coerced upstream, hiding a client typo
 	// (M19).
@@ -195,6 +201,14 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016). The message names
 		// the measured size and the limit, so a caller can act on it.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long", tooLong.Error(), 0)
+	case errors.Is(err, errUnsupportedReasoningEffort):
+		// OpenAI's standard thinking knob, spelled wrong (OSTD-003).
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_reasoning_effort",
+			"reasoning_effort must be one of: none, minimal, low, medium, high", 0)
+	case errors.Is(err, errUnsupportedSearchContextSize):
+		// OpenAI's search_context_size, spelled wrong (OSTD-005).
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_search_context_size",
+			"web_search_options.search_context_size must be one of: low, medium, high", 0)
 	case errors.Is(err, errUnsupportedSearchStatus):
 		// Search switch (M19, TDD WS-002).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_search_status",

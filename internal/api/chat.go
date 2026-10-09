@@ -42,13 +42,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Search switch (M19, TDD WS-001/002/003). The ":online" model suffix is
-	// shorthand for web_search_status=enabled; an explicit field wins when
-	// both are present.
+	// The two OpenAI-standard knobs are validated before any pool interaction:
+	// a typo must not cost an upstream turn, and it must be named (OSTD-003/005).
+	if err := req.reasoningEffortErr(); err != nil {
+		s.MapError(w, err)
+		return
+	}
+	if err := req.webSearchOptionsErr(); err != nil {
+		s.MapError(w, err)
+		return
+	}
+
+	// Search switch (M19, TDD WS-001/002/003). OpenAI's web_search_options is
+	// the standard spelling and means "search this turn"; web_search_status
+	// keeps the finer disabled|auto|enabled control and wins when both are
+	// given, and the ":online" model suffix stays as the shorthand.
 	search, err := req.searchStatus()
 	if err != nil {
 		s.MapError(w, err)
 		return
+	}
+	if search == "" && req.WebSearchOptions != nil {
+		search = "enabled"
 	}
 	requested := req.Model
 	if base, ok := strings.CutSuffix(requested, onlineSuffix); ok {

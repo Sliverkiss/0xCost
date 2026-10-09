@@ -63,7 +63,7 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. OpenAI-standard knobs: `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`) turns the model's thinking on, `web_search_options` turns search on. Extensions on top of the standard: `web_search_status` (`disabled`\|`auto`\|`enabled` — the only way to ask for `auto`, and it wins over the standard field when both are given), `include_citations: false`, and the `:online` model suffix (= `web_search_status: enabled`). Model ids are never renamed to carry an option |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -81,9 +81,10 @@ configured default). `/v1/models` reports what this deployment can actually
 serve, read from the account's own Studio catalog (`bot/config`
 `modelConfigListNg`, `pageType: chat` rows) with the static list as the floor —
 on the live test account that is 15 ids, including `clawm-alpha`/`clawl-alpha`
-and the omni variants. Reasoning streams when `enable_thinking: true` or
-`reasoning: {"type": "enabled"}` (reasoning deltas carry
-`reasoning_content`).
+and the omni variants. Reasoning is returned when `reasoning_effort` is anything
+but `none` (the older `enable_thinking: true` / `reasoning: {"type":"enabled"}`
+spellings still work); the thinking arrives as `reasoning_content` on the
+message.
 
 Audio: `input` is required; `response_format` is `wav` (default) or `mp3` —
 the upstream produces no other container. `voice` takes a Studio voice id/name
@@ -111,8 +112,8 @@ Synthesis costs roughly real time upstream (live timings: 128 characters ≈ 13 
 `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S`, and `MIMO2API_SPEECH_MAX_CHARS` bounds the
 total.
 
-**Web search**: with `web_search_status: enabled` (or the `:online` suffix) the
-upstream searches and returns results inline. The gateway surfaces them as
+**Web search**: with `web_search_options` present, `web_search_status: enabled`
+(or the `:online` suffix) the upstream searches and returns results inline. The gateway surfaces them as
 OpenAI `annotations` on the message plus a top-level `citations` array, in the one
 JSON body (search was never affected by the streaming change). The page bodies the
 upstream sends (tens of KB each) are deliberately not forwarded. `include_citations: false` keeps the search but drops the payload.

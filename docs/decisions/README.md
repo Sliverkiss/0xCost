@@ -31,3 +31,4 @@ rather than at chat history.
 | [0018](0018-account-store-backends-and-port.md) | The account store is pluggable (file or Upstash); port 3000, platform `PORT` honoured, nixpacks build | accepted |
 | [0020](0020-account-management-cli.md) | Account management is a CLI against the configured store: list/show/enable/disable/set-egress/rm/import/export/verify | accepted |
 | [0021](0021-hosted-port-requires-a-key.md) | A platform-supplied `PORT` with no API key refuses to start (no silent unreachable loopback) | accepted |
+| [0027](0027-openai-standard-surface.md) | The external surface leads with OpenAI-standard fields (`reasoning_effort`, `web_search_options`); our spellings are aliases, and the model id is never an option carrier | accepted |
