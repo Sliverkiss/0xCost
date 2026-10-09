@@ -195,8 +195,9 @@ cooldowns, disabled reasons survive restarts):
 | `docs/TDD.md` | Test design: §2 fixtures, §3 case-by-case IDs (API/RENEW/STICKY/ERRMAP/LOGIN/DOCKER), §6 gates |
 | `docs/login-chain-reverse.md` | The live-verified login chain, our code vs the real traffic, open questions |
 | `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
-| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..011) |
+| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010) |
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
+| `docs/specs/session-identity.md` | Spec (proposed): how a request resolves to a session — identity ladder, isolation invariants, fork/non-stream policy, open questions |
 | `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates |
 
 ## Development

@@ -243,6 +243,23 @@ Payload (`mimo-web-api/src/upstream.js:140-164`; confirmed
   `mimo-web-proxy/internal/mimo/web_client.go:37-49` adds `sec-ch-ua`/`sec-fetch-*` —
   UA version should match `sec-ch-ua` for risk-control consistency, `web_client.go:30-33`).
 
+#### 2.4.1 Session extensions (proposed)
+
+Client→gateway extensions that let a caller pin which conversation it is
+continuing, so identity stops being a guess over message content
+(`docs/specs/session-identity.md` REQ-1/REQ-16):
+
+| Direction | Surface | Meaning |
+|---|---|---|
+| in | header `X-Mimo-Session-Id` | explicit session id (highest precedence) |
+| in | body `session_id` | same, for clients that cannot set headers |
+| in | body `user` (OpenAI field) | weak hint; namespaced by credential, not a security boundary |
+| out | header `X-Mimo-Session-Id` | the effective id, so the client can pin it next turn |
+| out | header `X-Mimo-Session-Mode` | `chain` \| `replay` \| `fork` (debug/ops value) |
+
+Additive only: with no new fields and no new headers, the request behaves
+exactly as today (REQ-17).
+
 ### 2.5 SSE response format
 
 `text/event-stream`, colon **without** space (`PROTOCOL.md:43-63`). Parser reference:
@@ -557,6 +574,79 @@ secondary index: fingerprint → conversation_key (newest first)
   conversation (full replay). The stale sticky entry is deleted in both cases.
 - **TTL expiry mid-conversation**: next turn is simply a store miss — handled by the
   miss path above. No client error, no stickiness leak.
+
+#### 4.3.1 Session identity and isolation (target design)
+
+Full rationale, requirements and acceptance plan:
+`docs/specs/session-identity.md`. This subsection is the engineering summary;
+the rules above (§4.2 fingerprint, §4.3 store) describe what is deployed today
+and stay valid until the milestone lands.
+
+**Why change it**: identity today is derived *only* from message content, so
+two callers whose first five non-system messages match are indistinguishable and
+"newest wins" can hand one caller another's dialogue frontier; the 200-rune
+truncation plus 5-message window makes lossy matches possible; concurrent
+requests for the same head silently fork; and non-streaming clients are excluded
+from chaining entirely (`NOSTICK-003`), even though the upstream keeps
+server-side context (`web-surface-reverse.md` §11.1).
+
+**Identity ladder** (exactly one result per request, REQ-1):
+
+1. explicit — `X-Mimo-Session-Id` → body `session_id` → body `user` (weak hint);
+2. derived — `sha256(credential_id ‖ model ‖ system ‖ tools ‖ first non-system
+   message)`, opaque 32-hex, namespaced by the calling API key so identical
+   prompts from two tenants cannot collide (REQ-3/REQ-4);
+3. fresh — mint a new session id, returned in `X-Mimo-Session-Id`.
+
+**Entry shape** (target, §4.3 shape extended):
+
+```
+session_key     # ladder result, scoped by credential
+account_id      # affinity: pinned while usable
+conversation_id # upstream conversation
+prev_dialog_id  # chain frontier
+frontier_hash   # canonical hash of the stored frontier (verification, not lookup)
+msg_count       # replay guard (strictly increasing)
+inflight        # fork policy input
+created_at, updated_at
+```
+
+**Verification before chaining (INV-1)**: a stored session may be chained onto
+only when `frontier_hash` matches a *prefix* of the current history and the
+message count strictly increased. Verification covers the whole frontier rather
+than a truncated window, so editing history near the start invalidates the
+session (falling back to replay) instead of silently matching a lookalike.
+
+**Fork policy (REQ-8/REQ-9)**: while a session has an in-flight request, a
+second request for it does not interleave — it follows
+`MIMO2API_SESSION_FORK_POLICY` = `wait` (bounded by
+`MIMO2API_SESSION_WAIT_MS`, then fork) or `fork` (new session id + fresh
+conversation immediately). A fork is reported in `X-Mimo-Session-Mode` and the
+debug log; the original chain is untouched.
+
+**Non-streaming parity (REQ-10)**: `MIMO2API_STICKY_NONSTREAM=auto` (default)
+lets non-streaming requests reuse and advance a verified session — a client that
+alternates `stream` true/false keeps one upstream chain; `off` restores the
+deployed rule (`NOSTICK-003`).
+
+**Account migration (REQ-11)**: if the pinned account is unavailable, the
+session moves by minting a **new** `conversationId` and replaying the full
+history; the chain frontier is not carried across accounts and the migration is
+logged.
+
+**Observability (REQ-15)**: one debug line per decision —
+`session=<id> source=<explicit|derived|fresh> decision=<chain|replay|fork|migrate>
+frontier=<n> history=<n>` — with no message content and no credentials.
+
+**Invariants** (INV-1..INV-6): no chain without verified ownership; session
+state scoped to (credential, session id); no content stored; at most one live
+chain writer per session; losing state degrades to a full replay, never to a
+wrong answer or a cross-session leak; every decision reconstructible from its
+log line.
+
+**Unchanged by this design**: idle TTL and LRU semantics (§4.3), the replay path
+and its client-visible behaviour, error mapping (§7), and the mid-stream commit
+boundary rule (§7.3).
 
 ### 4.4 Concurrency & in-flight caps
 
@@ -874,6 +964,9 @@ MIMO2API_SSE_IDLE_TIMEOUT_S=180      # no-event watchdog (mimo-web-proxy chat.go
 MIMO2API_SESSION_REFRESH_HOURS=6     # timer sweep (session.js:203-230)
 MIMO2API_STICKY_TTL_S=1800           # §4.3
 MIMO2API_STICKY_MAX=500
+MIMO2API_STICKY_NONSTREAM=auto       # auto|off — non-streaming may chain (§4.3.1, REQ-10)
+MIMO2API_SESSION_FORK_POLICY=wait    # wait|fork — concurrent same-session (§4.3.1, REQ-8)
+MIMO2API_SESSION_WAIT_MS=2000        # bound for `wait` before forking
 MIMO2API_MAX_INFLIGHT_PER_ACCOUNT=2
 MIMO2API_QUEUE_WAIT_S=15
 MIMO2API_KEEPALIVE_INTERVAL_MS=15000
