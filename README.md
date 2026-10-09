@@ -37,6 +37,7 @@ performs `GET /healthz` for the container healthcheck.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming). Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
+| POST | `/v1/raw/chat/completions` | Bearer | Internal (ADR 0012): the same chat handler, minus the tool layer — the path the middleware calls back on. Never forwarded onward; tools are reported as dropped here |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -108,6 +109,37 @@ one-shot by design: no session, no store read or write, no header (ADR 0009).
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
 
+## Function calling (ADR 0012)
+
+MiMo Studio has no native function calling, so `tools` in a request is served by a
+middleware that injects a prompt protocol and parses the call back out of the
+model's text:
+
+```
+client ──tools──► mimo2api ──forward──► ToolForge ──XYML prompt + parse──►
+                                     ├──► mimo2api /v1/raw/chat/completions ──► MiMo
+```
+
+- Opt-in: `MIMO2API_TOOLFORGE_URL` (empty = off, and then nothing changes).
+  `docker compose up -d --build` with `MIMO2API_TOOL_KEY` set brings the middleware
+  up alongside; only tool-bearing requests pay the extra hop. The middleware is
+  vendored under `deploy/toolforge/` (see its `PROVENANCE.md`) and built from this
+  repo — no clone, no GitHub access, no credentials at build time.
+- Only `tools` / `functions` / `tool_choice` / `role:"tool"` turns are forwarded —
+  plain chat, models, audio and admin stay exactly as they are.
+- The caller's own key is forwarded on both hops (our copy of the middleware does
+  that; see its `PROVENANCE.md`), so session state stays scoped per caller. Put the key in
+  `MIMO2API_API_KEYS` **and** in `deploy/toolforge/config.yaml`'s
+  `allowed_keys` (the compose passes `MIMO2API_TOOL_KEY` to both).
+- The middleware never runs tools; the client executes them and sends the result
+  back as a `role:"tool"` turn, which is forwarded like any other tool turn.
+- Down middleware = `502 tool_layer_unavailable` for tool requests. An answer
+  without the tool calls would look like a model that ignored its tools.
+
+Live （real account, real model, both rounds）: a `get_weather(city)` request came
+back as `finish_reason: tool_calls` with `{"city":"东京"}`, and feeding that result
+back produced the final natural-language answer.
+
 ## Superseded models (ADR 0011)
 
 The upstream retires model ids and says so in its own catalog: the row keeps a
@@ -170,6 +202,8 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_SPEECH_MAX_CHARS` | `1024` | `/v1/audio/speech` input cap, clamped to the upstream's **1024 character** per-synthesis limit ("播报内容长度不能超过1024"). Lower it to refuse earlier; a higher value cannot take effect (ADR 0010) |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
+| `MIMO2API_TOOLFORGE_URL` | – | Function-calling middleware endpoint; empty = tool calling disabled (ADR 0012) |
+| `MIMO2API_TOOLFORGE_KEY` | – | Credential presented to the middleware when the caller brought none (only for deployments with `MIMO2API_API_KEYS` empty) |
 | `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (session decision with the resolved id/source/frontier, the conversation/dialog id and delta size, or a full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —
@@ -245,6 +279,7 @@ cooldowns, disabled reasons survive restarts):
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
 | `docs/specs/session-identity.md` | Spec (accepted): how a request resolves to a session — identity ladder, isolation invariants, fork policy, one-shot non-streaming |
 | `docs/specs/account-pool.md` | Spec (proposed): pool failure attribution, the form of 451/461, per-account observability, per-account egress |
+| `deploy/toolforge/` | ToolForge (tool-calling middleware), vendored: its source + our change, `PROVENANCE.md`, and the stack's `config.yaml` |
 | `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split (superseded by 0010: the cap is refused, not split), session identity, speech as a refused limit, superseded models resolved and not advertised |
 
 ## Development

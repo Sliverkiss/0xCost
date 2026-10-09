@@ -22,6 +22,7 @@ import (
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/session"
+	"github.com/yg/mimo2api/internal/toollayer"
 )
 
 // shutdownGrace bounds the drain window after SIGTERM/SIGINT: streams get
@@ -138,6 +139,19 @@ func run() error {
 		Max: cfg.StickyMax(),
 	})
 
+	var toolLayer *toollayer.Client
+	if url := cfg.ToolLayerURL(); url != "" {
+		toolLayer = toollayer.New(url, cfg.ToolLayerKey(), log.Default(), cfg.Debug())
+		// The middleware authenticates its own callers and forwards the
+		// caller's credential back to us; without keys on our side there is
+		// nothing to forward, so it needs one of its own.
+		if len(cfg.APIKeys()) == 0 && cfg.ToolLayerKey() == "" {
+			log.Printf("tool layer: MIMO2API_TOOLFORGE_URL is set but the gateway runs without API keys " +
+				"and MIMO2API_TOOLFORGE_KEY is empty: the middleware will reject every request")
+		}
+		log.Printf("tool layer: %s (tool-bearing chat requests are forwarded there)", url)
+	}
+
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
 		Pool:         p,
@@ -161,6 +175,9 @@ func run() error {
 		ASRTimeout:     cfg.ASRTimeout(),
 		SpeechMaxChars: cfg.SpeechMaxChars(),
 		DefaultVoice:   cfg.TTSVoice(),
+
+		// Function calling (ADR 0012): nil unless the middleware is configured.
+		ToolLayer: toolLayer,
 	})
 
 	// Warm the superseded-model map before serving. It is the deployment's view of

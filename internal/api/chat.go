@@ -14,15 +14,25 @@ import (
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/session"
+	"github.com/yg/mimo2api/internal/toollayer"
 )
 
 // handleChat is POST /v1/chat/completions (SDD §5.1/§5.2).
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	req, err := decodeChatRequest(r)
+	req, raw, err := decodeChatRequest(r)
 	if err != nil {
 		s.MapError(w, err)
 		return
 	}
+
+	// Function calling belongs to the tool layer (ADR 0012). The decision is
+	// made here, before the request is interpreted: the middleware gets the
+	// bytes the caller sent, and only the paths that need it pay the hop.
+	if s.toolLayer != nil && !rawRequest(r) && req.needsToolLayer() {
+		s.forwardToToolLayer(w, r, raw)
+		return
+	}
+
 	msgs, err := req.toAdapterMsgs()
 	if err != nil {
 		s.MapError(w, err)
@@ -859,3 +869,37 @@ func isContentErr(err error) bool {
 // ("mimo-v2.6-flash:online"), mirroring the convention OpenAI-compatible
 // clients already use (M19, TDD WS-003).
 const onlineSuffix = ":online"
+
+// rawChatKey marks a request that arrived on the internal raw path.
+type rawChatKey struct{}
+
+// rawRequest reports whether this request came in on /v1/raw/chat/completions,
+// the path the tool layer calls back on (ADR 0012). It must never be forwarded
+// again: that is what keeps the round trip a line instead of a loop.
+func rawRequest(r *http.Request) bool {
+	v, _ := r.Context().Value(rawChatKey{}).(bool)
+	return v
+}
+
+// handleRawChat is the same chat surface, minus the tool layer. It exists so the
+// middleware has somewhere to send the request it has already rewritten.
+func (s *Server) handleRawChat(w http.ResponseWriter, r *http.Request) {
+	s.handleChat(w, r.WithContext(context.WithValue(r.Context(), rawChatKey{}, true)))
+}
+
+// forwardToToolLayer hands the call to the middleware and copies its answer
+// back. A failure here is reported as such: an answer with the tool calls
+// silently dropped would look like a model that simply ignored the tools.
+func (s *Server) forwardToToolLayer(w http.ResponseWriter, r *http.Request, raw []byte) {
+	if s.debug {
+		s.debugf("chat: forwarding to the tool layer (%s, %d bytes)", s.toolLayer.URL(), len(raw))
+	}
+	if err := s.toolLayer.Forward(r.Context(), raw, r.Header, w); err != nil {
+		if errors.Is(err, toollayer.ErrUnavailable) {
+			writeError(w, http.StatusBadGateway, "api_error", "tool_layer_unavailable",
+				"tool layer unavailable; retry shortly", 0)
+			return
+		}
+		s.MapError(w, err)
+	}
+}

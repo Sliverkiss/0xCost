@@ -1223,6 +1223,34 @@ literals. (An earlier draft of this SDD carried them inline; scrubbed
 | TTL on sessions | none | none (LRU-50 only) | n/a | none (janitor deletes upstream) | **30 min idle TTL + LRU-500** |
 | Tools | prompt-injected passthrough | 5-format parser + prompt | n/a | stripped | stripped (out of scope) |
 
+## §5.6 Function calling via the tool layer (ADR 0012)
+
+MiMo Studio implements no function calling (§2.1: the chat body has no `tools`
+field, and `bot/config` advertises no such capability). `tools` on the wire is
+therefore served by an external middleware (ToolForge) that injects an XYML
+prompt protocol and parses the tool call out of the model's text.
+
+```
+client ──tools──► POST /v1/chat/completions ──forward──► middleware ──prompt──►
+                 POST /v1/raw/chat/completions ──► pool ──► MiMo
+```
+
+* **Trigger** (`needsToolLayer`): `tools`, `functions`, `tool_choice`, or any
+  message with `role: "tool"`. Nothing else is forwarded — a plain chat request
+  has no dependency on the middleware.
+* **Forward**: the raw body, the caller's `Authorization`, and the caller's
+  `X-Mimo-*` extensions (§4.3.1 session carriers). The answer is copied back
+  as-is, SSE included.
+* **Callback**: `POST /v1/raw/chat/completions`, authenticated like every other
+  path, and marked raw so it never forwards again (the recursion guard).
+* **Failure**: `502 tool_layer_unavailable`, never a silent answer without the
+  tool calls.
+* **Session identity**: unchanged — the caller's credential reaches the callback
+  hop through the middleware's `key_passthrough`, so REQ-3/INV-2 hold. A client
+  that mixes plain and tool turns should pin `session_id`, because the derived
+  identity includes the system prompt the middleware rewrites.
+* **Config**: `MIMO2API_TOOLFORGE_URL` (empty = off).
+
 ## Appendix B — Open questions (to resolve during implementation spike)
 
 1. Does aistudio 429 ever carry a structured retry deadline (body JSON)? If yes,

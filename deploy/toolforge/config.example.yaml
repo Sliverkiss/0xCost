@@ -1,0 +1,64 @@
+# ToolForge — tool-calling middleware config
+# Copy to config.yaml and edit. Env placeholders: ${VAR} or ${VAR:-default}
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  timeout_seconds: 180
+
+client_authentication:
+  enabled: true
+  allowed_keys:
+    - "sk-toolforge-demo"
+
+# Route by model name. First match wins; "*" matches any model.
+upstreams:
+  - name: default
+    type: openai_compat          # openai_compat | anthropic | gemini
+    base_url: "http://host.docker.internal:7860/v1"
+    api_key: "${LOCAL_API_KEY:-sk-local}"
+    models: ["*"]
+    # false = inject XYML + parse tool calls (for models without native FC)
+    # true  = pass tools through to upstream native function calling
+    native_fc: false
+    is_default: true
+
+  # Examples (uncomment and set keys):
+  # - name: openai
+  #   type: openai_compat
+  #   base_url: "https://api.openai.com/v1"
+  #   api_key: "${OPENAI_API_KEY}"
+  #   models: ["gpt-4o", "gpt-4o-mini"]
+  #   native_fc: true
+  #
+  # - name: anthropic
+  #   type: anthropic
+  #   base_url: "https://api.anthropic.com"
+  #   api_key: "${ANTHROPIC_API_KEY}"
+  #   models: ["claude-sonnet-4-5"]
+  #   native_fc: true
+  #
+  # - name: gemini
+  #   type: gemini
+  #   base_url: "https://generativelanguage.googleapis.com"
+  #   api_key: "${GEMINI_API_KEY}"
+  #   models: ["gemini-2.5-pro"]
+  #   native_fc: true
+
+routing:
+  aliases: {}
+  # "my-alias": { upstream: openai, model: "gpt-4o" }
+
+features:
+  fc_mode: auto                 # auto | prefer_native | force_prompt
+  enable_streaming: true
+  enable_fc_error_retry: true
+  fc_error_retry_max: 2
+  strip_think_tags: true
+  inject_protocol: XYML
+  convert_developer_to_system: true
+  key_passthrough: false
+  model_passthrough: false
+  enable_cli_profiles: true
+  obfuscate_tool_names: false
+  enable_metrics: true

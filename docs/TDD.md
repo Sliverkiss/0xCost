@@ -106,7 +106,9 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/api/egress_e2e_test.go` | api | EGRESS-006..008 (a labelled account's chat and catalog calls really leave through its proxy, an unlabelled account's do not, a lease carries its egress) |
 | `internal/api/errors_test.go` | api | ERRMAP-001..012 (table-driven, §7.4) |
 | `internal/accounts/accounts_test.go` | accounts | ACC-001..007 |
-| `internal/config/config_test.go` | config | CONF-001..007 |
+| `internal/config/config_test.go` | config | CONF-001..007, CONF-TOOL |
+| `internal/toollayer/toollayer.go` | toollayer | forwarding the caller's credential and `X-Mimo-*` extensions; SSE pass-through; `ErrUnavailable` |
+| `internal/api/toollayer_test.go` | api | TOOL-001..008 (the fake middleware doubles as the recursion detector) |
 | `internal/adapter/redirect_test.go` | adapter | REDIR-UNIT (redirect chains, cycles, `Usable`, the floor merge keeping a superseded row superseded) |
 | `internal/api/models_redirect_test.go` | api | MODELS-014/015, CHAT-REDIR-001, AUDIO-REDIR-001 |
 | `internal/api/refresh_redirects_test.go` | api | REFRESH-001/002 (a retirement learned from the upstream's own refusal) |
@@ -346,6 +348,20 @@ Wave order agreed with the owner: ① attribution → ② risk control → ③ o
 | REFRESH-001 | A retirement between refreshes is learned from the refusal | map deliberately cold; upstream answers the busy frame | chat naming a superseded id | first request carries the asked id, the retry carries the successor learned from the catalog | `TestChatLearnsModelFromBusyRefusal` |
 | REFRESH-002 | Same on the audio surface | map cold; first synthesis answers 400 `model: [x] not support` | `/v1/audio/speech` | the retry carries the successor's `modelCode`; the caller gets audio | `TestSpeechLearnsModelFromRefusal` |
 | REDIR-UNIT | Chains, cycles and the static floor | — | `ResolveRedirect`, `Usable`, `Merge` | two-hop chains resolve, cycles terminate, a superseded id stays superseded through the floor merge | `internal/adapter/redirect_test.go` |
+
+### 3.5.4 Tool layer (ADR 0012)
+
+| ID | Description | Precondition | Stimulus | Expected result | Test |
+|---|---|---|---|---|---|
+| TOOL-001 | Tool requests are forwarded as the caller sent them | middleware configured | chat with `tools` + `X-Mimo-Session-Id` | the middleware receives the body verbatim, the caller's `Authorization`, the `X-Mimo-*` header; other headers do not travel; the model is not called directly | `TestToolLayerForwardsToolRequests` |
+| TOOL-002 | Plain chat keeps the direct path | middleware configured | chat without tools | the middleware sees nothing, the model is called directly | `TestToolLayerLeavesPlainChatAlone` |
+| TOOL-003 | The turn that returns a tool result reaches the middleware | middleware configured | messages ending in `role: "tool"` | forwarded; the model is not called directly | `TestToolLayerForwardsToolResultTurns` |
+| TOOL-004 | A streamed answer is streamed through | middleware answers SSE | chat with `stream: true` + tools | both chunks arrive, `Content-Type: text/event-stream` preserved | `TestToolLayerStreamsThrough` |
+| TOOL-005 | A dead middleware is reported, never masked | middleware closed | chat with tools | 502 `tool_layer_unavailable`; the model is not called as a fallback | `TestToolLayerUnavailableIsReported` |
+| TOOL-006 | The callback path never forwards again | middleware configured | `POST /v1/raw/chat/completions` with tools | the middleware sees nothing, the model is called, tools reported as dropped | `TestRawChatPathNeverForwards` |
+| TOOL-007 | The callback path is authenticated | middleware configured | raw path without a key | 401 | `TestRawChatPathRequiresAuth` |
+| TOOL-008 | No middleware configured = no change | `MIMO2API_TOOLFORGE_URL` unset | chat with tools | 200 from the direct path; `X-Mimo-Warnings` reports the dropped tools | `TestWithoutToolLayerToolsAreStillReportedAsDropped` |
+| CONF-TOOL | The tool layer is opt-in from the environment | — | `Load` with and without `MIMO2API_TOOLFORGE_URL` | empty by default; URL and key read when set | `TestToolLayerConfig` |
 
 ### 3.6 OpenAI API surface (P0/P1)
 

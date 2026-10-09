@@ -1,0 +1,52 @@
+# ToolForge config for the mimo2api stack (mount at /app/config.yaml).
+#
+# Two hops, one credential, and each hop is authenticated:
+#
+#   client --(Authorization: Bearer $MIMO2API_TOOL_KEY)--> toolforge
+#   toolforge --(the same header, passed through)--> mimo2api /v1/raw/chat/completions
+#
+# `key_passthrough` is what makes the second hop carry the caller's identity
+# instead of this file's key: the gateway scopes sessions per credential, so a
+# single shared key would let two callers collide into one session.
+#
+# The gateway enforces the same key set (MIMO2API_API_KEYS), so the value has to
+# appear there too. Give it the same value; there is no reason for a second one.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  timeout_seconds: 300
+
+client_authentication:
+  enabled: true
+  allowed_keys:
+    - "${MIMO2API_TOOL_KEY}"
+
+upstreams:
+  - name: mimo2api
+    type: openai_compat
+    # The internal raw surface: the same chat, minus this middleware (ADR 0012).
+    base_url: "${MIMO2API_RAW_URL:-http://mimo2api:8080/v1/raw}"
+    # Only used when a caller arrives without a credential of its own.
+    api_key: "${MIMO2API_TOOL_KEY}"
+    models: ["*"]
+    # MiMo Studio has no native function calling: the middleware injects the XYML
+    # prompt protocol and parses the tool call out of the model's text.
+    native_fc: false
+    is_default: true
+
+features:
+  fc_mode: auto                 # no tools in the request → pure passthrough
+  enable_streaming: true
+  enable_fc_error_retry: true
+  fc_error_retry_max: 2
+  strip_think_tags: true
+  inject_protocol: XYML
+  convert_developer_to_system: true
+  model_passthrough: false
+  obfuscate_tool_names: false
+
+  # Carry the caller's identity to the gateway behind us (see above).
+  key_passthrough: true
+  passthrough_headers:
+    - "X-Mimo-*"

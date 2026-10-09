@@ -21,3 +21,4 @@ rather than at chat history.
 | [0009](0009-sessions-are-streaming-only-and-verified.md) | Sessions are streaming-only, explicitly identified when possible, and verified before chaining | accepted |
 - [0010 — Long speech is a refused limit, not a split](0010-speech-length-is-a-refused-limit.md) (supersedes 0008)
 | [0011](0011-superseded-models-are-resolved-not-advertised.md) | A superseded model id is resolved, not advertised | accepted |
+| [0012](0012-function-calling-through-a-middleware.md) | Function calling lives behind a middleware, reached through one path | accepted |

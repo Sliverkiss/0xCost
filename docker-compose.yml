@@ -1,5 +1,11 @@
 # mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
 # in-binary healthcheck (distroless has no curl/wget).
+#
+# The tool layer (ADR 0012) is opt-in: toolforge starts alongside, and the
+# gateway forwards tool-bearing chat requests to it only when
+# MIMO2API_TOOLFORGE_URL is set. Both hops authenticate with the same key
+# (MIMO2API_TOOL_KEY), which must also be in MIMO2API_API_KEYS. Other endpoints
+# (models, audio, admin, healthz) never touch the middleware.
 services:
   mimo2api:
     build: .
@@ -14,10 +20,44 @@ services:
       - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
       - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
       - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
+      # Empty = tool calling disabled; set to enable the middleware below.
+      - MIMO2API_TOOLFORGE_URL=${MIMO2API_TOOLFORGE_URL:-}
+      - MIMO2API_TOOLFORGE_KEY=${MIMO2API_TOOL_KEY:-}
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # Function-calling middleware: implements tools/tool_calls on a model that has
+  # none, by prompt protocol. Not published by default — callers reach it through
+  # the gateway (compose `expose` is enough for that).
+  # The middleware is vendored in this repository (deploy/toolforge, see its
+  # PROVENANCE.md) and built from there: no clone, no credentials, and the change
+  # we depend on is ordinary code in our tree. Edit it and rebuild.
+  toolforge:
+    build:
+      context: ./deploy/toolforge
+      dockerfile: Dockerfile
+    image: mimo2api-toolforge
+    container_name: mimo2api-toolforge
+    expose:
+      - "8080"
+    environment:
+      - MIMO2API_TOOL_KEY=${MIMO2API_TOOL_KEY:-}
+      - MIMO2API_RAW_URL=http://mimo2api:8080/v1/raw
+    volumes:
+      - ./deploy/toolforge/config.yaml:/app/config.yaml:ro
+    depends_on:
+      - mimo2api
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')\""
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped

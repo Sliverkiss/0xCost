@@ -220,3 +220,42 @@ live instance on port 18240:
   response echoes the id the caller asked for.
 - `GET /v1/models/mimo-v2-flash` → 200 with `"redirect_to":"mimo-v2.6-flash"` and the
   successor's real capability bits.
+
+## LIVE-TOOLS-001 — tool calling against the real model (2026-10-09)
+
+The chain was run for real, with one account and the real model: our gateway on
+18250, ToolForge from the fork (commit `758a2c4` + the identity patch) on 18701,
+and the middleware's upstream pointed back at `/v1/raw/chat/completions`.
+
+Round 1 — `get_weather(city)` offered, prompt "东京今天天气怎么样？用工具查一下":
+
+```
+finish_reason: tool_calls
+tool_calls: [{"id":"call_ziacq1eyu89y","type":"function",
+              "function":{"name":"get_weather","arguments":"{\"city\":\"东京\"}"}}]
+```
+
+39 s, `http=200`. The model, which has no native function calling, followed the
+injected protocol and produced the argument correctly.
+
+Round 2 — the result (`东京：晴，24°C，湿度 55%`) sent back as a `role:"tool"` turn:
+`finish_reason: stop`, and a natural-language answer that used exactly that data
+(晴 / 24°C / 55%), 49 s. The middleware saw its own call, and the loop terminated
+at the raw path.
+
+Control in the same session: a plain chat request with no tools answered directly
+by the gateway ("只回两个字：收到" → `收到`) and never reached the middleware.
+
+What the patch is for (and why it is not optional): with the middleware
+authenticating upstream under its own key, every caller would arrive at the
+gateway under one credential, and session identity is derived from
+(credential ‖ model ‖ system ‖ tools ‖ first message) — the same first message
+with the same tools would land two different callers in the same session. Live
+observation of the headers at the callback hop: `authorization: Bearer
+sk-mimo-tool-demo` (the caller's own key) and the caller's `X-Mimo-Session-Id`.
+
+One oddity seen while running this, not caused by the tool layer and not yet
+explained: during round 2 the gateway logged an upstream `web_search` event with
+41 KB of results while `web_search_status` was left at its default (`disabled`).
+The direct path behaves the same way, so it is upstream-side; worth a look before
+anyone relies on the switch being a hard off.

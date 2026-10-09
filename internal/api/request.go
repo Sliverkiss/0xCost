@@ -83,18 +83,18 @@ var knownRequestFields = map[string]bool{
 
 // decodeChatRequest parses the body permissively. Unknown top-level fields
 // are collected for the warnings header, never rejected (SDD §5.2).
-func decodeChatRequest(r *http.Request) (*chatRequest, error) {
+func decodeChatRequest(r *http.Request) (*chatRequest, []byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
-		return nil, errMalformedRequest
+		return nil, nil, errMalformedRequest
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
-		return nil, errMalformedRequest
+		return nil, nil, errMalformedRequest
 	}
 	req := &chatRequest{}
 	if err := json.Unmarshal(raw, req); err != nil {
-		return nil, errMalformedRequest
+		return nil, nil, errMalformedRequest
 	}
 	for k := range top {
 		if !knownRequestFields[k] {
@@ -102,9 +102,27 @@ func decodeChatRequest(r *http.Request) (*chatRequest, error) {
 		}
 	}
 	if len(req.Messages) == 0 {
-		return nil, errMalformedRequest
+		return nil, nil, errMalformedRequest
 	}
-	return req, nil
+	return req, raw, nil
+}
+
+// needsToolLayer reports whether the request is a function-calling one, which is
+// the only thing the middleware adds (ADR 0012). Everything else keeps the
+// direct path, so a plain chat request never depends on the tool layer.
+//
+// A turn that returns a tool result carries it as a `tool` role message, and
+// that turn must reach the same layer: it has to see the call it made.
+func (r *chatRequest) needsToolLayer() bool {
+	if len(r.Tools) > 0 || len(r.Functions) > 0 || len(r.ToolChoice) > 0 {
+		return true
+	}
+	for _, m := range r.Messages {
+		if strings.EqualFold(m.Role, "tool") {
+			return true
+		}
+	}
+	return false
 }
 
 // thinkingEnabled resolves the two opt-in spellings (SDD §5.2, TDD
