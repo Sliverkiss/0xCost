@@ -3,6 +3,7 @@ package accounts
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -50,7 +51,9 @@ func TestGet(t *testing.T) {
 		if ok {
 			t.Fatalf("unknown id reported found: %+v", got)
 		}
-		if got != (Account{}) {
+		// reflect.DeepEqual, not ==: Account carries the device-identity map
+		// (deviceId/pass_ua/uLocale) and is therefore not comparable.
+		if !reflect.DeepEqual(got, Account{}) {
 			t.Errorf("miss value = %+v, want zero Account", got)
 		}
 	})

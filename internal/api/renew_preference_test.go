@@ -101,8 +101,14 @@ func TestRenewBeforePasswordLogin(t *testing.T) {
 	if acct.Session.PH == "" {
 		t.Error("persisted session has no ph")
 	}
-	if acct.UserID != "1000000001" || acct.PassToken != "V1:rt-live-1" {
-		t.Errorf("identity changed during renewal: %q / %q", acct.UserID, acct.PassToken)
+	// A renewal must never lose or blank the renewal identity. The passToken
+	// itself may legitimately be rotated by the landing chain (device.go /
+	// TDD DEV-006): what matters is that the account still holds one.
+	if acct.UserID != "1000000001" {
+		t.Errorf("userId changed during renewal: %q", acct.UserID)
+	}
+	if acct.PassToken == "" {
+		t.Error("renewal blanked the stored passToken")
 	}
 	if acct.Session.FetchedAt == 0 || time.Since(time.Unix(acct.Session.FetchedAt, 0)) > time.Minute {
 		t.Errorf("fetched_at = %d, want a fresh timestamp", acct.Session.FetchedAt)

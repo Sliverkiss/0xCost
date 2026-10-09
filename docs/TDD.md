@@ -88,6 +88,8 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/mimo/sse_test.go` | mimo | SSE-001..005 (byte parser over fixtures) |
 | `internal/mimo/login_test.go` | mimo | LOGIN-001..009 (passport flow vs httptest mock) |
 | `internal/mimo/renew_test.go` | mimo | RENEW-001..009 (STS flow, 401-driven refresh, 6h sweep) |
+| `internal/mimo/device_test.go` | mimo | DEV-001..007 (device identity presented/harvested/replayed; rotated passToken) |
+| `internal/api/device_persist_test.go` | api | DEVPL-001 (stored device reaches Auth2; harvested identity hits disk) |
 | `internal/mimo/client_test.go` | mimo | SSE-013 (empty-response retry), upstream payload shaping, fastchat routing, header set |
 | `internal/api/api_test.go` | api | API-001..025 (endpoint wiring, full-stack against testutil.MockUpstream) |
 | `internal/api/auth_test.go` | api | AUTHMID-001..008 (auth middleware) |
@@ -435,6 +437,14 @@ review to use `crypto/subtle`; not behaviorally assertable.)
 | LOGIN-007 | Persist after login | successful login | inspect accounts store | `userId`, `passToken`, cookie string, `ph`, `session.fetched_at` persisted | §2.2, §4.7 |
 | LOGIN-008 | Location host allowlist | `location` points to `https://evil.example/sts` | follow location | refused — only aistudio / account.xiaomi.com hosts followed (open-redirect guard) | §2.2 |
 | LOGIN-009 | Non-zero code, no location | `&&&START&&&{"code":70003,...}` | login | login failure surfaced as account error; no crash, no partial state | §2.2 |
+| DEV-001 | Device identity presented on Auth2 | stored `device` (deviceId/pass_ua/uLocale/cUserId) + MockPassport recording request headers | `client.WithDevice(dev).Login(...)` | the `serviceLoginAuth2` POST carries every stored device cookie — without it the passport sees new hardware every login | §2.2 |
+| DEV-002 | No device stored → none invented | account without `device` | `client.Login(...)` | Auth2 sends no device cookie (the pre-fix behaviour stays available and tests stay honest) | §2.2 |
+| DEV-003 | Device identity harvested from the login | MockPassport plants `deviceId/pass_ua/uLocale` on Auth2 | `Login(...)` | `Session.Device` carries the three planted values and **no** session cookie (`serviceToken`, `ph`, `passToken`) | §2.2 |
+| DEV-004 | Verification chain stays on one device | OTP fixture + stored device | `Login(...)` → `ErrOTPPending` | `/identity/list` presents a deviceId and the OTP challenge carries the same one, so the submitted code cannot drift onto another device. Precedence pinned: a deviceId the passport issues in `Set-Cookie` wins over the replayed value (browser semantics) | §2.2 |
+| DEV-005 | Renewal presents userId + passToken + device | stored device | `WithDevice(dev).Renew(userID, passToken)` | the `serviceLogin` hop carries all three | §2.3 |
+| DEV-006 | Rotated passToken wins | MockPassport STS plants a different passToken | `Renew(...)` | `Session.PassToken` = the rotated value; with no rotation the stored one is kept | §2.3 |
+| DEV-007 | Device merge semantics | `MergeDevice(stored, fresh)` | pure call | fresh values win, values the server stayed silent about survive, both-empty → nil (JSON-clean account), the stored map is never aliased | §2.2 |
+| DEVPL-001 | Device identity is persisted end to end | api stack: account with `device`, no session; Auth2 fixture = login OK | `POST /v1/chat/completions` | the stored device reaches Auth2; the harvested identity is written to the store **and to the account file** (`"device"` block), so a restart keeps the device | §2.2, §4.7 |
 | OTP-001 | code=0 OTP demand (live shape) | MockPassport auth2 returns live-captured `xssi_login_otp_zero.txt` (code=0, securityStatus=128, empty location, notificationUrl) | login | `ErrOTPPending` with auto-started challenge (id, method=Phone, masked notify); identity/list → verifyPhone → sendPhoneTicket all hit | §2.2 amend |
 | OTP-002 | identity/list flag=8 → Email | MockPassport identity flag 8 | login | method=Email; verifyEmail/sendEmailTicket hit | §2.2 amend |
 | OTP-003 | data-wrapped flag | identity/list returns `{"data":{"flag":8,...}}` | login | data merged; method=Email; notify from data | §2.2 amend |
@@ -459,7 +469,7 @@ review to use `crypto/subtle`; not behaviorally assertable.)
 | ADOTP-003 | pending auth | no key / wrong key | pending | 401 | §2.2 amend |
 | ADOTP-004 | expiry sweep | challenge expired behind the store | pending | vanished from list | §2.2 amend |
 | RENEW-001 | Renewal probe | session cached, MockPassport 401 w/ loginUrl | validate session | 401 body's `loginUrl` extracted for renewal | §2.3 |
-| RENEW-002 | STS from passToken | MockPassport returns `xssi_sts_ok.txt` for `loginUrl&_json=true` | renew | GET sent with `Cookie: userId=<id>; passToken=<rt>`; `location` followed; fresh cookies cached | §2.3 |
+| RENEW-002 | STS from passToken | MockPassport returns `xssi_sts_ok.txt` for `loginUrl&_json=true` | renew | GET sent with `Cookie: userId=<id>; passToken=<rt>` (+ the stored device identity, DEV-005); `location` followed; fresh cookies cached; a passToken the chain plants wins, a silent chain keeps the stored one (DEV-006/006b) | §2.3 |
 | RENEW-003 | passToken dead (70016) | MockPassport returns `xssi_sts_70016.txt` | renew | account → `disabled` (needs re-login); no infinite retry | §2.3, §4.1 |
 | RENEW-005 | Transparent 401 refresh-retry | mock upstream: bot/chat → 401, then (after renewal) 200 SSE | streaming request via full stack | client sees clean 200 stream; exactly one refresh + one retry; refresh occurs only pre-first-byte | §2.3, §7.1 |
 | RENEW-006 | Refresh failure → disabled + mapped error | bot/chat → 401; renewal also fails (70016) | request | account disabled; client receives 401 `upstream_auth_expired` (ERRMAP-007 shape) | §7.1, §7.4 |

@@ -39,6 +39,13 @@ def values(path: str) -> list[str]:
             match = TOKEN_IN_COOKIE.search(str(session.get("cookie") or ""))
             if match:
                 found.append(match.group(1))
+        # The device identity (deviceId/pass_ua/uLocale) is account-identifying
+        # too: it must never reach a tracked file (internal/mimo/device.go).
+        device = account.get("device") or {}
+        if isinstance(device, dict):
+            for value in device.values():
+                if value:
+                    found.append(str(value))
     # Short values would match unrelated text; the check is for real identifiers.
     return [value for value in dict.fromkeys(found) if len(value) >= 6]
 

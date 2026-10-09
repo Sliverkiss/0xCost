@@ -403,8 +403,18 @@ type MockPassport struct {
 
 	// Recorded calls for assertions.
 	Auth2Calls        []map[string]string // form values per call
+	Auth2Headers      []http.Header       // request headers per Auth2 call
 	ServiceLoginCalls []string            // Cookie header per call
 	StsCalls          []string            // locations followed
+
+	// StsPassToken is the passToken the STS hop plants (default rt-mock-1);
+	// set it to a different value to script a rotated credential.
+	StsPassToken string
+
+	// OmitDeviceCookies drops the deviceId/pass_ua/uLocale Set-Cookie that a
+	// real Auth2 always plants (device.go; live capture 2026-10-09) — used to
+	// assert the merge never wipes a stored device identity.
+	OmitDeviceCookies bool
 
 	// OTP identity flow (SDD §2.2 amendment). IdentityFlag: 4 = phone
 	// (default), 8 = email. IdentityListBody: verbatim /identity/list
@@ -602,6 +612,7 @@ func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p.Auth2Calls = append(p.Auth2Calls, form)
+	p.Auth2Headers = append(p.Auth2Headers, r.Header.Clone())
 	body := p.Auth2Body
 	status := p.Auth2Status
 	p.mu.Unlock()
@@ -625,6 +636,14 @@ func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {
 	if !strings.Contains(body, "notificationUrl") {
 		http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
 		http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
+	}
+	// The device identity is planted on EVERY Auth2 answer, including the
+	// verification demand (live capture 2026-10-09: deviceId, pass_ua,
+	// uLocale) — that is what a client must keep and replay.
+	if !p.OmitDeviceCookies {
+		http.SetCookie(w, &http.Cookie{Name: "deviceId", Value: "dev-mock-1", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "pass_ua", Value: "3.9", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "uLocale", Value: "zh_CN", Path: "/"})
 	}
 	w.WriteHeader(status)
 	io.WriteString(w, body)
@@ -655,8 +674,12 @@ func (p *MockPassport) serveSTS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if !p.OmitPassToken {
+		pt := p.StsPassToken
+		if pt == "" {
+			pt = "rt-mock-1"
+		}
 		http.SetCookie(w, &http.Cookie{Name: "userId", Value: "123456", Path: "/"})
-		http.SetCookie(w, &http.Cookie{Name: "passToken", Value: "rt-mock-1", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "passToken", Value: pt, Path: "/"})
 	}
 	http.SetCookie(w, &http.Cookie{Name: "cUserId", Value: "cu-mock-1", Path: "/"})
 	http.SetCookie(w, &http.Cookie{Name: "serviceToken", Value: "st-mock-1", Path: "/"})

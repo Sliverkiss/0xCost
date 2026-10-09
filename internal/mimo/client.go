@@ -37,6 +37,28 @@ type Client struct {
 	// personal-data-transfer demand is surfaced instead of agreed to
 	// (MIMO2API_CROSS_REGION_AGREE=false).
 	disableCrossRegionAgree bool
+	// device is the account's device identity (passport cookies such as
+	// deviceId/pass_ua/uLocale), replayed on every login/renewal hop of this
+	// client so the upstream recognises the device instead of seeing new
+	// hardware (docs/login-chain-reverse.md §5 item 1; device.go).
+	device map[string]string
+}
+
+// WithDevice returns a shallow copy of the client that presents the given
+// device-identity cookies. The account pool stores them per account, so the
+// caller composes the client per call:
+//
+//	s.clientFor(acct.Egress).WithDevice(acct.Device).Renew(ctx, ...)
+//
+// An empty/nil device yields a client that presents none (the pre-2026-10-09
+// behaviour). Never mutates the receiver.
+func (c *Client) WithDevice(device map[string]string) *Client {
+	if len(device) == 0 {
+		return c
+	}
+	cp := *c
+	cp.device = device
+	return &cp
 }
 
 // Options configures a Client. Base may be an httptest server URL in tests;

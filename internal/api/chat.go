@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
@@ -735,9 +734,9 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 	// with no user interaction, while the password path re-runs the whole
 	// verification chain (new-device OTP = a human, SDD §2.3 / TDD LIVE-006).
 	if acct.UserID != "" && acct.PassToken != "" {
-		sess, rerr := s.clientFor(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
+		sess, rerr := s.clientFor(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
 		if rerr == nil {
-			acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
+			applySession(&acct, sess)
 			if uerr := s.store.Update(acct); uerr != nil {
 				s.logger.Printf("accounts: persist renewed session for %s: %v", accountID, uerr)
 			}
@@ -745,7 +744,7 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 		}
 		s.logger.Printf("accounts: renewal for %s failed (%v), falling back to password login", accountID, rerr)
 	}
-	sess, err := s.clientFor(acct.Egress).Login(ctx, acct.Phone, acct.Password)
+	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).Login(ctx, acct.Phone, acct.Password)
 	if err != nil {
 		// New-device OTP demand auto-started a challenge: register it for
 		// the admin submit endpoint (SDD §2.2 amendment). The request
@@ -758,14 +757,9 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 	}
 	// Keep the stored identity when the flow could not harvest a fresh one
 	// (the landing chain plants passToken only on some passport variants, and
-	// blanking it would break the next renewal).
-	if sess.UserID != "" {
-		acct.UserID = sess.UserID
-	}
-	if sess.PassToken != "" {
-		acct.PassToken = sess.PassToken
-	}
-	acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
+	// blanking it would break the next renewal); the device identity is merged
+	// the same way (session_apply.go).
+	applySession(&acct, sess)
 	if err := s.store.Update(acct); err != nil {
 		s.logger.Printf("accounts: persist session for %s: %v", accountID, err)
 	}
@@ -782,11 +776,11 @@ func (s *Server) refreshSession(ctx context.Context, accountID string) error {
 	if acct.UserID == "" || acct.PassToken == "" {
 		return fmt.Errorf("account %s has no stored passToken to renew", accountID)
 	}
-	sess, err := s.clientFor(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
+	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
 	if err != nil {
 		return err
 	}
-	acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
+	applySession(&acct, sess)
 	if err := s.store.Update(acct); err != nil {
 		s.logger.Printf("accounts: persist renewed session for %s: %v", accountID, err)
 	}

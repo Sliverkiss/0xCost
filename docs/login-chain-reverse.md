@@ -162,16 +162,74 @@ consent chain and landing chain.
 
 ## 5. Still open
 
-1. Whether the identity verification can ever be skipped (trusted device):
-   `trust=true` is sent on submit, but the first login from a new
-   `deviceId` always demanded a code. Untested: whether keeping the same
-   `deviceId` cookie across logins removes the demand.
+1. ~~Whether the identity verification can ever be skipped (trusted device)~~
+   **Answered in two parts (2026-10-09), see §5.1.** The parameter was never
+   missing — we already submit `trust=true`; what we never did was keep the
+   device the trust attaches to. Replay alone is not sufficient (measured), and
+   whether one completed verification makes the *next* login verification-free
+   is still untested: it needs one SMS code (`cmd/loginprobe` answers it for free
+   afterwards).
 2. `461` handling per *account* vs per *model* — not exercised live.
 3. `MIMO2API_CROSS_REGION_AGREE=false` has no operator flow (no admin
    endpoint to submit `status=1`); today it just disables the account.
 4. The `sceneType`/`params` payload fields (`payloadSceneType`,
    `payloadSceneParams`) are only populated for scene-enabled models
    (e.g. translation); their server-side effect is unverified.
+
+## 5.1 Device identity and the "remember this device" flag (2026-10-09)
+
+**Where the flag lives.** The identity verification page is Xiaomi's account SPA
+(`cdn…/mcfe--mi-account/static/…/main.6a03bf94.js` + lazily loaded chunks `IVPh`,
+`IVTPh`, `IVE`, `mobile`), not the MiMo bundle — nothing in the aistudio SPA
+mentions `serviceLoginAuth2`, `notificationUrl` or `securityStatus`. The SMS page
+builds its form as:
+
+```js
+initialValues: { ticket: "", trust: pageData.trustCheckBoxSelected }
+onSubmit → POST /identity/auth/verifyPhone   (ticket + trust + _flag)
+```
+
+so "remember this device" is exactly the boolean field `trust`, defaulted from the
+server's `trustCheckBoxSelected`. **mimo2api already submits `trust=true`**
+(`otp.go`, step 5) — the parameter was never the gap. The passport also offers
+dedicated trust-device routes (`/identity/verifyPush`, `/identity/verifyCode`,
+`/identity/auth/deviceAuth`, `/identity/verifyTrustMobile`), but they are only
+offered when the account already has a trusted device; our demand advertises
+`flag=4, options=[4]` (SMS) only.
+
+**Free live experiment (3 × `serviceLoginAuth2`, no SMS dispatched).**
+
+| attempt | cookies sent | result |
+|---|---|---|
+| A | none (the pre-fix production behaviour) | `code=0 securityStatus=16` + `notificationUrl`; response plants `deviceId, pass_ua, uLocale` |
+| B | A's `deviceId` + `pass_ua` + `uLocale` | same demand; plants `deviceId, uLocale` again |
+| C | A's `deviceId` only | same demand |
+
+So replaying the device cookies does **not** by itself skip verification. The trust
+must first be *established* by one completed verification bound to that device —
+and to get that binding, the device must be presented consistently, which is what
+we were failing to do (below).
+
+**The gap this exposed.** No production code mentioned `deviceId`/`pass_ua`/
+`uLocale` (only two throwaway probes, which fabricated a *random* `deviceId` per
+run); `http.Client` carried no cookie jar, so `serviceLoginAuth2` was sent with
+`Cookie:` absent; and `sessionFromJar` composed the session from six fixed fields,
+discarding the device cookies the chain had planted. Net effect: every login
+presented new hardware, so the trust never had anything to attach to.
+
+**Implemented.** `internal/mimo/device.go` harvests and replays the device blob
+(`deviceId`, `pass_ua`, `uLocale`, `cUserId`, `sdkVersion` — session cookies are
+deliberately excluded), the pool persists it per account (`accounts.Account.Device`),
+and every login/renewal hop presents it (TDD DEV-001..007, DEVPL-001). A `passToken`
+the landing chain rotates in now replaces the stored one instead of being overwritten
+by it. The probes are device-aware and SMS-safe: `cmd/loginprobe` reads the accounts
+file, never argv, and is built with `DisableOTPAuto` so it can never burn a code.
+
+**Still untested (needs one SMS).** Whether a completed verification — `trust=true`,
+same device — makes the *next* login verification-free. Recipe: finish one OTP login
+(`POST /v1/admin/otp/submit`), then run `go run ./cmd/loginprobe data/accounts.json`:
+exit 0 = the device is remembered (renewal can then re-login hands-free), exit 2 =
+verification is still demanded and the trust must be carried some other way.
 
 ## 6. Correction to `docs/usercross-reverse.md`
 

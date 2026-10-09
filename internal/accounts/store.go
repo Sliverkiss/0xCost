@@ -33,13 +33,18 @@ type Account struct {
 	// Egress is an egress LABEL only ("hk1"); the endpoint and its credentials
 	// come from the environment (MIMO2API_EGRESS_HK1). Empty means the default
 	// "direct" egress. Validated at startup (SDD §4.8).
-	Egress         string   `json:"egress,omitempty"`
-	UserID         string   `json:"user_id,omitempty"`
-	PassToken      string   `json:"pass_token,omitempty"`
-	Session        *Session `json:"session,omitempty"`
-	State          string   `json:"state,omitempty"` // available | cooldown | disabled
-	CooldownUntil  int64    `json:"cooldown_until,omitempty"`
-	DisabledReason string   `json:"disabled_reason,omitempty"`
+	Egress    string `json:"egress,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	PassToken string `json:"pass_token,omitempty"`
+	// Device is the passport device identity (deviceId/pass_ua/uLocale/…)
+	// harvested from a login and replayed on every later login/renewal, so the
+	// upstream recognises the device instead of seeing new hardware each time
+	// (docs/login-chain-reverse.md §5 item 1; internal/mimo/device.go).
+	Device         map[string]string `json:"device,omitempty"`
+	Session        *Session          `json:"session,omitempty"`
+	State          string            `json:"state,omitempty"` // available | cooldown | disabled
+	CooldownUntil  int64             `json:"cooldown_until,omitempty"`
+	DisabledReason string            `json:"disabled_reason,omitempty"`
 }
 
 // File is the on-disk wrapper.

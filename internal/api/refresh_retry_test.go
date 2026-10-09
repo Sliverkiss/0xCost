@@ -109,8 +109,10 @@ func TestTransparentRefreshRetryOn401(t *testing.T) {
 	if acct.Session == nil || acct.Session.Cookie == "" {
 		t.Fatal("refreshed session was not persisted")
 	}
-	if acct.PassToken != "V1:rt-live-1" {
-		t.Errorf("passToken changed to %q during the refresh", acct.PassToken)
+	// The refresh must not lose the credential; the chain may rotate it
+	// (TDD DEV-006), so the assertion is "still there", not "byte-identical".
+	if acct.PassToken == "" {
+		t.Error("refresh blanked the stored passToken")
 	}
 	if st := s.pool.StateOf("acc-refresh-1"); st != pool.StateAvailable {
 		t.Errorf("pool state = %s, want the account still in rotation after a successful refresh", st)

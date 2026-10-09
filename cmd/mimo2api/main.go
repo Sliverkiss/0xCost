@@ -100,10 +100,11 @@ func run() error {
 		if acct.UserID == "" || acct.PassToken == "" {
 			return fmt.Errorf("account %s has no passToken to renew", accountID)
 		}
-		sess, rerr := client.For(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
+		sess, rerr := client.For(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
 		if rerr != nil {
 			return rerr
 		}
+		acct.Device = mimo.MergeDevice(acct.Device, sess.Device)
 		acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
 		if uerr := store.Update(acct); uerr != nil {
 			log.Printf("accounts: persist renewal for %s: %v", accountID, uerr)
@@ -246,11 +247,12 @@ func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client) {
 		if acct.Session == nil {
 			continue
 		}
-		sess, err := client.For(acct.Egress).Renew(ctx, acct.UserID, acct.PassToken)
+		sess, err := client.For(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
 		if err != nil {
 			log.Printf("accounts: STS keepalive for %s: %v", acct.ID, err)
 			continue
 		}
+		acct.Device = mimo.MergeDevice(acct.Device, sess.Device)
 		acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
 		if err := store.Update(acct); err != nil {
 			log.Printf("accounts: persist STS keepalive for %s: %v", acct.ID, err)

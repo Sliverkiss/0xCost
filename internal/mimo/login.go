@@ -34,6 +34,10 @@ type Session struct {
 	PH        string // xiaomichatbot_ph value
 	UserID    string
 	PassToken string
+	// Device is the passport device identity the chain presented/harvested
+	// (deviceId/pass_ua/uLocale/…). The caller persists it per account and
+	// replays it on later logins — see device.go.
+	Device map[string]string
 }
 
 // parseXSSI strips the &&&START&&& prefix and decodes the JSON body. Bodies
@@ -193,6 +197,12 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Accept-Language", "zh-CN")
+	// Present the stored device identity: without it the passport mints a new
+	// deviceId for every login and the device can never become "known"
+	// (docs/login-chain-reverse.md §5 item 1; device.go).
+	if dev := deviceCookieHeader(c.device); dev != "" {
+		req.Header.Set("Cookie", dev)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("serviceLoginAuth2: %w", err)
@@ -200,7 +210,10 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	jar := collectCookies(resp)
+	jar := seedDeviceJar(c.device)
+	for k, v := range collectCookies(resp) {
+		jar[k] = v
+	}
 	m, err := parseXSSI(body)
 	if err != nil {
 		return nil, err
@@ -256,7 +269,7 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 		return nil, errors.New("login response missing userId/passToken — protocol drift")
 	}
 
-	sess, err := c.stsExchange(ctx, loc)
+	sess, err := c.stsExchangeWithJar(ctx, loc, jar)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +340,7 @@ func (c *Client) sessionFromJar(jar map[string]string, token string) *Session {
 	if ph != "" {
 		parts = append(parts, `xiaomichatbot_ph="`+ph+`"`)
 	}
-	return &Session{Cookie: strings.Join(parts, "; "), PH: ph}
+	return &Session{Cookie: strings.Join(parts, "; "), PH: ph, Device: harvestDevice(jar)}
 }
 
 // unquoteCookie strips the surrounding quotes passport cookies carry.
@@ -418,7 +431,11 @@ func (c *Client) Renew(ctx context.Context, userID, passToken string) (*Session,
 		return nil, err
 	}
 	req2.Header.Set("User-Agent", c.userAgent)
-	req2.Header.Set("Cookie", "userId="+userID+"; passToken="+passToken)
+	ck := "userId=" + userID + "; passToken=" + passToken
+	if dev := deviceCookieHeader(c.device); dev != "" {
+		ck += "; " + dev
+	}
+	req2.Header.Set("Cookie", ck)
 	resp2, err := c.http.Do(req2)
 	if err != nil {
 		return nil, fmt.Errorf("renewal serviceLogin: %w", err)
@@ -442,15 +459,24 @@ func (c *Client) Renew(ctx context.Context, userID, passToken string) (*Session,
 		return nil, errors.New("renewal response missing location")
 	}
 
-	// Step 3: follow the STS location for fresh cookies.
-	sess, err := c.stsExchange(ctx, loc)
+	// Step 3: follow the STS location for fresh cookies, seeded with the
+	// device identity so the whole chain presents the same device.
+	jar := seedDeviceJar(c.device)
+	sess, err := c.stsExchangeWithJar(ctx, loc, jar)
 	if err != nil {
 		return nil, err
 	}
 	if sess.UserID == "" {
 		sess.UserID = userID
 	}
-	sess.PassToken = passToken
+	// Prefer a rotated passToken when the chain planted one: the platform
+	// re-uses the credential today, but writing the stored value back over a
+	// fresh one would silently drop the refresh (zero-cost insurance).
+	if rotated := jar["passToken"]; rotated != "" && rotated != passToken {
+		sess.PassToken = rotated
+	} else {
+		sess.PassToken = passToken
+	}
 	return sess, nil
 }
 

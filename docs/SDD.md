@@ -119,7 +119,24 @@ Implemented in `mimo-web-api/src/xiaomi-login.js`; independently in
    account.xiaomi.com) → response `Set-Cookie` plants `xiaomichatbot_serviceToken`,
    `xiaomichatbot_ph`, `userId` (`xiaomi-login.js:249-268`; `PROTOCOL.md:117-127`).
 4. **Persist per account:** `userId`, `passToken` (from passport cookie jar,
-   `xiaomi-login.js:242-246`), and the derived cookie string + `ph`.
+   `xiaomi-login.js:242-246`), the derived cookie string + `ph`, and the
+   **device identity** (`deviceId` / `pass_ua` / `uLocale` — see the amendment
+   below and §2.5).
+
+> **Amendment (2026-10-09, reverse + live experiment).** The passport plants a
+> *device* identity alongside the session: `serviceLoginAuth2` answers with
+> `Set-Cookie: deviceId, pass_ua, uLocale`, and the identity verification page
+> carries the «remember this device» flag as the form field `trust` (initialised
+> from the server's `trustCheckBoxSelected`; we already submit `trust=true`).
+> Replaying those cookies does **not** by itself skip the new-device demand
+> (three-attempt live experiment: cookieless / full replay / deviceId-only all
+> answered `code=0` + `notificationUrl`), so the trust must first be established
+> by one completed verification *bound to that device*. What the client owes the
+> trust is continuity: without a stored device it presents `deviceId=""` on every
+> login, the passport mints a fresh one, and the trust can never attach. Accounts
+> therefore persist `device` and replay it on every login/renewal hop
+> (`internal/mimo/device.go`, `api/session_apply.go`); the server's freshly issued
+> value wins, exactly as a browser lets `Set-Cookie` overwrite what it sent.
 
 > **Amendment (2026-10-08, live smoke test).** The new-device OTP demand also
 > arrives with `code=0`: `securityStatus=128`, empty `location`,
@@ -189,6 +206,12 @@ Session validation: `GET /open-apis/user/mi/get` → `{"code":0,"data":{"userId"
 (`PROTOCOL.md:12`; `mimo-web-proxy/internal/mimo/web_client.go:305-328` also checks
 business `code==0` inside the 200 body). `GET /open-apis/user/info` is dead (410) —
 `web_client.go:302-304`.
+
+The renewal hop carries the stored device identity too (`Cookie: userId=…;
+passToken=…; deviceId=…`), and a `passToken` the landing chain rotates in
+replaces the stored one instead of being written over by it — the platform
+re-uses the credential today, but dropping a fresh one would silently forfeit the
+refresh (`internal/mimo/device.go`, TDD DEV-006).
 
 Keepalive: reference runs a 6h interval that validates cached sessions and refreshes
 only when invalid (`session.js:203-230`, `SESSION_REFRESH_HOURS` default 6,

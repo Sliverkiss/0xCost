@@ -57,10 +57,13 @@ Error handling today, precisely:
 Observability today is four aggregate integers (`total/available/cooldown/disabled` on
 `/healthz`, `server.go:268-287`) — no per-account state, no reason, no timing.
 
-Accounts (`accounts.Account`) are `id/phone/password/enabled/label/user_id/pass_token/
-session/state/cooldown_until/disabled_reason`. There is **no egress field**; all accounts
-share one `http.Client` (`client.go:79`) using Go's standard transport with header-level
-fingerprinting (no CGO/curl impersonation in this project).
+Accounts (`accounts.Account`) are `id/phone/password/enabled/label/egress/user_id/pass_token/
+device/session/state/cooldown_until/disabled_reason`. `egress` is a LABEL only (the endpoint
+and its credentials come from `MIMO2API_EGRESS_<LABEL>`; SDD §4.8) — accounts do not share one
+transport. `device` is the passport device identity (`deviceId`/`pass_ua`/`uLocale`) replayed on
+every login/renewal so the upstream stops seeing new hardware (device.go; SDD §2.2 amendment).
+Transport is Go's standard stack with header-level fingerprinting (no CGO/curl impersonation
+in this project).
 
 ## 3. Prior art: Rfym21/Qwen2API, and what actually transfers
 

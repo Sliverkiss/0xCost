@@ -9,7 +9,7 @@ Last run: **2026-10-09 14:29 CST**, account `182******16`, egress IP outside
 mainland China (which is why the login chain traverses the cross-region
 consent page — see `docs/login-chain-reverse.md`).
 
-## Status of LIVE-001..010
+## Status of LIVE-001..010 and DEVICE-001
 
 | ID | Case | Result | Evidence |
 |---|---|---|---|
@@ -23,6 +23,7 @@ consent page — see `docs/login-chain-reverse.md`).
 | LIVE-008 | Captcha probability | **SKIP** | Needs 5 one-time codes (`MIMO2API_LIVE_OTP_CODES`); each cold login sends an SMS, so the run refuses to start without them. |
 | LIVE-009 | Fastchat usage merge | **PASS (recorded)** | See below. |
 | LIVE-010 | Conversation GC | **phase 1 PASS** | Phase-1 snapshot written (24 h gap required); phase 2 runs with `MIMO2API_LIVE_PHASE=2`. |
+| DEVICE-001 | Device identity vs. new-device verification | **PARTIAL** (needs one SMS) | Reverse + 3 free live attempts: the demand persists even when the passport's own `deviceId/pass_ua/uLocale` are replayed, while production code previously sent *no* device cookie at all and dropped what the chain planted. Persist-and-replay is implemented (DEV-001..007, DEVPL-001); whether one completed verification then makes later logins verification-free is the open half. See below. |
 | LIVE-SESS-001 | Session chaining vs replay | **PASS** | See below — pinned turn chained in 8.2 s, replay control 47.4 s, context preserved across turns. |
 | LIVE-SESS-002 | One-shot stays stateless | **PASS** | `stream:false` with a live session id: 200, no session headers, store untouched (`sessions 1→1`, `lookups 1→1`). |
 | LIVE-TTS-003 | Long speech beyond the cap | **FAIL (by design, then removed)** | 1110 runes → 2 pieces → 502 after 278.2 s: piece 1/2 failed upstream. The split worked; a ~1020-rune piece is beyond what the service synthesises. Cap is now refused up front (ADR 0010). |
@@ -68,6 +69,51 @@ checks whether the answer still carries the fact from phase 1:
 - answer references the fact → upstream auto-save suffices, SDD §4.3 unchanged;
 - `event:error` / lost context → SDD §4.3 must be amended to call
   `POST /open-apis/chat/conversation/save` on store.
+
+## DEVICE-001 — the device identity, and why every login looked like new hardware
+
+Goal: find out how the upstream decides "this is a known device", so a re-login
+stops demanding an SMS code every time.
+
+**Reverse (2026-10-09).** The verification page belongs to Xiaomi's account SPA
+(`mcfe--mi-account` chunks `IVPh`/`IVTPh`/`IVE`/`mobile`); the MiMo bundle contains
+no passport code at all. The SMS form is `{ticket, trust}`, with `trust` defaulted
+from the server's `trustCheckBoxSelected` — and we already submit `trust=true`
+(`otp.go` step 5). Trust-device routes exist (`/identity/verifyPush`,
+`/identity/verifyCode`, `/identity/auth/deviceAuth`, `/identity/verifyTrustMobile`)
+but are offered only to accounts that already own a trusted device; our demand
+advertises `flag=4, options=[4]` (SMS only). Details: `docs/login-chain-reverse.md`
+§5.1.
+
+**Free experiment (no SMS sent, 3 × `serviceLoginAuth2`).**
+
+- A — no cookies (the production behaviour at the time): `code=0 securityStatus=16`
+  + `notificationUrl`; response plants `deviceId, pass_ua, uLocale`.
+- B — replay A's `deviceId + pass_ua + uLocale`: same demand.
+- C — replay A's `deviceId` only: same demand.
+
+⇒ Replaying the device cookies is not sufficient on its own: the trust has to be
+*established* by one completed verification bound to that device.
+
+**What it exposed.** Production code had no `deviceId` concept (two throwaway probes
+fabricated a random one per run), `http.Client` had no cookie jar so
+`serviceLoginAuth2` went out with no `Cookie:` header at all, and `sessionFromJar`
+composed the session from six fixed fields — dropping the device cookies the chain
+had just planted. Every login therefore presented new hardware, and the trust could
+never attach.
+
+**Shipped.** `internal/mimo/device.go` (whitelist harvest + replay, session cookies
+excluded), `accounts.Account.Device` (persisted, merged — a silent server never
+wipes a stored identity), replay on Auth2 + every identity/STS hop, adoption of a
+rotated `passToken`, `api/session_apply.go` for the fold-in, and device-aware
+SMS-safe probes (`cmd/loginprobe` reads the accounts file, never argv, and is built
+with `DisableOTPAuto`; `cmd/otpprobe`/`cmd/otp2probe`/`dump.go` deleted).
+Unit + e2e proof: DEV-001..007, DEVPL-001.
+
+**Open half (one SMS).** Whether one completed verification makes the *next* login
+verification-free. Recipe: complete one OTP login via `POST /v1/admin/otp/submit`,
+then `go run ./cmd/loginprobe data/accounts.json` — exit 0 = device remembered
+(renewal can re-login hands-free), exit 2 = still demanded.
 
 ## Notes for the next run
 

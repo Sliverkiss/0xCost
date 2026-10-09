@@ -24,10 +24,11 @@ import (
 
 type accountFile struct {
 	Accounts []struct {
-		ID        string `json:"id"`
-		UserID    string `json:"user_id"`
-		PassToken string `json:"pass_token"`
-		Enabled   bool   `json:"enabled"`
+		ID        string            `json:"id"`
+		UserID    string            `json:"user_id"`
+		PassToken string            `json:"pass_token"`
+		Enabled   bool              `json:"enabled"`
+		Device    map[string]string `json:"device"`
 	} `json:"accounts"`
 }
 
@@ -47,9 +48,10 @@ func main() {
 		os.Exit(1)
 	}
 	var userID, passToken, acctID string
+	var device map[string]string
 	for _, a := range af.Accounts {
 		if a.PassToken != "" && (userID == "" || a.Enabled) {
-			userID, passToken, acctID = a.UserID, a.PassToken, a.ID
+			userID, passToken, acctID, device = a.UserID, a.PassToken, a.ID, a.Device
 			if a.Enabled {
 				break
 			}
@@ -70,14 +72,29 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
+	devNames := make([]string, 0, len(device))
+	for k := range device {
+		devNames = append(devNames, k)
+	}
+	fmt.Printf("stored device identity: %v (presented on every hop)\n", devNames)
+
 	start := time.Now()
-	sess, err := c.Renew(ctx, userID, passToken)
+	sess, err := c.WithDevice(device).Renew(ctx, userID, passToken)
 	if err != nil {
 		fmt.Println("RENEW-ERROR:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("RENEW-OK in %s: userID=%s cookies=%d ph=%t\n",
 		time.Since(start).Round(time.Millisecond), sess.UserID, len(strings.Split(sess.Cookie, "; ")), sess.PH != "")
+	harvested := make([]string, 0, len(sess.Device))
+	for k, v := range sess.Device {
+		if old, ok := device[k]; ok && old != v {
+			harvested = append(harvested, k+"(rotated)")
+			continue
+		}
+		harvested = append(harvested, k)
+	}
+	fmt.Printf("device identity after renewal: %v\n", harvested)
 
 	if err := c.Validate(ctx, sess.Cookie); err != nil {
 		fmt.Println("VALIDATE-ERROR:", err)
@@ -105,6 +122,9 @@ func main() {
 		m["session"] = map[string]any{"cookie": sess.Cookie, "ph": sess.PH, "fetched_at": time.Now().Unix()}
 		m["user_id"] = sess.UserID
 		m["pass_token"] = sess.PassToken
+		if len(sess.Device) > 0 {
+			m["device"] = sess.Device
+		}
 		m["state"] = "available"
 		wrote = true
 	}

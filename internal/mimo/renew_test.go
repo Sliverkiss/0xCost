@@ -61,6 +61,12 @@ func TestRenewalProbe(t *testing.T) {
 
 // RENEW-002: STS from passToken — location followed, fresh cookies cached
 // (SDD §2.3).
+//
+// passToken precedence (changed 2026-10-09, same rule the OTP/login path has
+// always used): the credential the landing chain plants wins, because a rotated
+// token is strictly fresher than the one we presented; a chain that plants none
+// leaves the stored value untouched (DEV-006b). What must never happen is a
+// renewal that blanks or loses the credential.
 func TestRenewSTSFromPassToken(t *testing.T) {
 	client, passport := renewEnv(t)
 	sess, err := client.Renew(context.Background(), "123456", "rt-old")
@@ -73,8 +79,8 @@ func TestRenewSTSFromPassToken(t *testing.T) {
 	if !strings.Contains(sess.Cookie, "st-mock-1") {
 		t.Errorf("fresh serviceToken not in cookie: %q", sess.Cookie)
 	}
-	if sess.PassToken != "rt-old" {
-		t.Errorf("passToken must be carried over: %q", sess.PassToken)
+	if sess.PassToken != "rt-mock-1" {
+		t.Errorf("passToken = %q, want the chain-planted rt-mock-1 (rotation wins over the presented rt-old)", sess.PassToken)
 	}
 }
 

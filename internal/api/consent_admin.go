@@ -59,7 +59,7 @@ func (s *Server) handleConsentAgree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := s.clientFor(acct.Egress).LoginWithConsent(r.Context(), acct.Phone, acct.Password)
+	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).LoginWithConsent(r.Context(), acct.Phone, acct.Password)
 	if err != nil {
 		// New-device OTP demand: register the challenge for the existing
 		// submit endpoint and disable the account until the code is entered
