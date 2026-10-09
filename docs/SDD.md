@@ -744,6 +744,17 @@ waits up to `queue_wait` (default 15s; simple-chat uses 30s, `pool.go:162-163`, 
 default shorter because our clients are interactive). Timeout → `429 pool_busy` with
 `Retry-After` (error mapping from simple-chat `server.go:923-959`).
 
+**A lease is capacity for one request, never stickiness (ADR 0019).** It names the
+account the request is talking to (so every replayed turn keeps the same upstream
+conversation) and occupies one in-flight slot; it is not shared between requests and
+carries no conversation state. Each lease carries the TTL it was issued with
+(`MIMO2API_LEASE_TTL_S`, default 120s): the request path applies it as a per-turn
+context deadline, and the pool reaper — swept every 5s by the janitor — force-releases
+slots past their TTL and cancels the upstream call they were holding
+(`Lease.ArmExpiry`). `Release` is idempotent, and the slot is handed back **before**
+the client is written to. `MIMO2API_SLOT_HOLD` decides when: `last-byte` (default) or
+`first-byte`, where the slot goes back the moment the upstream starts answering.
+
 Selection score (near-best-of-N, per simple-chat `pool.go:612-614, 662-680`):
 `score = (inflight/capacity)*100 + ewma_latency_seconds + warm_penalty`, choose
 randomly among accounts within `best*1.15+1`. EWMA alpha 0.2, observed per request
@@ -1165,7 +1176,7 @@ DS_REDIS_HOST=                       # Upstash: when set, Redis is the account s
 DS_REDIS_TOKEN=                      # its token (required for a bare host / https URL)
 DS_REDIS_CA_FILE=                    # extra root CAs for rediss:// (private Redis; never disables verification)
 MIMO2API_DEFAULT_MODEL=mimo-v2.6-pro
-MIMO2API_REQUEST_TIMEOUT_MS=300000   # upstream idle/stream timeout (mimo-web-api config.js:127)
+MIMO2API_REQUEST_TIMEOUT_MS=120000   # client-facing budget for one chat request (ADR 0019; wired)
 MIMO2API_SSE_IDLE_TIMEOUT_S=180      # no-event watchdog (mimo-web-proxy chat.go:62)
 MIMO2API_SESSION_REFRESH_HOURS=12    # credential keepalive sweep (ADR 0014; NOT the deleted session store)
 MIMO2API_MAX_INFLIGHT_PER_ACCOUNT=2
@@ -1262,15 +1273,39 @@ the source-tree `data/` — same file, container-native path.
 | Upstream 5xx / transport | 502 | api_error | upstream_failure |
 | Content filter | 400 | invalid_request_error | content_filter |
 | Query exceeds channel char cap (§2.8) | 400 | invalid_request_error | context_too_long |
+| Gateway deadline: request budget or per-turn lease TTL (§7.6) | 504 | api_error | chat_timeout |
 
 Codes `pool_parked` / `pool_busy` / `no_accounts` borrowed from simple-chat's mapping
 (`server.go:923-959`); `Retry-After` always reflects **local** recovery deadlines and
 never leaks account identity (simple-chat guarantees the same,
 `error_mapping_test.go:17-46`).
 
-Streaming errors before first byte → normal HTTP error JSON. After first byte → a
-final SSE chunk `{"choices":[{"delta":{},"finish_reason":"stop"}]}` preceded by a
-chunk carrying `delta.content` with the error text, then `[DONE]`.
+**Retired with the streaming path (ADR 0017):** the mid-stream error framing that used
+to follow a first byte ("a chunk carrying `delta.content` with the error text, then a
+final `finish_reason` chunk and `[DONE]`") no longer exists — there is no first byte to
+have committed, so **every** error is a plain HTTP error JSON, pre-response.
+
+### 7.6 Timeouts, budgets and the slot policy (ADR 0019)
+
+Three clocks, all of them ours:
+
+| Clock | Knob | Default | Effect when it expires |
+|---|---|---|---|
+| Request budget | `MIMO2API_REQUEST_TIMEOUT_MS` | 120s | `504 chat_timeout` naming the budget; no retry, no cooldown, slot returned |
+| Turn / slot TTL | `MIMO2API_LEASE_TTL_S` | 120s | the upstream call is cancelled, same 504, slot returned; the reaper reclaims the slot if the handler itself is wedged |
+| SSE idle watchdog | `MIMO2API_SSE_IDLE_TIMEOUT_S` | 180s | a real upstream stream problem → transport failure, the account cools |
+
+The upstream HTTP client timeout is **derived** (`lease TTL + 30s`), so a single upstream
+turn can only legitimately outlive its own TTL by the connection margin. Anything the
+gateway cuts with our own clock is reported as `chat_timeout` and leaves the account
+untouched: our deadline is not evidence about the account, and cooling on it would shrink
+the pool every time a client sends an oversized replay.
+
+The default budget sits below the ~100s origin read timeout a CDN imposes on a hosted
+deployment, so the client gets our error with numbers instead of an intermediary's 524.
+Long multi-message replays (~258s measured for 20 × 6,000 chars) therefore exceed it by
+design: the honest 504 replaces an unbounded wait, and the supported fixes are fewer
+messages per request, raising the knob, or reusing the upstream `dialogId` across requests.
 
 ### 7.5 Account eviction
 

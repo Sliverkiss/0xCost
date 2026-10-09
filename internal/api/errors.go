@@ -4,16 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
 )
 
-// encodeJSON writes v as a JSON response body.
-func encodeJSON(w http.ResponseWriter, v any) error {
+// encodeJSON writes v as a JSON response body. Plain io.Writer: the chat path
+// encodes into a buffer first so the in-flight slot can go back before anything
+// is written to the client (ADR 0019).
+func encodeJSON(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
 
@@ -120,8 +124,27 @@ func upstreamTooLongMessage() string {
 // Call only BEFORE the first byte reaches the client; post-first-byte
 // stream failures take the SSE error-frame path instead (TDD API-021,
 // ERRMAP-012).
+// requestTimeoutError: the gateway's own deadline fired (ADR 0019). It is not an
+// upstream failure and not the account's fault, so it neither cools the account
+// nor retries — the caller gets a 504 naming the knob that governs it.
+type requestTimeoutError struct {
+	Budget time.Duration
+	Where  string
+}
+
+func (e *requestTimeoutError) Error() string {
+	where := e.Where
+	if where == "" {
+		where = "waiting for the upstream"
+	}
+	return fmt.Sprintf("the upstream did not answer within the gateway's %s budget while %s; "+
+		"the gateway aborted the request (MIMO2API_REQUEST_TIMEOUT_MS / MIMO2API_LEASE_TTL_S). "+
+		"Retry, send fewer messages per request, or raise the budget", e.Budget.Round(time.Second), where)
+}
+
 func (s *Server) MapError(w http.ResponseWriter, err error) {
 	var uv *unknownVoiceError
+	var deadline *requestTimeoutError
 	var (
 		parked  *pool.ErrParked
 		busy    *pool.ErrBusy
@@ -134,6 +157,10 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		noSSE   *streamUnsupportedError
 	)
 	switch {
+	case errors.As(err, &deadline):
+		// Our own budget/TTL (ADR 0019): a gateway-side timeout, with numbers,
+		// and no account penalty — the account was serving correctly.
+		writeError(w, http.StatusGatewayTimeout, "api_error", "chat_timeout", deadline.Error(), 0)
 	case errors.As(err, &parked):
 		// All accounts cooling down (SDD §7.4, TDD ERRMAP-003).
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "pool_parked",

@@ -43,6 +43,12 @@ services:
       #   SMS on its own — the operator finishes a human gate (ADR 0013).
       - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
+      # ADR 0019: a real client-facing budget, the per-turn/slot TTL, and the
+      # conservative slot policy. Pinned so a default change cannot silently
+      # alter when capacity goes back to the pool.
+      - MIMO2API_REQUEST_TIMEOUT_MS=${MIMO2API_REQUEST_TIMEOUT_MS:-120000}
+      - MIMO2API_LEASE_TTL_S=${MIMO2API_LEASE_TTL_S:-120}
+      - MIMO2API_SLOT_HOLD=${MIMO2API_SLOT_HOLD:-last-byte}
       # 0 = per-channel caps (50k fastchat / 102,400 others); a positive value is the
       # operator override for a client that sends more context than the Studio's
       # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).

@@ -836,3 +836,35 @@ The project is test-complete when **all** of the following hold:
 7. **No real credentials in anything mock-side:** grep of the repo (excluding
    git-ignored `data/`) finds no phone number, password, passToken, or serviceToken
    from §8 — enforced by a repo-hygiene check in the test wrapper.
+
+
+## 8. ADR 0019 — leases, budgets and slot policy (TIMEOUT/SLOT/LEASE-TTL)
+
+The lease is per-request capacity (never stickiness) and each request now has a real
+client-facing budget, a per-turn deadline and an explicit answer to "when does the slot
+go back?". Cases live beside their subject: `internal/api/lease_test.go` (external
+`api_test` package, like the other end-to-end cases), `internal/pool/lease_ttl_test.go`,
+`internal/config/config_test.go`.
+
+| Case | Precondition | Stimulus | Observable expectation |
+| --- | --- | --- | --- |
+| TIMEOUT-001 | One account; upstream stalls before its first byte | `RequestTimeout=1s`, `LeaseTTL=30s`, stall 4s | `504 api_error chat_timeout`, answered in <3s, message names `1s` and `MIMO2API_REQUEST_TIMEOUT_MS`; account still `available`; `InFlight()==0` |
+| TIMEOUT-002 | Same, but the turn TTL is the smaller budget | `RequestTimeout=30s`, `LeaseTTL=1s`, stall 4s | `504 chat_timeout` naming `1s` and `LEASE_TTL` — the message reports the budget that actually bit |
+| SLOT-001 | `MaxInflight=1`, `QueueWait=300ms`, `SlotHold=first-byte` | Two concurrent chats; the first has its first byte then stalls 900ms mid-generation | The second is served `200` within 700ms (the slot came back at the first byte), and the first still ends `200` with its own answer; `InFlight()==0` afterwards |
+| SLOT-002 | Identical setup, default `last-byte` | Same two requests | The second answers `429 pool_busy` while the only slot is busy — the conservative default is asserted, not assumed |
+| LEASE-TTL-001 | `SlotTTL=40ms`, one account | Hold a slot (with `ArmExpiry` armed) past the TTL, then `ReapExpiredSlots` | Nothing reaped before the TTL; after it: 1 slot reaped, the armed cancel fired, `InFlight()==0`, the account serves again, and both `Release` calls stay idempotent |
+| LEASE-TTL-002 | `SlotTTL=30ms` | Release normally, then wait past the TTL and reap | 0 slots reaped and the armed cancel never fires |
+| LEASE-TTL-003 | No `SlotTTL` | Hold a slot, reap | 0 reaped: the reaper is off, so a deployment cannot silently lose capacity accounting |
+| LEASE-TTL-004 | `SlotTTL=20ms` + `Logf` | Hold past the TTL, reap | Exactly one log line naming the account and the age |
+| LEASE-TTL-005 | `SlotTTL=5s` | Acquire | The lease carries its own TTL and issue time, and does not report itself released |
+| CONF-020 | `MIMO2API_SLOT_HOLD=first_byte` | `Load()` | An error naming `MIMO2API_SLOT_HOLD`; `" FIRST-BYTE "` (case/space) is accepted as `first-byte` |
+| CONF-019 (extended) | env knobs set | accessor table | `LeaseTTL` and `SlotHold` answer from the parsed config, and `UpstreamTimeout()==LeaseTTL+30s` |
+
+**Retired with this change:** the old `CONF-*` assertion that the request timeout was
+300s (it is 120s now), and the implicit contract that a request had no client-facing
+deadline at all — that was the dead-knob bug, now covered by TIMEOUT-001/002.
+
+**Not covered by a test, deliberately:** that an intermediary (Cloudflare, a platform
+router) cuts a long non-streaming request at its own ~100s. That is external
+behaviour; the deployment check for it is a live long request through the public URL
+(`docs/SDD.md` §7.6), and the mitigation is the default budget being below it.

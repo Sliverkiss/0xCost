@@ -32,6 +32,12 @@ type Server struct {
 	apiKeys      [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
 	defaultModel string
 	replayCap    int
+	// requestTimeout/leaseTTL/slotHold implement ADR 0019: a real client-facing
+	// deadline, a per-turn upstream deadline, and when the in-flight slot goes
+	// back to the pool.
+	requestTimeout time.Duration
+	leaseTTL       time.Duration
+	slotHold       string
 	// maxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 	allowStream   bool
@@ -151,6 +157,14 @@ func (s *Server) debugf(format string, args ...any) {
 	s.logger.Printf("debug: "+format, args...)
 }
 
+// Slot hold policies (ADR 0019). The env-level names live in
+// internal/config (MIMO2API_SLOT_HOLD); the API layer only needs to know which
+// one is in force.
+const (
+	slotHoldLastByte  = "last-byte"
+	slotHoldFirstByte = "first-byte"
+)
+
 // Options configures a Server.
 type Options struct {
 	APIKeys      []string // parsed list; empty = open auth
@@ -159,6 +173,16 @@ type Options struct {
 	Client       *mimo.Client
 	DefaultModel string // "auto"/missing model resolution (SDD §5.2)
 	ReplayCap    int    // max replayed user turns (SDD §5.3B, default 20)
+	// RequestTimeout is the whole client-facing budget for one chat request
+	// (ADR 0019, default 120s). 0 = no total budget (the per-turn lease TTL
+	// still applies).
+	RequestTimeout time.Duration
+	// LeaseTTL bounds one upstream turn and, as a backstop, the in-flight slot
+	// that turn holds (ADR 0019, default 120s).
+	LeaseTTL time.Duration
+	// SlotHold is when a request gives its in-flight slot back: "last-byte"
+	// (default) or "first-byte" (ADR 0019).
+	SlotHold string
 	// MaxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
 	MaxQueryChars int
@@ -187,6 +211,15 @@ func New(opts Options) *Server {
 	}
 	if opts.ReplayCap <= 0 {
 		opts.ReplayCap = 20
+	}
+	if opts.RequestTimeout < 0 {
+		opts.RequestTimeout = 0
+	}
+	if opts.LeaseTTL <= 0 {
+		opts.LeaseTTL = 120 * time.Second
+	}
+	if opts.SlotHold == "" {
+		opts.SlotHold = slotHoldLastByte
 	}
 	if opts.AudioPoll <= 0 {
 		opts.AudioPoll = time.Second
@@ -228,6 +261,9 @@ func New(opts Options) *Server {
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,
+		requestTimeout: opts.RequestTimeout,
+		leaseTTL:       opts.LeaseTTL,
+		slotHold:       opts.SlotHold,
 		maxQueryChars:  opts.MaxQueryChars,
 		logger:         logger,
 		debug:          opts.Debug,

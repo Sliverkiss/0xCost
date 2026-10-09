@@ -236,7 +236,9 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `DS_REDIS_INSECURE` | *(unset)* | Set to `1` to allow a plaintext `redis://` to a **non-loopback** host (local dev only). The store refuses it by default: credentials and session cookies live in Redis |
 | `DS_REDIS_CA_FILE` | *(unset)* | PEM bundle of extra root CAs for `rediss://` (a private/self-hosted Redis). Verification is never disabled; an unreadable or non-PEM file fails startup |
 | `MIMO2API_DEFAULT_MODEL` | `mimo-v2.6-pro` | Model for unknown/missing ids |
-| `MIMO2API_REQUEST_TIMEOUT_MS` | `300000` | Upstream request timeout |
+| `MIMO2API_REQUEST_TIMEOUT_MS` | `120000` | The whole client-facing budget for one chat request (**wired in ADR 0019**; until then it was read by tests alone). Exceeded → our own `504 chat_timeout` naming the knob, kept under a CDN's ~100s origin read timeout so the client sees our error rather than a 524 |
+| `MIMO2API_LEASE_TTL_S` | `120` | Per-upstream-turn deadline and the in-flight slot's TTL (ADR 0019). A slot past its TTL is force-released by the pool reaper and its upstream call is cancelled |
+| `MIMO2API_SLOT_HOLD` | `last-byte` | When a request gives its in-flight slot back: `last-byte` (the slot spans the generation) or `first-byte` (released as soon as the upstream starts answering — more per-account concurrency while generating, an account-risk trade, so it is opt-in) |
 | `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | Upstream no-SSE-event watchdog: MiMo streams its answer to us, so this aborts a stalled upstream read (it is not a client-facing keepalive) |
 | `MIMO2API_SESSION_REFRESH_HOURS` | `12` | Background STS keepalive sweep (ADR 0014: it refreshes the session cookie, never the credential) |
 | `MIMO2API_MAX_INFLIGHT_PER_ACCOUNT` | `2` | Per-account concurrency semaphore |

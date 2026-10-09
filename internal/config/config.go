@@ -31,10 +31,54 @@ const (
 	DefaultSecChUA      = `"Google Chrome";v="153", "Chromium";v="153", "Not)A;Brand";v="24"`
 )
 
+// Slot hold policies (ADR 0019): when a request gives its in-flight slot back.
+const (
+	// SlotHoldLastByte keeps the slot for the whole upstream generation — the
+	// slot means "this account is working on this request".
+	SlotHoldLastByte = "last-byte"
+	// SlotHoldFirstByte releases the slot the moment the upstream starts
+	// answering: the generation itself no longer occupies capacity, so a single
+	// account can serve more conversations concurrently. Account risk, not code
+	// risk — hence opt-in.
+	SlotHoldFirstByte = "first-byte"
+)
+
+// parseSlotHold validates MIMO2API_SLOT_HOLD. An unknown value is an error
+// naming the accepted ones: a typo must not silently pick a policy.
+func parseSlotHold(v string) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "", SlotHoldLastByte:
+		return SlotHoldLastByte, nil
+	case SlotHoldFirstByte:
+		return SlotHoldFirstByte, nil
+	default:
+		return "", fmt.Errorf("MIMO2API_SLOT_HOLD=%q: want %q or %q", v, SlotHoldLastByte, SlotHoldFirstByte)
+	}
+}
+
 // Default durations per SDD §6.
 const (
-	DefaultRequestTimeout = 300 * time.Second
+	// DefaultRequestTimeout is the whole client-facing budget for one chat
+	// request (ADR 0019). It replaced a knob that nothing read, so the real
+	// behaviour used to be "no deadline at all" — bounded only by a hardcoded
+	// 30-minute HTTP client timeout. 120s covers a single measured turn
+	// (6–40s, long ones ~100s) and sits inside the ~100s origin read timeout
+	// of a CDN in front of us, so we answer with our own 504 and numbers
+	// instead of letting an intermediary cut the connection (524).
+	DefaultRequestTimeout = 120 * time.Second
 	DefaultSSEIdleTimeout = 180 * time.Second
+	// DefaultLeaseTTL bounds one upstream turn and, as a backstop, the in-flight
+	// slot a turn holds (ADR 0019). A slot is capacity, not stickiness: it is
+	// per request, and its TTL is what stops a wedged connection from pinning
+	// an account for the 30 minutes the HTTP client used to allow.
+	DefaultLeaseTTL = 120 * time.Second
+	// DefaultSlotHold is when a request gives its in-flight slot back:
+	// "last-byte" (the slot spans the generation) or "first-byte" (the slot is
+	// released as soon as the upstream starts answering). Conservative by
+	// default: first-byte raises per-account concurrency while a model is
+	// generating, which is the account-safety question, not a code question.
+	DefaultSlotHold = SlotHoldLastByte
 	// DefaultSessionRefresh is the STS keepalive cadence (ADR 0014): 12 hours,
 	// because a renewal re-mints the session cookie and never the credential —
 	// the passToken's own 30-day clock is what a password login resets.
@@ -91,6 +135,8 @@ type Config struct {
 	accountsFile         string
 	defaultModel         string
 	requestTimeout       time.Duration
+	leaseTTL             time.Duration
+	slotHold             string
 	sseIdleTimeout       time.Duration
 	sessionRefresh       time.Duration
 	maxInflight          int
@@ -140,6 +186,8 @@ func Load() (*Config, error) {
 		secChUA:              getenv("MIMO2API_SEC_CH_UA", DefaultSecChUA),
 		logLevel:             getenv("MIMO2API_LOG_LEVEL", DefaultLogLevel),
 		requestTimeout:       DefaultRequestTimeout,
+		leaseTTL:             DefaultLeaseTTL,
+		slotHold:             DefaultSlotHold,
 		sseIdleTimeout:       DefaultSSEIdleTimeout,
 		sessionRefresh:       DefaultSessionRefresh,
 		maxInflight:          DefaultMaxInflight,
@@ -187,6 +235,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.requestTimeout, err = getenvMillis("MIMO2API_REQUEST_TIMEOUT_MS", DefaultRequestTimeout); err != nil {
+		return nil, err
+	}
+	if c.leaseTTL, err = getenvSeconds("MIMO2API_LEASE_TTL_S", DefaultLeaseTTL); err != nil {
+		return nil, err
+	}
+	if c.slotHold, err = parseSlotHold(getenv("MIMO2API_SLOT_HOLD", DefaultSlotHold)); err != nil {
 		return nil, err
 	}
 	if c.sseIdleTimeout, err = getenvSeconds("MIMO2API_SSE_IDLE_TIMEOUT_S", DefaultSSEIdleTimeout); err != nil {
@@ -272,11 +326,26 @@ func (c *Config) RedisHost() string             { return c.redisHost }
 func (c *Config) RedisToken() string            { return c.redisToken }
 func (c *Config) DefaultModel() string          { return c.defaultModel }
 func (c *Config) RequestTimeout() time.Duration { return c.requestTimeout }
-func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
-func (c *Config) SessionRefresh() time.Duration { return c.sessionRefresh }
-func (c *Config) MaxInflight() int              { return c.maxInflight }
-func (c *Config) QueueWait() time.Duration      { return c.queueWait }
-func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
+
+// LeaseTTL is the per-turn upstream deadline and the in-flight slot's TTL
+// backstop (ADR 0019).
+func (c *Config) LeaseTTL() time.Duration { return c.leaseTTL }
+
+// SlotHold reports whether a request hands its slot back at the first upstream
+// byte rather than after the last one (ADR 0019, MIMO2API_SLOT_HOLD).
+func (c *Config) SlotHold() string { return c.slotHold }
+
+// UpstreamTimeout is the HTTP client timeout for upstream calls. It is derived,
+// never a bare constant: a single upstream turn can only legitimately outlive
+// its own lease TTL, and the old hardcoded 30 minutes is what let one wedged
+// connection hold an account slot for half an hour (ADR 0019). The margin
+// covers connection setup, DNS and TLS inside the same budget.
+func (c *Config) UpstreamTimeout() time.Duration { return c.leaseTTL + 30*time.Second }
+func (c *Config) SSEIdleTimeout() time.Duration  { return c.sseIdleTimeout }
+func (c *Config) SessionRefresh() time.Duration  { return c.sessionRefresh }
+func (c *Config) MaxInflight() int               { return c.maxInflight }
+func (c *Config) QueueWait() time.Duration       { return c.queueWait }
+func (c *Config) AudioPoll() time.Duration       { return c.audioPoll }
 
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }

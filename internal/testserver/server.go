@@ -2,6 +2,7 @@ package testserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -53,11 +54,16 @@ type TestServerOptions struct {
 	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
 	// per-channel chat caps (ADR 0015).
 	MaxQueryChars int
-	Now           func() time.Time
-	Probe         pool.ProbeFunc
-	Renew         pool.RenewFunc
-	Debug         bool      // MIMO2API_LOG_LEVEL=debug equivalent
-	LogSink       io.Writer // nil = discard-free default logger; set to capture trace lines
+	// RequestTimeout/LeaseTTL/SlotHold mirror the ADR 0019 knobs. Zero means the
+	// api.New defaults (no total budget, 120s per turn, last-byte).
+	RequestTimeout time.Duration
+	LeaseTTL       time.Duration
+	SlotHold       string
+	Now            func() time.Time
+	Probe          pool.ProbeFunc
+	Renew          pool.RenewFunc
+	Debug          bool      // MIMO2API_LOG_LEVEL=debug equivalent
+	LogSink        io.Writer // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
 	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
 	// httptest proxy and watch what leaves through it.
@@ -117,10 +123,18 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		nowFn = time.Now
 	}
 
+	var logf func(format string, args ...any)
+	if opts.LogSink != nil {
+		sink := opts.LogSink
+		logf = func(format string, args ...any) { fmt.Fprintf(sink, format+"\n", args...) }
+	}
+
 	p := pool.New(storeAccounts, pool.Options{
 		MaxInflight: opts.MaxInflight,
 		QueueWait:   queueWait,
 		Now:         nowFn,
+		SlotTTL:     opts.LeaseTTL, // reaper TTL (ADR 0019)
+		Logf:        logf,
 	}, opts.Probe, opts.Renew)
 
 	client := mimo.New(mimo.Options{
@@ -141,8 +155,12 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		DefaultModel:  opts.DefaultModel,
 		ReplayCap:     opts.ReplayCap,
 		MaxQueryChars: opts.MaxQueryChars,
-		Logger:        logger,
-		Debug:         opts.Debug,
+		// ADR 0019 knobs.
+		RequestTimeout: opts.RequestTimeout,
+		LeaseTTL:       opts.LeaseTTL,
+		SlotHold:       opts.SlotHold,
+		Logger:         logger,
+		Debug:          opts.Debug,
 
 		AudioPoll:      opts.AudioPoll,
 		TTSTimeout:     opts.TTSTimeout,

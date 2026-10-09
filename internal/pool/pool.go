@@ -158,6 +158,11 @@ type Options struct {
 	RiskWindow  time.Duration
 	WarmPenalty float64 // selection penalty for accounts with inflight work
 	Now         func() time.Time
+	// SlotTTL bounds how long one request may hold an in-flight slot before the
+	// reaper force-releases it (ADR 0019). 0 disables the reaper.
+	SlotTTL time.Duration
+	// Logf receives reaper messages; nil is silent.
+	Logf func(format string, args ...any)
 }
 
 type account struct {
@@ -204,6 +209,13 @@ type Pool struct {
 	probe       ProbeFunc
 	renew       RenewFunc
 	notify      chan struct{} // release signal for Acquire waiters (buffered 1)
+	// slotTTL/ live / expiredSlots implement the slot reaper (ADR 0019): a slot
+	// is capacity held for one request, and a request that outlives its TTL must
+	// not pin the account it leased.
+	slotTTL      time.Duration
+	logf         func(format string, args ...any)
+	live         map[*Lease]struct{}
+	expiredSlots int
 }
 
 // New builds a pool from account records. Only enabled entries become pool
@@ -243,6 +255,9 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 	}
 	p := &Pool{
 		maxInflight: opts.MaxInflight,
+		slotTTL:     opts.SlotTTL,
+		logf:        opts.Logf,
+		live:        make(map[*Lease]struct{}),
 		queueWait:   opts.QueueWait,
 		riskWindow:  opts.RiskWindow,
 		ladders: map[FailureClass]classLadder{
@@ -293,21 +308,69 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 var errBusy = errors.New("pool: all in-flight slots busy")
 
 // Lease is a held in-flight slot on one account.
+//
+// A lease is capacity for ONE request, never stickiness: it names the account
+// the request is talking to (so every turn of that request keeps the same
+// upstream conversation) and it occupies one of that account's in-flight slots
+// (ADR 0019). It is not shared between requests and carries no conversation
+// state.
 type Lease struct {
 	Pool *Pool
 	ID   string
 	// Egress is the label of the egress this account's traffic must leave
 	// through (SDD §4.8). Every upstream call made for this lease uses it.
 	Egress string
+
+	issued time.Time     // when the slot was claimed (wall clock, for the reaper)
+	ttl    time.Duration // this slot's TTL (0 = never reaped)
+
+	mu       sync.Mutex
+	onExpire func() // cancels the in-flight upstream call (set by the caller)
+	released bool
 }
 
-// Release frees the in-flight slot and wakes one Acquire waiter.
+// ArmExpiry registers the cancel func the reaper calls when this lease
+// outlives its TTL (ADR 0019). Call it right before starting the upstream call
+// it should abort; passing nil clears it.
+func (l *Lease) ArmExpiry(cancel func()) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.onExpire = cancel
+	l.mu.Unlock()
+}
+
+// Released reports whether the slot has already been given back. Safe to call
+// on a nil lease.
+func (l *Lease) Released() bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.released
+}
+
+// Release frees the in-flight slot and wakes one Acquire waiter. It is
+// idempotent: every path may release (early return, first-byte policy, the
+// reaper, a deferred backstop) without double-counting capacity.
 func (l *Lease) Release() {
 	if l == nil || l.Pool == nil {
 		return
 	}
+	l.mu.Lock()
+	if l.released {
+		l.mu.Unlock()
+		return
+	}
+	l.released = true
+	l.onExpire = nil
+	l.mu.Unlock()
+
 	p := l.Pool
 	p.mu.Lock()
+	delete(p.live, l)
 	a := p.byID[l.ID]
 	p.mu.Unlock()
 	if a == nil {
@@ -321,6 +384,61 @@ func (l *Lease) Release() {
 	case p.notify <- struct{}{}: // wake one waiter
 	default:
 	}
+}
+
+// ReapExpiredSlots force-releases every slot whose holder outlived its TTL and
+// asks it to abort the upstream call it was holding (ADR 0019). It returns how
+// many slots were reclaimed.
+//
+// This is the backstop, not the mechanism: the request path itself bounds each
+// upstream turn with a context deadline. The reaper exists because the failure
+// it prevents is silent — a wedged connection used to hold an account slot for
+// as long as the HTTP client allowed (30 minutes), and with the default two
+// slots per account that is the whole account.
+func (p *Pool) ReapExpiredSlots() int {
+	if p == nil || p.slotTTL <= 0 {
+		return 0
+	}
+	now := time.Now()
+	p.mu.Lock()
+	var expired []*Lease
+	for l := range p.live {
+		if l.ttl > 0 && !l.issued.IsZero() && now.Sub(l.issued) > l.ttl {
+			expired = append(expired, l)
+		}
+	}
+	p.mu.Unlock()
+	if len(expired) == 0 {
+		return 0
+	}
+	for _, l := range expired {
+		l.mu.Lock()
+		cancel := l.onExpire
+		l.mu.Unlock()
+		if cancel != nil {
+			cancel() // abort the upstream call this slot was holding
+		}
+		l.Release()
+		if p.logf != nil {
+			p.logf("pool: reaped slot account=%s after %s (TTL %s) — the request that held it was still running", l.ID, now.Sub(l.issued).Round(time.Second), l.ttl)
+		}
+	}
+	p.mu.Lock()
+	p.expiredSlots += len(expired)
+	p.mu.Unlock()
+	return len(expired)
+}
+
+// InFlight reports how many in-flight slots are currently held across all
+// accounts (test and observability aid for the slot policies, ADR 0019).
+func (p *Pool) InFlight() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, a := range p.accounts {
+		n += len(a.sem)
+	}
+	return n
 }
 
 // Acquire selects an account and claims one in-flight slot. Selection is
@@ -376,7 +494,7 @@ func (p *Pool) AcquireSticky(ctx context.Context, accountID string) (*Lease, boo
 	if a != nil && !a.disabled && a.state == StateAvailable && len(a.sem) < cap(a.sem) {
 		select {
 		case a.sem <- struct{}{}:
-			lease = &Lease{Pool: p, ID: a.id, Egress: a.egress}
+			lease = p.registerLease(a)
 		default:
 		}
 	}
@@ -460,7 +578,17 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 	default:
 		return nil, errBusy
 	}
-	return &Lease{Pool: p, ID: pick.id, Egress: pick.egress}, nil
+	return p.registerLease(pick), nil
+}
+
+// registerLease creates a lease on an account and tracks it for the slot
+// reaper. Callers hold p.mu.
+func (p *Pool) registerLease(a *account) *Lease {
+	l := &Lease{Pool: p, ID: a.id, Egress: a.egress, issued: time.Now(), ttl: p.slotTTL}
+	if p.slotTTL > 0 {
+		p.live[l] = struct{}{}
+	}
+	return l
 }
 
 // RecordFirstByte feeds first-byte latency into the EWMA selection term

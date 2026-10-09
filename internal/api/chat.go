@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -149,7 +150,17 @@ type attemptPlan struct {
 // replay below is always a full replay into a fresh upstream conversation.
 func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	s := p.srv
-	ctx := r.Context()
+	// clientCtx ends when the client hangs up; ctx additionally carries our own
+	// request budget (ADR 0019). The two outcomes are different — a client that
+	// left gets nothing, a budget that expired gets a 504 with numbers — so both
+	// are kept.
+	clientCtx := r.Context()
+	ctx := clientCtx
+	if s.requestTimeout > 0 {
+		var cancelBudget context.CancelFunc
+		ctx, cancelBudget = context.WithTimeout(clientCtx, s.requestTimeout)
+		defer cancelBudget()
+	}
 
 	var excluded []string
 	var lastErr error
@@ -165,6 +176,10 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		lease = l
+		// Backstop for the slot: every explicit path below releases, and this
+		// catches a future early return (or a panic) that forgets to. Release is
+		// idempotent, so it costs nothing on the normal path (ADR 0019).
+		defer lease.Release()
 		fp, ferr := adapter.PlanFullReplay(p.msgs, s.replayCap)
 		if ferr != nil {
 			lease.Release()
@@ -190,8 +205,10 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 
 		// Client disconnect pre-first-byte (SDD §7.3, TDD STICKY-010):
 		// neither success nor failure — release and drop. The client is
-		// gone; writing an error frame would only hit a dead pipe.
-		if ctx.Err() != nil {
+		// gone; writing an error frame would only hit a dead pipe. Tested on
+		// clientCtx: our own budget expiring is a different outcome and must be
+		// answered (ADR 0019).
+		if clientCtx.Err() != nil {
 			lease.Release()
 			return
 		}
@@ -295,10 +312,19 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-time.After(busyRetryBackoff):
 			case <-ctx.Done():
-				s.MapError(w, ctx.Err())
+				s.MapError(w, s.budgetError(clientCtx, ctx, "waiting to retry a busy upstream"))
 				return
 			}
 			continue
+
+		case isGatewayDeadline(err, clientCtx):
+			// Our own budget or the per-turn lease TTL fired (ADR 0019). Nothing
+			// is wrong with the account: no cooldown, no retry, and the client
+			// gets a 504 naming the knob instead of a silent hang.
+			s.logger.Printf("chat: gateway deadline while account %s was serving: %v", lease.ID, err)
+			lease.Release()
+			s.MapError(w, s.budgetError(clientCtx, ctx, "waiting for the upstream"))
+			return
 
 		case isContentErr(err):
 			// Content-level: fail the request, no pool action (SDD §7.1).
@@ -374,6 +400,15 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			},
 			OnFirstByte: func() {
 				s.pool.RecordFirstByte(lease.ID, time.Since(attemptStart))
+				// first-byte policy (ADR 0019): give the slot back the moment the
+				// upstream starts answering, because the generation itself does not
+				// need to occupy capacity. The account is still pinned to this
+				// request by lease.ID, and Release is idempotent so the later
+				// finishTurn (and the deferred backstop) are no-ops.
+				if s.slotHold == slotHoldFirstByte && !lease.Released() {
+					s.debugf("chat: slot released at first byte (account=%s, slot policy %s)", lease.ID, s.slotHold)
+					lease.Release()
+				}
 			},
 			// The dialogId of this turn, recorded so the log line can name the
 			// upstream conversation a failure belonged to.
@@ -383,7 +418,20 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 		}
 		isFinal := qi == len(plan.queries)-1
 
-		res, err := s.clientFor(lease.Egress).Chat(ctx, cookie, ph, chatReq)
+		// Per-turn deadline (ADR 0019): one upstream turn may not outlive the
+		// lease TTL. The cancel is armed on the lease so that a slot the reaper
+		// reclaims takes its in-flight upstream call down with it.
+		turnCtx := ctx
+		var cancelTurn context.CancelFunc
+		if s.leaseTTL > 0 {
+			turnCtx, cancelTurn = context.WithTimeout(ctx, s.leaseTTL)
+			lease.ArmExpiry(cancelTurn)
+		}
+		res, err := s.clientFor(lease.Egress).Chat(turnCtx, cookie, ph, chatReq)
+		if cancelTurn != nil {
+			cancelTurn()
+			lease.ArmExpiry(nil)
+		}
 		if err != nil {
 			// Client disconnect (SDD §7.3, TDD API-024): abort upstream (already
 			// done via ctx); neither success nor failure, and nothing was sent.
@@ -403,8 +451,6 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			if res.Content == "" && res.Reasoning == "" {
 				return mimo.ErrEmptyResponse
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
 			cits := res.Citations
 			if !p.citations {
 				cits = nil // include_citations:false → search still ran
@@ -424,10 +470,20 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 				reasoning = ""
 			}
 			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, reasoning, usageSum, cits...)
-			if err := encodeJSON(w, comp); err != nil {
+			// Encode before releasing so a marshal failure is still a clean
+			// pre-response error (one delivery point, ADR 0017) …
+			var body bytes.Buffer
+			if err := encodeJSON(&body, comp); err != nil {
 				return err
 			}
+			// … and hand the slot back BEFORE writing to the client: the slot is
+			// capacity for upstream work, not for a slow client (ADR 0019).
 			p.finishTurn(lease, lastDialogID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if _, werr := w.Write(body.Bytes()); werr != nil {
+				return werr
+			}
 			return nil
 		}
 	}
@@ -436,6 +492,40 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 	// defensive empty-response so a future change to the loop cannot silently
 	// answer 200 with nothing.
 	return mimo.ErrEmptyResponse
+}
+
+// isGatewayDeadline reports whether this failure is our own budget dying rather
+// than the upstream failing or the client leaving (ADR 0019).
+//
+// The distinction is load-bearing: a client that hung up must not be answered, a
+// platform-side failure must cool the account, and our own deadline must do
+// neither — the account did nothing wrong and a retry would only spend another
+// upstream call on a request we already gave up on.
+// Every deadline in this stack is ours: the request budget, the per-turn lease
+// TTL, and the upstream client timeout (which is derived from the TTL). So a
+// context deadline at this point means our own clock expired — the *request's*
+// ctx need not be the one that expired (the TTL fires while the budget is still
+// alive), which is exactly why this does not test ctx.Err().
+func isGatewayDeadline(err error, clientCtx context.Context) bool {
+	if clientCtx.Err() != nil {
+		return false // the client left; that is not a deadline
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// budgetError renders the deadline that fired as a client-facing error, naming
+// the knob the operator can change (ADR 0019).
+func (s *Server) budgetError(clientCtx, ctx context.Context, where string) error {
+	if clientCtx.Err() != nil {
+		return clientCtx.Err()
+	}
+	// The per-turn lease TTL can fire while the request budget is still alive;
+	// the shorter of the two is what actually bit.
+	budget := s.requestTimeout
+	if s.leaseTTL > 0 && (budget <= 0 || s.leaseTTL < budget) {
+		budget = s.leaseTTL
+	}
+	return &requestTimeoutError{Budget: budget, Where: where}
 }
 
 // finishTurn records success and releases the lease. There is no conversation

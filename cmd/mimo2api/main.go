@@ -163,6 +163,7 @@ func run() error {
 		SecChUA:                 cfg.SecChUA(),
 		Timezone:                cfg.Timezone(),
 		IdleTimeout:             cfg.SSEIdleTimeout(),
+		HTTP:                    &http.Client{Timeout: cfg.UpstreamTimeout()},
 		DisableOTPAuto:          !cfg.OTPAuto(),
 		DisableCrossRegionAgree: !cfg.CrossRegionAgree(),
 	})
@@ -219,6 +220,10 @@ func run() error {
 		// Risk-control signals are correlated across accounts on one egress
 		// inside this window (SDD §4.5.2).
 		RiskWindow: cfg.PoolStatsWindow(),
+		// Slot TTL + reaper (ADR 0019): a slot is capacity held for one request,
+		// and a request that outlives its TTL must not pin the account it leased.
+		SlotTTL: cfg.LeaseTTL(),
+		Logf:    log.Printf,
 	}, probe, renew)
 
 	srv := api.New(api.Options{
@@ -232,6 +237,11 @@ func run() error {
 		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 		MaxQueryChars: cfg.MaxQueryChars(),
 		Debug:         cfg.Debug(),
+		// ADR 0019: a real client-facing budget, a per-turn upstream deadline,
+		// and when the in-flight slot goes back to the pool.
+		RequestTimeout: cfg.RequestTimeout(),
+		LeaseTTL:       cfg.LeaseTTL(),
+		SlotHold:       cfg.SlotHold(),
 
 		// Audio surface (M18).
 		AudioPoll:      cfg.AudioPoll(),
@@ -261,6 +271,10 @@ func run() error {
 		defer probeTick.Stop()
 		refreshTick := time.NewTicker(cfg.SessionRefresh())
 		defer refreshTick.Stop()
+		// Slot reaper (ADR 0019): cheap, and it is the only thing standing
+		// between a wedged handler and a permanently smaller pool.
+		slotTick := time.NewTicker(5 * time.Second)
+		defer slotTick.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -273,6 +287,8 @@ func run() error {
 				// model mid-flight must not start failing requests that used to
 				// work (TTL-guarded inside).
 				srv.RefreshModelRedirects(ctx)
+			case <-slotTick.C:
+				p.ReapExpiredSlots()
 			case <-refreshTick.C:
 				stsSweep(ctx, store, client, srv)
 			}

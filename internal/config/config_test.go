@@ -12,7 +12,7 @@ func testEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	vars := []string{
 		"MIMO2API_HOST", "MIMO2API_PORT", "MIMO2API_API_KEYS", "MIMO2API_UPSTREAM_BASE",
-		"MIMO2API_ACCOUNTS_FILE", "MIMO2API_DEFAULT_MODEL", "MIMO2API_REQUEST_TIMEOUT_MS",
+		"MIMO2API_ACCOUNTS_FILE", "MIMO2API_DEFAULT_MODEL", "MIMO2API_REQUEST_TIMEOUT_MS", "MIMO2API_LEASE_TTL_S", "MIMO2API_SLOT_HOLD",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S", "MIMO2API_SESSION_REFRESH_HOURS",
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", "MIMO2API_QUEUE_WAIT_S",
 		"MIMO2API_X_TIMEZONE", "MIMO2API_USER_AGENT",
@@ -64,8 +64,21 @@ func TestDefaults(t *testing.T) {
 	if c.UpstreamBase() != "https://aistudio.xiaomimimo.com" {
 		t.Errorf("upstream = %q", c.UpstreamBase())
 	}
-	if c.RequestTimeout() != 300*time.Second {
+	// ADR 0019: 120s replaced a 300s value nothing read. The budget now exists,
+	// so the default is the number a client actually feels.
+	if c.RequestTimeout() != 120*time.Second {
 		t.Errorf("request timeout = %v", c.RequestTimeout())
+	}
+	if c.LeaseTTL() != 120*time.Second {
+		t.Errorf("lease ttl = %v", c.LeaseTTL())
+	}
+	if c.SlotHold() != SlotHoldLastByte {
+		t.Errorf("slot hold = %q, want %q (conservative default)", c.SlotHold(), SlotHoldLastByte)
+	}
+	// The upstream client timeout is derived, not a constant: it must outlive a
+	// turn's own TTL but must not be the 30 minutes a wedged socket used to get.
+	if got := c.UpstreamTimeout(); got != c.LeaseTTL()+30*time.Second {
+		t.Errorf("upstream timeout = %v, want lease TTL + 30s", got)
 	}
 	if c.SSEIdleTimeout() != 180*time.Second {
 		t.Errorf("sse idle = %v", c.SSEIdleTimeout())
@@ -113,6 +126,8 @@ func TestEnvOverrides(t *testing.T) {
 		"MIMO2API_ACCOUNTS_FILE":            "/tmp/accts.json",
 		"MIMO2API_DEFAULT_MODEL":            "mimo-v2.5-pro",
 		"MIMO2API_REQUEST_TIMEOUT_MS":       "12345",
+		"MIMO2API_LEASE_TTL_S":              "2",
+		"MIMO2API_SLOT_HOLD":                "first-byte",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S":       "42",
 		"MIMO2API_SESSION_REFRESH_HOURS":    "2",
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT": "5",
@@ -456,6 +471,25 @@ func TestAccountsFileDefaultIsRelative(t *testing.T) {
 	}
 }
 
+// CONF-020: an unknown MIMO2API_SLOT_HOLD is an error naming the knob. A typo
+// must not silently pick a slot policy — the difference between them is account
+// concurrency (ADR 0019).
+func TestSlotHoldRejectsUnknownValue(t *testing.T) {
+	testEnv(t, map[string]string{"MIMO2API_SLOT_HOLD": "first_byte"})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MIMO2API_SLOT_HOLD") {
+		t.Fatalf("err = %v, want an error naming MIMO2API_SLOT_HOLD", err)
+	}
+	// Case and surrounding space are the operator's business, not a failure.
+	testEnv(t, map[string]string{"MIMO2API_SLOT_HOLD": " FIRST-BYTE "})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("normalised value rejected: %v", err)
+	}
+	if c.SlotHold() != SlotHoldFirstByte {
+		t.Errorf("slot hold = %q, want %q", c.SlotHold(), SlotHoldFirstByte)
+	}
+}
+
 // CONF-019: every accessor answers from the parsed config — a table so a new
 // knob with no accessor case is visible here rather than as a coverage cliff.
 func TestAccessorsReflectParsedConfig(t *testing.T) {
@@ -463,6 +497,8 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		"MIMO2API_HOST":                    "127.0.0.1",
 		"MIMO2API_DEFAULT_MODEL":           "mimo-v2.6-flash",
 		"MIMO2API_REQUEST_TIMEOUT_MS":      "1000",
+		"MIMO2API_LEASE_TTL_S":             "2",
+		"MIMO2API_SLOT_HOLD":               "first-byte",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S":      "10",
 		"MIMO2API_CATALOG_TTL_S":           "20",
 		"MIMO2API_AUDIO_POLL_MS":           "30",
@@ -488,6 +524,8 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		{"Host", c.Host(), "127.0.0.1"},
 		{"DefaultModel", c.DefaultModel(), "mimo-v2.6-flash"},
 		{"RequestTimeout", c.RequestTimeout(), time.Second},
+		{"LeaseTTL", c.LeaseTTL(), 2 * time.Second},
+		{"SlotHold", c.SlotHold(), SlotHoldFirstByte},
 		{"SSEIdleTimeout", c.SSEIdleTimeout(), 10 * time.Second},
 		{"CatalogTTL", c.CatalogTTL(), 20 * time.Second},
 		{"AudioPoll", c.AudioPoll(), 30 * time.Millisecond},
