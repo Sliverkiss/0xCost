@@ -111,6 +111,15 @@ const (
 	// guess and contradicted the code).
 	DefaultMaxQueryChars = 0
 	DefaultReplayCap     = 20
+	// Image input (IMG-*): image parts travel through resource/parse, which
+	// accounts for a file separately from the 102,400-char query budget
+	// (ADR 0015). These two are guards, not measurements, and are documented as
+	// such: 20 MB per image is OpenAI's own limit for vision inputs, and 10
+	// images bounds one request's fan-out — every image costs three upstream
+	// calls (genUploadInfo, PUT, resource/parse). The channel itself advertises
+	// 100 MB per file and 50 files per message; raise these to use that.
+	DefaultMaxImages     = 10
+	DefaultMaxImageBytes = 20 << 20
 	DefaultCooldown429   = 60 * time.Second
 	DefaultCooldown5xx   = 30 * time.Second
 	DefaultCooldownCap   = 10 * time.Minute
@@ -153,6 +162,8 @@ type Config struct {
 	userAgent            string
 	secChUA              string
 	replayCap            int
+	maxImages            int
+	maxImageBytes        int
 	cooldown429          time.Duration
 	cooldownTransport    time.Duration
 	cooldownTransportCap time.Duration
@@ -256,6 +267,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.replayCap, err = getenvInt("MIMO2API_REPLAY_CAP", DefaultReplayCap); err != nil {
+		return nil, err
+	}
+	if c.maxImages, err = getenvInt("MIMO2API_MAX_IMAGES", DefaultMaxImages); err != nil {
+		return nil, err
+	}
+	if c.maxImageBytes, err = getenvInt("MIMO2API_MAX_IMAGE_BYTES", DefaultMaxImageBytes); err != nil {
 		return nil, err
 	}
 	if c.probeInterval, err = getenvSeconds("MIMO2API_PROBE_INTERVAL_S", DefaultProbeInterval); err != nil {
@@ -377,6 +394,8 @@ func (c *Config) Timezone() string                 { return c.timezone }
 func (c *Config) UserAgent() string                { return c.userAgent }
 func (c *Config) SecChUA() string                  { return c.secChUA }
 func (c *Config) ReplayCap() int                   { return c.replayCap }
+func (c *Config) MaxImages() int                   { return c.maxImages }
+func (c *Config) MaxImageBytes() int               { return c.maxImageBytes }
 func (c *Config) Cooldown429() time.Duration       { return c.cooldown429 }
 func (c *Config) Cooldown5xx() time.Duration       { return c.cooldown5xx }
 func (c *Config) CooldownCap() time.Duration       { return c.cooldownCap }

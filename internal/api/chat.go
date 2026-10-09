@@ -26,10 +26,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.MapError(w, err)
 		return
 	}
-	am := make([]adapter.Msg, len(msgs))
-	for i, m := range msgs {
-		am[i] = adapter.Msg{Role: m.Role, Content: m.Content}
-	}
+	am := msgs
 
 	// This gateway has no streaming path at all (ADR 0017): refuse stream:true
 	// up front, before any pool interaction, and name the fix. Converting it
@@ -49,6 +46,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := req.webSearchOptionsErr(); err != nil {
+		s.MapError(w, err)
+		return
+	}
+	// Image parts (IMG-*): counted before any account work, because an image is
+	// the most expensive thing a request can carry (three upstream calls each).
+	if err := req.mediaErr(s.maxImages); err != nil {
 		s.MapError(w, err)
 		return
 	}
@@ -155,6 +158,7 @@ type chatPipeline struct {
 // replay, in order, against one fresh upstream conversation.
 type attemptPlan struct {
 	queries        []string
+	media          [][]string // media[i] belongs to queries[i] (IMG-006)
 	conversationID string
 	prevDialogID   string
 }
@@ -203,6 +207,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 		}
 		plan = &attemptPlan{
 			queries:        fp.Queries,
+			media:          fp.Media,
 			conversationID: adapter.RandomHex32(), // fresh every attempt (SDD §4.2)
 		}
 
@@ -398,6 +403,21 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			prev = lastDialogID
 		}
 		attemptStart := time.Now()
+		// Attachments for this turn (IMG-006): the images the client sent with
+		// this message are resolved and uploaded on the leased account, per
+		// attempt — a parse result belongs to the session that created it, so
+		// nothing is cached across attempts.
+		var medias []any
+		if qi < len(plan.media) && len(plan.media[qi]) > 0 {
+			uploadStart := time.Now()
+			items, uerr := s.uploadTurnAttachments(ctx, cookie, ph, p.model, plan.media[qi])
+			if uerr != nil {
+				return uerr
+			}
+			medias = items
+			s.debugf("chat: uploaded %d attachment(s) for turn %d/%d in %s",
+				len(items), qi+1, len(plan.queries), time.Since(uploadStart).Round(time.Millisecond))
+		}
 		chatReq := mimo.ChatRequest{
 			Query:            query,
 			Model:            p.model,
@@ -408,6 +428,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			WebSearchStatus:  p.search,
 			Temperature:      p.temp,
 			TopP:             p.topP,
+			MultiMedias:      medias,
 			// Debug trace: which upstream events this turn actually
 			// produced (M19 — the answer to "why are citations empty?").
 			OnEvent: func(name string, dataLen int, prefix string) {
@@ -701,7 +722,17 @@ func channelName(fastchat bool) string {
 func isContentErr(err error) bool {
 	var cf *mimo.ErrContentFilter
 	var us *mimo.ErrUpstreamStream
-	return errors.As(err, &cf) || errors.As(err, &us)
+	if errors.As(err, &cf) || errors.As(err, &us) {
+		return true
+	}
+	// Image input failures are the client's to fix (IMG-*): an unfetchable URL,
+	// bytes that are not an image, a file over the cap. Cooling the account down
+	// over a bad URL would punish the one party that did nothing wrong.
+	return errors.Is(err, errUnsupportedImageURL) ||
+		errors.Is(err, errImageFetch) ||
+		errors.Is(err, errUnsupportedImageType) ||
+		errors.Is(err, errImageTooLarge) ||
+		asTooManyImages(err) != nil
 }
 
 // onlineSuffix is the model-id shorthand for web_search_status=enabled

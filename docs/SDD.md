@@ -1000,7 +1000,7 @@ Supported request fields:
 | OpenAI field | Mapping |
 |---|---|
 | `model` | Normalize aliases (strip `-studio`, fuzzy match, `multimodal.go:50-85`) → upstream model id; `auto`/missing → `default_model`. Fastchat routing if `/ultraspeed/i`. |
-| `messages` | Turn planning, §5.3. `content` as string or `[{type:"text",...}]` parts (text parts joined, `mimo-web-api/src/openai.js:36-45`). Image parts rejected with 400 in v1. |
+| `messages` | Turn planning, §5.3. `content` as string or `[{type:"text",...}]` parts (text parts joined, `mimo-web-api/src/openai.js:36-45`). **`image_url` parts are accepted (IMG-*)**: a `data:image/...` URL or an http(s) URL, fetched with the browser identity, uploaded through `genUploadInfo → PUT → resource/parse` and referenced from that turn's `multiMedias` — so an image never spends the 102,400-character query budget. Unknown part types stay ignored, not rejected. |
 | `stream` | Streaming vs collected delivery. |
 | `temperature`, `top_p` | Forwarded inside `modelConfig` (mimo-web-proxy sends `temperature:0.8, top_p:0.95` defaults, `web_client.go:127-140`); pass through when provided, else omit. |
 | `max_tokens` / `max_completion_tokens` | Not supported upstream; ignored (warning header). |
@@ -1020,6 +1020,22 @@ Search: `web_search_options` (presence = search this turn) is the standard
 spelling; `web_search_status` remains for the finer `disabled`/`auto`/`enabled`
 control and wins when both are given, and the `:online` model suffix stays as the
 shorthand. **The model id is never renamed to carry an option.**
+
+Images (`image_url` parts, IMG-*): the bytes travel the attachment path, not the
+query — upload (`resource/genUploadInfo` → signed PUT) → parse
+(`resource/parse?fileUrl&objectName&model`, retried: the platform answers a
+transient business-code failure under load) → one `multiMedias` entry per image on
+**the turn whose message carried it** (`mediaType: "image"`, plus the parse result's
+`id` and `tokenUsage`). The media item carries the full field set, because the probe
+showed a stripped item is refused. Limits are client-facing guards, documented as
+guards: `MIMO2API_MAX_IMAGES` (default 10) and `MIMO2API_MAX_IMAGE_BYTES` (default
+20 MiB — OpenAI's own vision-input limit). The channel itself advertises 100 MB per
+file and 50 files per message. Failures are named 400s — `unsupported_image_url`,
+`image_fetch_failed`, `unsupported_image_type`, `image_too_large`,
+`too_many_images` — and none of them cools an account down (the client's URL is not
+the account's fault). A user message that carries only images is a legal request:
+the channel needs a `query`, so `adapter.DefaultImageOnlyQuery` is sent and the
+synthesis is documented here rather than hidden.
 
 ### 5.3 Turn planning (the multi-turn problem)
 

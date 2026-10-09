@@ -19,6 +19,10 @@ import (
 type Msg struct {
 	Role    string
 	Content string
+	// Media are the client's image URLs for this message, in order (OpenAI
+	// image_url parts). They are inputs, not upstream handles: the pipeline
+	// uploads them with the turn they belong to (IMG-*, docs/attachments-reverse.md).
+	Media []string
 }
 
 // SystemPreamble returns the canonical system preamble: every system message's

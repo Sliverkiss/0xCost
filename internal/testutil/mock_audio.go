@@ -142,6 +142,16 @@ func (m *MockUpstream) ParseRequests() [][3]string {
 	return out
 }
 
+// SetParseFailures makes the next n resource/parse calls fail with a business
+// code (the platform's transient "解析失败" answer), after which parsing succeeds
+// again. It exists so the client's parse retry is tested against a failure
+// rather than assumed (IMG-008).
+func (m *MockUpstream) SetParseFailures(n int) {
+	m.mu.Lock()
+	m.parseFailures = n
+	m.mu.Unlock()
+}
+
 // LastUpload returns the bytes of the most recent PUT upload (nil if none).
 func (m *MockUpstream) LastUpload() []byte {
 	m.mu.Lock()
@@ -309,13 +319,27 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		tokens := m.parseTokens
 		empty := m.parseEmpty
+		fail := m.parseFailures
+		if fail > 0 {
+			m.parseFailures--
+		}
+		if !empty && fail == 0 {
+			m.parseSeq++
+		}
+		seq := m.parseSeq
 		m.mu.Unlock()
+		if fail > 0 {
+			// A 200 envelope carrying a business code — the shape the platform
+			// uses for a transient parse failure.
+			writeJSONEnvelope(w, -1, "解析失败，请稍后重试", map[string]any{})
+			return
+		}
 		if empty {
 			writeJSONEnvelope(w, 0, "成功", map[string]any{})
 			return
 		}
 		writeJSONEnvelope(w, 0, "成功", map[string]any{
-			"id":         "parse-result-1",
+			"id":         fmt.Sprintf("parse-result-%d", seq),
 			"tokenUsage": tokens,
 			"fileUrl":    r.URL.Query().Get("fileUrl"),
 			"objectName": r.URL.Query().Get("objectName"),

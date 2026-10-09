@@ -54,6 +54,10 @@ type TestServerOptions struct {
 	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
 	// per-channel chat caps (ADR 0015).
 	MaxQueryChars int
+	// MaxImages/MaxImageBytes mirror MIMO2API_MAX_IMAGES / _MAX_IMAGE_BYTES
+	// (IMG-*). Zero means the api.New defaults (10 images, 20 MiB each).
+	MaxImages     int
+	MaxImageBytes int
 	// RequestTimeout/LeaseTTL/SlotHold mirror the ADR 0019 knobs. Zero means the
 	// api.New defaults (no total budget, 120s per turn, last-byte).
 	RequestTimeout time.Duration
@@ -155,6 +159,8 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		DefaultModel:  opts.DefaultModel,
 		ReplayCap:     opts.ReplayCap,
 		MaxQueryChars: opts.MaxQueryChars,
+		MaxImages:     opts.MaxImages,
+		MaxImageBytes: opts.MaxImageBytes,
 		// ADR 0019 knobs.
 		RequestTimeout: opts.RequestTimeout,
 		LeaseTTL:       opts.LeaseTTL,

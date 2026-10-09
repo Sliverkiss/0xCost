@@ -26,6 +26,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
+)
+
+const (
+	// parseAttempts / parseRetryDelay bound the parse retry: three attempts with
+	// a 0.5 s then 1 s pause, short enough to stay inside one request's budget
+	// (ADR 0019) while covering the platform's transient parse failures.
+	parseAttempts   = 3
+	parseRetryDelay = 500 * time.Millisecond
 )
 
 // UploadedResource is what genUploadInfo returns for a file that is about to be
@@ -103,9 +112,38 @@ func (c *Client) ParseResource(ctx context.Context, cookie, ph, fileURL, objectN
 		ID         string `json:"id"`
 		TokenUsage int    `json:"tokenUsage"`
 	}
-	if err := c.callJSON(ctx, cookie, ph, http.MethodPost, "/open-apis/resource/parse", q,
-		map[string]any{}, &out); err != nil {
-		return nil, err
+	// The parse step is the flaky one: the platform answers a transient
+	// business-code failure under load (the sibling project retries it five
+	// times), and a request that carries an image is worth two more attempts —
+	// the upload bytes are already spent by the time we get here. Context
+	// cancellation and an auth failure are never retried.
+	var lastErr error
+	for attempt := 0; attempt < parseAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * parseRetryDelay):
+			}
+		}
+		err := c.callJSON(ctx, cookie, ph, http.MethodPost, "/open-apis/resource/parse", q,
+			map[string]any{}, &out)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		// A 401 (auth expired) and any 4xx are the caller's problem, not a
+		// transient: only business codes and 5xx are worth another attempt.
+		if _, ok := err.(*BizError); !ok {
+			var ue *UpstreamError
+			if !errors.As(err, &ue) || ue.StatusCode < 500 {
+				return nil, err
+			}
+		}
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("resource parse: %w", lastErr)
 	}
 	if out.ID == "" {
 		return nil, errors.New("resource parse: no parse result id (the platform parsed nothing)")

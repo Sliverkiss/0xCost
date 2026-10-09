@@ -14,7 +14,18 @@ import (
 //     Assistant history is not re-sent (accepted trade-off, SDD §5.3B).
 type TurnPlan struct {
 	Queries []string
+	// Media[i] are the image URLs that belong to Queries[i] (IMG-006): an image
+	// travels with the turn whose message carried it and is uploaded on that turn
+	// only, because the channel attaches files to a single query.
+	Media [][]string
 }
+
+// DefaultImageOnlyQuery is the query sent for a user message that carries images
+// but no text. The channel has no way to send an attachment on its own ("query"
+// is required), so a synthesis is unavoidable; it is deliberately neutral, and
+// documented in SDD §5.2 rather than hidden — the alternative is refusing a
+// request OpenAI clients consider legal.
+const DefaultImageOnlyQuery = "请描述这张图片。"
 
 // ErrNoUserMessage is returned when the request has no sendable user turn.
 type ErrNoUserMessage struct{}
@@ -37,7 +48,11 @@ func (e *ErrTooManyTurns) Error() string {
 // query as "[systems]\n\n---\n\n<first user message>" (API-017).
 func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 	var systemParts []string
-	var userMsgs []string
+	type userTurn struct {
+		content string
+		media   []string
+	}
+	var userMsgs []userTurn
 	for _, m := range msgs {
 		switch m.Role {
 		case "system":
@@ -45,8 +60,10 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 				systemParts = append(systemParts, t)
 			}
 		case "user":
-			if m.Content != "" {
-				userMsgs = append(userMsgs, m.Content)
+			// A message with images but no text is a legal request (IMG-007):
+			// it enters the plan with the neutral query below, not a 400.
+			if m.Content != "" || len(m.Media) > 0 {
+				userMsgs = append(userMsgs, userTurn{content: m.Content, media: m.Media})
 			}
 		}
 	}
@@ -56,12 +73,20 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 	if maxTurns > 0 && len(userMsgs) > maxTurns {
 		return nil, &ErrTooManyTurns{Turns: len(userMsgs), Cap: maxTurns}
 	}
-	plan := &TurnPlan{Queries: make([]string, 0, len(userMsgs))}
-	for i, q := range userMsgs {
-		if i == 0 && len(systemParts) > 0 {
+	plan := &TurnPlan{
+		Queries: make([]string, 0, len(userMsgs)),
+		Media:   make([][]string, 0, len(userMsgs)),
+	}
+	for i, t := range userMsgs {
+		q := t.content
+		if len(systemParts) > 0 && i == 0 {
 			q = strings.Join(systemParts, "\n\n") + "\n\n---\n\n" + q
 		}
+		if q == "" && len(t.media) > 0 {
+			q = DefaultImageOnlyQuery
+		}
 		plan.Queries = append(plan.Queries, q)
+		plan.Media = append(plan.Media, t.media)
 	}
 	return plan, nil
 }
@@ -116,6 +141,7 @@ func PlanDelta(msgs []Msg, storedMsgCount int) (*TurnPlan, error) {
 	// arithmetic the caller stores (CountNonSystem) is unchanged.
 	var systemParts []string
 	var queries []string
+	var media [][]string
 	seen := 0
 	for _, m := range msgs {
 		if m.Role == "system" {
@@ -130,17 +156,21 @@ func PlanDelta(msgs []Msg, storedMsgCount int) (*TurnPlan, error) {
 		if seen <= storedMsgCount {
 			continue
 		}
-		if m.Role != "user" || m.Content == "" {
+		if m.Role != "user" || (m.Content == "" && len(m.Media) == 0) {
 			continue
 		}
 		q := m.Content
 		if len(queries) == 0 && len(systemParts) > 0 {
 			q = strings.Join(systemParts, "\n\n") + "\n\n---\n\n" + q
 		}
+		if q == "" {
+			q = DefaultImageOnlyQuery
+		}
 		queries = append(queries, q)
+		media = append(media, m.Media)
 	}
 	if len(queries) == 0 {
 		return nil, ErrNoUserMessage{}
 	}
-	return &TurnPlan{Queries: queries}, nil
+	return &TurnPlan{Queries: queries, Media: media}, nil
 }

@@ -5,12 +5,20 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/yg/mimo2api/internal/adapter"
 )
 
 // contentPart is one entry of a multi-part content array (SDD §5.2).
 type contentPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// ImageURL is the image_url part (IMG-*): OpenAI's schema makes it an
+	// object ({url: "data:image/png;base64,…"} or {url: "https://…"}), so this is
+	// not a bare string.
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
 }
 
 // openAIMessage is the permissive inbound message shape: content may be a
@@ -164,51 +172,91 @@ func (r chatRequest) webSearchOptionsErr() error {
 	}
 }
 
-// toAdapterMsgs flattens content parts: string content passes through;
-// [{type:"text"}] parts join; image parts are rejected with 400 (SDD §5.2,
-// TDD API-012).
-func (req *chatRequest) toAdapterMsgs() (out []struct{ Role, Content string }, err error) {
+// toAdapterMsgs projects the request's messages onto adapter.Msg: string content
+// passes through, an array's text parts join, and its image parts stay attached
+// to the message that carried them so the pipeline uploads each image with the
+// turn it belongs to (IMG-*, SDD §5.2).
+func (req *chatRequest) toAdapterMsgs() ([]adapter.Msg, error) {
+	out := make([]adapter.Msg, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		if m.Role == "" {
 			return nil, errMalformedRequest
 		}
-		content, ferr := flattenContent(m.Content)
+		content, media, ferr := flattenContent(m.Content)
 		if ferr != nil {
 			return nil, ferr
 		}
-		out = append(out, struct{ Role, Content string }{m.Role, content})
+		out = append(out, adapter.Msg{Role: m.Role, Content: content, Media: media})
 	}
 	return out, nil
 }
 
-// flattenContent resolves a message Content RawMessage: JSON string →
-// itself; array → joined text parts (image_url → error); anything else →
-// malformed.
-func flattenContent(raw json.RawMessage) (string, error) {
+// mediaErr bounds how many images one request may carry. It runs before any
+// account work, because an over-limit request must not cost a lease — and an
+// image is the expensive part of a request (three upstream calls each).
+func (req *chatRequest) mediaErr(maxImages int) error {
+	total := 0
+	for _, m := range req.Messages {
+		if _, media, err := flattenContent(m.Content); err == nil {
+			total += len(media)
+		}
+	}
+	if maxImages > 0 && total > maxImages {
+		return &tooManyImagesError{Count: total, Max: maxImages}
+	}
+	return nil
+}
+
+// flattenContent resolves a message Content RawMessage: JSON string → itself;
+// array → joined text parts plus the image parts in order (image_url, IMG-001);
+// anything else → malformed. Unknown part types are ignored, not rejected
+// (permissive decode, SDD §5.2) — only an image part we cannot fetch is refused,
+// and it is named.
+func flattenContent(raw json.RawMessage) (string, []string, error) {
 	if len(raw) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
+		return s, nil, nil
 	}
 	var parts []contentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		texts := make([]string, 0, len(parts))
+		var media []string
 		for _, p := range parts {
 			switch p.Type {
 			case "text", "":
 				texts = append(texts, p.Text)
 			case "image_url":
-				return "", errUnsupportedContent
+				u := strings.TrimSpace(p.ImageURL.URL)
+				if u == "" || !imageURLSupported(u) {
+					return "", nil, errUnsupportedImageURL
+				}
+				media = append(media, u)
 			default:
 				// Unknown part types are ignored, not rejected (permissive
 				// decode, SDD §5.2).
 			}
 		}
-		return strings.Join(texts, "\n"), nil
+		return strings.Join(texts, "\n"), media, nil
 	}
-	return "", errMalformedRequest
+	return "", nil, errMalformedRequest
+}
+
+// imageURLSupported accepts exactly what we can fetch without guessing: a data:
+// URL carrying an image, or an http(s) URL (IMG-001/002). A file:// or a
+// non-image data URL is a 400 naming the field, never a silent drop.
+func imageURLSupported(u string) bool {
+	lower := strings.ToLower(u)
+	switch {
+	case strings.HasPrefix(lower, "data:"):
+		return strings.HasPrefix(lower, "data:image/")
+	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
+		return true
+	default:
+		return false
+	}
 }
 
 // droppedFields names every stripped request field for X-Mimo-Warnings

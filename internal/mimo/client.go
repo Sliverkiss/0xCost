@@ -394,6 +394,37 @@ func IsAuthExpiredErr(err error) bool {
 // re-enter Chat rather than resend (SDD §2.4). No retry logic lives here:
 // account switch / auth refresh / empty-response retries are the API
 // layer's job (SDD §7.1/§7.2).
+// UserAgent is the browser identity this client sends (SDD §2.4). It is exported
+// for the one other place that must look like the same browser: fetching an
+// image URL the client handed us (internal/api/imageinput.go).
+func (c *Client) UserAgent() string { return c.userAgent }
+
+// AttachmentItem builds one entry of a chat request's `multiMedias` array for an
+// uploaded attachment. The field set is the one the live platform accepts: the
+// probe showed a stripped item (name/fileUrl/objectName/url only) is refused, so
+// every field below is load-bearing (docs/attachments-reverse.md).
+//
+// mediaType is the channel's own word for what was uploaded — "image", "file",
+// "audio", "video"; the sibling reverse-engineered client sends exactly these.
+func AttachmentItem(mediaType, name string, size int, up *UploadedResource, parsed *ParsedResource) map[string]any {
+	audioURL := ""
+	if mediaType == "audio" {
+		audioURL = up.ResourceURL
+	}
+	return map[string]any{
+		"mediaType":          mediaType,
+		"fileUrl":            up.ResourceURL,
+		"compressedVideoUrl": "",
+		"audioTrackUrl":      audioURL,
+		"name":               name,
+		"size":               size,
+		"status":             "completed",
+		"objectName":         up.ObjectName,
+		"tokenUsage":         parsed.TokenUsage,
+		"url":                parsed.ID,
+	}
+}
+
 // mediaOrEmpty keeps multiMedias an ARRAY even when the caller sends no
 // attachments: the upstream reads the field's type, and null breaks it
 // (SDD §2.4).

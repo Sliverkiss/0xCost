@@ -29,11 +29,15 @@ type RecordedRequest struct {
 	WebSearchStatus string
 	Temperature     *float64
 	TopP            *float64
-	Cookie          string
-	Headers         http.Header
-	RawBody         string
-	Cancelled       bool // request context cancelled before completion
-	At              time.Time
+	// MultiMedias / Attachments are the attachment handles the chat payload
+	// carried, in order (IMG-001/006). nil means the request had none.
+	MultiMedias []map[string]any
+	Attachments []map[string]any
+	Cookie      string
+	Headers     http.Header
+	RawBody     string
+	Cancelled   bool // request context cancelled before completion
+	At          time.Time
 }
 
 // ScriptStep is one scripted upstream response for an account.
@@ -68,17 +72,23 @@ type MockUpstream struct {
 	loginURL string // 401-probe loginUrl override (OTP login tests)
 
 	// Web-surface audio/catalog state (mock_audio.go).
-	audioReqs    []AudioRequest
-	ttsStatuses  []string
-	asrStatuses  []string
-	asrText      string
-	wav          []byte
-	uploaded     []byte
-	parseTokens  int
-	parseEmpty   bool
-	parseReqs    [][3]string
-	saveErrors   []string
-	botConfigErr string
+	audioReqs   []AudioRequest
+	ttsStatuses []string
+	asrStatuses []string
+	asrText     string
+	wav         []byte
+	uploaded    []byte
+	parseTokens int
+	parseEmpty  bool
+	parseReqs   [][3]string
+	// parseFailures: the next N resource/parse calls answer a business-code
+	// failure instead of a parse result (the transient failure the retry in
+	// mimo.ParseResource has to survive, IMG-008). parseSeq numbers successful
+	// parse results so several attachments in one request stay distinguishable.
+	parseFailures int
+	parseSeq      int
+	saveErrors    []string
+	botConfigErr  string
 	// audioHTTPStatus/audioHTTPBody: when status > 0 the TTS endpoint answers
 	// that HTTP status instead of a task, so the transport/5xx classification of
 	// an audio call can be exercised (TDD POOLATTR-014).
@@ -274,6 +284,8 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 			Temperature     *float64 `json:"temperature"`
 			TopP            *float64 `json:"topP"`
 		} `json:"modelConfig"`
+		MultiMedias []map[string]any `json:"multiMedias"`
+		Attachments []map[string]any `json:"attachments"`
 	}
 	_ = json.Unmarshal(body, &payload)
 
@@ -300,6 +312,8 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 		WebSearchStatus: payload.ModelConfig.WebSearchStatus,
 		Temperature:     payload.ModelConfig.Temperature,
 		TopP:            payload.ModelConfig.TopP,
+		MultiMedias:     payload.MultiMedias,
+		Attachments:     payload.Attachments,
 		Cookie:          r.Header.Get("Cookie"),
 		Headers:         r.Header.Clone(),
 		RawBody:         string(body),

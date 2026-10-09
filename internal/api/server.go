@@ -29,9 +29,11 @@ type Server struct {
 	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
 	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
 
-	apiKeys      [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
-	defaultModel string
-	replayCap    int
+	apiKeys       [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
+	defaultModel  string
+	replayCap     int
+	maxImages     int
+	maxImageBytes int
 	// requestTimeout/leaseTTL/slotHold implement ADR 0019: a real client-facing
 	// deadline, a per-turn upstream deadline, and when the in-flight slot goes
 	// back to the pool.
@@ -173,6 +175,11 @@ type Options struct {
 	Client       *mimo.Client
 	DefaultModel string // "auto"/missing model resolution (SDD §5.2)
 	ReplayCap    int    // max replayed user turns (SDD §5.3B, default 20)
+	// MaxImages bounds how many image parts one request may carry; MaxImageBytes
+	// bounds one image's size (IMG-*, defaults 10 / 20 MiB). Both are
+	// client-facing guards — every image costs three upstream calls.
+	MaxImages     int
+	MaxImageBytes int
 	// RequestTimeout is the whole client-facing budget for one chat request
 	// (ADR 0019, default 120s). 0 = no total budget (the per-turn lease TTL
 	// still applies).
@@ -211,6 +218,12 @@ func New(opts Options) *Server {
 	}
 	if opts.ReplayCap <= 0 {
 		opts.ReplayCap = 20
+	}
+	if opts.MaxImages <= 0 {
+		opts.MaxImages = 10
+	}
+	if opts.MaxImageBytes <= 0 {
+		opts.MaxImageBytes = 20 << 20
 	}
 	if opts.RequestTimeout < 0 {
 		opts.RequestTimeout = 0
@@ -261,6 +274,8 @@ func New(opts Options) *Server {
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,
+		maxImages:      opts.MaxImages,
+		maxImageBytes:  opts.MaxImageBytes,
 		requestTimeout: opts.RequestTimeout,
 		leaseTTL:       opts.LeaseTTL,
 		slotHold:       opts.SlotHold,

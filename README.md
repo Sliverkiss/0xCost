@@ -63,7 +63,7 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. OpenAI-standard knobs: `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`) turns the model's thinking on, `web_search_options` turns search on. Extensions on top of the standard: `web_search_status` (`disabled`\|`auto`\|`enabled` — the only way to ask for `auto`, and it wins over the standard field when both are given), `include_citations: false`, and the `:online` model suffix (= `web_search_status: enabled`). Model ids are never renamed to carry an option |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. OpenAI-standard knobs: `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`) turns the model's thinking on, `web_search_options` turns search on. Extensions on top of the standard: `web_search_status` (`disabled`\|`auto`\|`enabled` — the only way to ask for `auto`, and it wins over the standard field when both are given), `include_citations: false`, and the `:online` model suffix (= `web_search_status: enabled`). Model ids are never renamed to carry an option. **Images**: `content` may carry `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` or an http(s) URL — uploaded through the platform's own attachment path, so an image does not spend the query budget |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -111,6 +111,19 @@ Synthesis costs roughly real time upstream (live timings: 128 characters ≈ 13 
 `MIMO2API_AUDIO_TTS_TIMEOUT_S` plus 100 ms per character, capped by
 `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S`, and `MIMO2API_SPEECH_MAX_CHARS` bounds the
 total.
+
+**Images**: `content` may be an array mixing `{"type":"text"}` and
+`{"type":"image_url"}` parts (a `data:image/...` URL or an http(s) URL). The bytes
+are fetched with our browser identity, uploaded through `resource/genUploadInfo → PUT
+→ resource/parse` and referenced from that turn's `multiMedias`, so an image is
+accounted separately from the 102,400-character query budget. Images work on the
+vision models (`mimo-v2.6-pro`, `-flash`, `-pro-ultraspeed-studio`); a verified live
+call reads text out of a PNG. `MIMO2API_MAX_IMAGES` (default 10) and
+`MIMO2API_MAX_IMAGE_BYTES` (default 20 MiB) bound a request; a bad URL, a non-image
+body or an oversized file is a named 400 (`image_fetch_failed`,
+`unsupported_image_type`, `image_too_large`, `too_many_images`) and never cools an
+account down. A message with images and no text is sent with a neutral query
+(`请描述这张图片。`).
 
 **Web search**: with `web_search_options` present, `web_search_status: enabled`
 (or the `:online` suffix) the upstream searches and returns results inline. The gateway surfaces them as

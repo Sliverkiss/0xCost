@@ -60,7 +60,36 @@ var (
 	// enabled would be silently coerced upstream, hiding a client typo
 	// (M19).
 	errUnsupportedSearchStatus = errors.New("unsupported web_search_status")
+
+	// Image input (IMG-*). Each one is a 400 with its own code: an image is the
+	// only request field that can fail for a reason the client must fix (a URL
+	// we cannot fetch, a file that is not an image, a file that is too big).
+	errUnsupportedImageURL  = errors.New("unsupported image_url")
+	errImageFetch           = errors.New("image fetch failed")
+	errUnsupportedImageType = errors.New("unsupported image type")
+	errImageTooLarge        = errors.New("image too large")
 )
+
+// tooManyImagesError is more image parts in one request than the client-facing
+// cap (IMG-003). A type rather than a sentinel because the message has to carry
+// the numbers.
+type tooManyImagesError struct {
+	Count int
+	Max   int
+}
+
+func (e *tooManyImagesError) Error() string {
+	return fmt.Sprintf("request carries %d images, over the cap of %d (MIMO2API_MAX_IMAGES)", e.Count, e.Max)
+}
+
+// asTooManyImages extracts *tooManyImagesError from a wrapped error.
+func asTooManyImages(err error) *tooManyImagesError {
+	var e *tooManyImagesError
+	if errors.As(err, &e) {
+		return e
+	}
+	return nil
+}
 
 // queryTooLongError names the number that matters: a caller that only learns
 // "the query is too long" cannot act, one that learns "92311 chars over a 90000
@@ -201,6 +230,21 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016). The message names
 		// the measured size and the limit, so a caller can act on it.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long", tooLong.Error(), 0)
+	case errors.Is(err, errUnsupportedImageURL):
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_url",
+			"image_url must be a data:image/... URL or an http(s) URL", 0)
+	case errors.Is(err, errImageFetch):
+		// The client pointed at an image we could not retrieve; the message
+		// carries the reason (status, network, timeout) via the wrapped error.
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_fetch_failed", err.Error(), 0)
+	case errors.Is(err, errUnsupportedImageType):
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_type",
+			"the fetched URL did not answer an image (content-type must be image/*)", 0)
+	case errors.Is(err, errImageTooLarge):
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_too_large", err.Error(), 0)
+	case asTooManyImages(err) != nil:
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "too_many_images",
+			asTooManyImages(err).Error(), 0)
 	case errors.Is(err, errUnsupportedReasoningEffort):
 		// OpenAI's standard thinking knob, spelled wrong (OSTD-003).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_reasoning_effort",
