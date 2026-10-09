@@ -72,23 +72,29 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 // the first delta user query. Returns ErrNoUserMessage when there is nothing
 // new to send.
 func PlanDelta(msgs []Msg, storedMsgCount int) (*TurnPlan, error) {
-	var non []Msg
-	for _, m := range msgs {
-		if m.Role != "system" {
-			non = append(non, m)
-		}
-	}
-	if storedMsgCount < 0 || storedMsgCount >= len(non) {
+	if storedMsgCount < 0 {
 		return nil, ErrNoUserMessage{}
 	}
-	tail := non[storedMsgCount:]
+	// Walk the FULL list (not a system-filtered copy) so that a system message
+	// the client appends after the stored frontier is carried into the delta:
+	// filtering system messages out first made the tail system-free by
+	// construction, silently dropping them and making the splice below dead
+	// code. Non-system messages still advance the frontier, so the frontier
+	// arithmetic the caller stores (CountNonSystem) is unchanged.
 	var systemParts []string
 	var queries []string
-	for _, m := range tail {
+	seen := 0
+	for _, m := range msgs {
 		if m.Role == "system" {
-			if t := strings.TrimSpace(m.Content); t != "" {
-				systemParts = append(systemParts, t)
+			if seen >= storedMsgCount {
+				if t := strings.TrimSpace(m.Content); t != "" {
+					systemParts = append(systemParts, t)
+				}
 			}
+			continue
+		}
+		seen++
+		if seen <= storedMsgCount {
 			continue
 		}
 		if m.Role != "user" || m.Content == "" {

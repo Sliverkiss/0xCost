@@ -2,3 +2,5 @@ data/
 *.log
 /tmp/
 references/
+.cover/
+cover.out

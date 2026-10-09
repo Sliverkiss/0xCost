@@ -268,3 +268,52 @@ func TestSplitterByteAtATime(t *testing.T) {
 		}
 	}
 }
+
+// STICKY-DELTA-SYS-001: a system message the client appends AFTER the stored
+// frontier must ride along in the delta turn — the documented contract of
+// PlanDelta ("system messages appearing in the delta tail splice into the
+// first delta user query"). Filtering system messages out before slicing made
+// that branch unreachable and silently dropped the message.
+func TestPlanDeltaCarriesTrailingSystemMessage(t *testing.T) {
+	t.Run("appended after the frontier", func(t *testing.T) {
+		msgs := []Msg{
+			{Role: "system", Content: "original rules"},
+			{Role: "user", Content: "q1"},
+			{Role: "assistant", Content: "a1"},
+			{Role: "system", Content: "new constraint: answer in French"},
+			{Role: "user", Content: "q2"},
+		}
+		// Frontier: system + q1 + a1 → 2 non-system messages stored.
+		plan, err := PlanDelta(msgs, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Queries) != 1 {
+			t.Fatalf("queries = %+v, want exactly the delta turn", plan.Queries)
+		}
+		if !strings.Contains(plan.Queries[0], "new constraint: answer in French") {
+			t.Errorf("query = %q, want the trailing system message spliced in", plan.Queries[0])
+		}
+		if !strings.Contains(plan.Queries[0], "q2") {
+			t.Errorf("query = %q, want it to end with the new user message", plan.Queries[0])
+		}
+		if strings.Contains(plan.Queries[0], "original rules") {
+			t.Errorf("query = %q, must not replay the pre-frontier system message", plan.Queries[0])
+		}
+	})
+	t.Run("pre-frontier system message does not shift the frontier", func(t *testing.T) {
+		msgs := []Msg{
+			{Role: "system", Content: "s"},
+			{Role: "user", Content: "q1"},
+			{Role: "assistant", Content: "a1"},
+			{Role: "user", Content: "q2"},
+		}
+		plan, err := PlanDelta(msgs, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Queries) != 1 || plan.Queries[0] != "q2" {
+			t.Errorf("queries = %+v, want exactly [q2] with no system prefix", plan.Queries)
+		}
+	})
+}
