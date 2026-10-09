@@ -17,7 +17,6 @@ import (
 	"github.com/yg/mimo2api/internal/api"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -33,13 +32,12 @@ type TestAccount struct {
 }
 
 // TestServer is a fully wired mimo2api stack against a testutil.MockUpstream: real
-// pool, real session store, real accounts file (temp dir), real api.Server
+// pool, real accounts file (temp dir), real api.Server
 // (TDD §2.2).
 type TestServer struct {
 	Upstream *testutil.MockUpstream
 	Pool     *pool.Pool
 	Store    *accounts.Store
-	Sessions *session.Store
 	API      *api.Server
 	Server   *httptest.Server
 }
@@ -49,25 +47,17 @@ type TestServerOptions struct {
 	APIKeys      []string
 	MaxInflight  int
 	QueueWait    time.Duration
-	Keepalive    time.Duration
 	IdleTimeout  time.Duration
 	DefaultModel string
 	ReplayCap    int
 	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
 	// per-channel chat caps (ADR 0015).
 	MaxQueryChars int
-	// AllowStream mirrors MIMO2API_ALLOW_STREAM. nil means true, the opposite of
-	// the production default (ADR 0016 is non-streaming): the streaming suites
-	// must keep exercising the SSE path, and a case that wants the deployed
-	// behaviour sets it to false explicitly.
-	AllowStream *bool
-	Now         func() time.Time
-	Probe       pool.ProbeFunc
-	Renew       pool.RenewFunc
-	Debug       bool          // MIMO2API_LOG_LEVEL=debug equivalent
-	SessionWait time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
-	ForkPolicy  string        // "wait" (default) or "fork"
-	LogSink     io.Writer     // nil = discard-free default logger; set to capture trace lines
+	Now           func() time.Time
+	Probe         pool.ProbeFunc
+	Renew         pool.RenewFunc
+	Debug         bool      // MIMO2API_LOG_LEVEL=debug equivalent
+	LogSink       io.Writer // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
 	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
 	// httptest proxy and watch what leaves through it.
@@ -82,8 +72,8 @@ type TestServerOptions struct {
 	DefaultVoice   string
 }
 
-// NewTestServer wires N scripted accounts into the full stack. Keepalive
-// defaults small (10ms) so keepalive tests don't crawl.
+// NewTestServer wires N scripted accounts into the full stack.
+// defaults small (10ms) so timing tests don't crawl.
 func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *TestServer {
 	t.Helper()
 	if opts == nil {
@@ -118,10 +108,6 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		t.Fatalf("load temp accounts: %v", err)
 	}
 
-	keepalive := opts.Keepalive
-	if keepalive == 0 {
-		keepalive = 10 * time.Millisecond
-	}
 	queueWait := opts.QueueWait
 	if queueWait == 0 {
 		queueWait = 2 * time.Second
@@ -137,8 +123,6 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Now:         nowFn,
 	}, opts.Probe, opts.Renew)
 
-	sessions := session.New(session.Options{Now: nowFn})
-
 	client := mimo.New(mimo.Options{
 		Egress:      opts.Egress,
 		Base:        up.URL(),
@@ -153,18 +137,12 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		APIKeys:       opts.APIKeys,
 		Pool:          p,
 		Accounts:      store,
-		Sessions:      sessions,
 		Client:        client,
 		DefaultModel:  opts.DefaultModel,
 		ReplayCap:     opts.ReplayCap,
 		MaxQueryChars: opts.MaxQueryChars,
-		AllowStream:   opts.AllowStream == nil || *opts.AllowStream,
-		Keepalive:     keepalive,
 		Logger:        logger,
 		Debug:         opts.Debug,
-
-		SessionWait: opts.SessionWait,
-		ForkPolicy:  opts.ForkPolicy,
 
 		AudioPoll:      opts.AudioPoll,
 		TTSTimeout:     opts.TTSTimeout,
@@ -180,7 +158,6 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Upstream: up,
 		Pool:     p,
 		Store:    store,
-		Sessions: sessions,
 		API:      apiSrv,
 		Server:   hs,
 	}

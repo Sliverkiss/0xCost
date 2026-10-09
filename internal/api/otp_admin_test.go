@@ -14,7 +14,6 @@ import (
 	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -69,11 +68,7 @@ func newOTPAdminStack(t *testing.T) *otpAdminStack {
 		APIKeys:  []string{"sk-admin-test"},
 		Pool:     p,
 		Accounts: store,
-		Sessions: session.New(session.Options{}),
 		Client:   client,
-		// These in-package stacks exercise the streaming path; the deployed
-		// default is non-streaming (ADR 0016).
-		AllowStream: true,
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)

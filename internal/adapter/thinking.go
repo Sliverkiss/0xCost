@@ -128,7 +128,7 @@ func (s *ThinkSplitter) drain(final bool) []Piece {
 // is a proper prefix of marker (0 when none). Only that suffix needs holding
 // back for the next push — everything before it is safe to emit now. A
 // blanket len(marker)-1 hold would swallow short deltas wholesale and delay
-// piece emission until the next chunk (TDD API-019 keepalive regression).
+// piece emission until the next chunk (TDD THINK-004).
 func partialMarkerSuffix(data, marker string) int {
 	max := len(marker) - 1
 	if max > len(data) {

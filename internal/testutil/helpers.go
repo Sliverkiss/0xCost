@@ -3,6 +3,7 @@ package testutil
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,8 +11,21 @@ import (
 	"github.com/yg/mimo2api/internal/adapter"
 )
 
+// ReadJSON drains a non-streaming response body and closes it. The gateway has
+// one response shape (ADR 0017), so this is what most cases want.
+func ReadJSON(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return body
+}
+
 // ReadSSE drains a streaming response into its data payloads and comment
-// frames (keepalive assertions, TDD API-019).
+// frames. Kept for the fixtures the upstream parser is exercised with — the
+// gateway itself no longer emits SSE (ADR 0017).
 func ReadSSE(t *testing.T, resp *http.Response) (events []string, comments []string) {
 	t.Helper()
 	defer resp.Body.Close()

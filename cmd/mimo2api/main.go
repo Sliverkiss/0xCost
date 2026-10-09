@@ -1,10 +1,11 @@
 // Command mimo2api is the OpenAI-compatible gateway binary (SDD §3, §6):
-// env config → accounts file → pool janitors + session sweeper → HTTP server
-// with graceful shutdown on SIGTERM/SIGINT so in-flight streams drain.
+// env config → account store (file or Upstash, ADR 0018) → pool janitors +
+// credential sweeper → HTTP server with graceful shutdown on SIGTERM/SIGINT.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -21,7 +22,6 @@ import (
 	"github.com/yg/mimo2api/internal/egress"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 )
 
 // shutdownGrace bounds the drain window after SIGTERM/SIGINT: streams get
@@ -35,9 +35,95 @@ func main() {
 		os.Exit(runHealthcheck())
 	}
 
+	// -import-redis <accounts.json>: seed the Redis store (DS_REDIS_HOST) from
+	// a file and exit. The hosted deployment has no durable file system, so
+	// this is how a local accounts file becomes the remote pool — the same
+	// flag the reference deployment uses (ADR 0018).
+	importRedis := flag.String("import-redis", "", "import an accounts.json file into the configured Redis store, then exit")
+	flag.Parse()
+	if *importRedis != "" {
+		if err := runImportRedis(*importRedis); err != nil {
+			log.Fatalf("mimo2api: import-redis: %v", err)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		log.Fatalf("mimo2api: %v", err)
 	}
+}
+
+// runImportRedis copies a local accounts file into the configured Redis store
+// and exits. It is idempotent (per-account SET) and never touches the local
+// file. Guarded on DS_REDIS_HOST being set, so it cannot silently seed a file
+// backend with itself.
+func runImportRedis(path string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.RedisHost() == "" {
+		return fmt.Errorf("-import-redis requires DS_REDIS_HOST to be set (the local backend is already the file)")
+	}
+	backend, err := accounts.OpenUpstash(cfg.RedisHost(), cfg.RedisToken(), log.Default())
+	if err != nil {
+		return err
+	}
+	defer backend.Close()
+	store, err := accounts.Load(path)
+	if err != nil {
+		return err
+	}
+	accts := store.Accounts()
+	if len(accts) == 0 {
+		return fmt.Errorf("%s holds no accounts", path)
+	}
+	for _, a := range accts {
+		if err := backend.SaveAccount(context.Background(), a); err != nil {
+			return err
+		}
+	}
+	// Read back through the store contract: the import is only done when the
+	// remote side answers with the records we just wrote (external effect, so
+	// verify it rather than trusting the writes).
+	verifier, err := accounts.LoadBackend(context.Background(), backend)
+	if err != nil {
+		return err
+	}
+	if got := len(verifier.Accounts()); got != len(accts) {
+		return fmt.Errorf("verify: Redis holds %d accounts, imported %d", got, len(accts))
+	}
+	log.Printf("import-redis: %d accounts now in %s", len(accts), backend.Addr())
+	return nil
+}
+
+// openStore chooses the account backend (ADR 0018): Redis when
+// DS_REDIS_HOST is configured — a hosted deployment has no durable file
+// system — otherwise the accounts file.
+//
+// A configured-but-unusable Redis is fatal: the operator named a source of
+// truth, and starting on an empty file fallback would silently serve nobody
+// (the same reasoning the reference deployment uses).
+func openStore(cfg *config.Config) (*accounts.Store, error) {
+	if cfg.RedisHost() == "" {
+		store, err := accounts.Load(cfg.AccountsFile())
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("accounts: file backend %s (%d accounts)", cfg.AccountsFile(), len(store.Accounts()))
+		return store, nil
+	}
+	backend, err := accounts.OpenUpstash(cfg.RedisHost(), cfg.RedisToken(), log.Default())
+	if err != nil {
+		return nil, fmt.Errorf("DS_REDIS_HOST is set but the store is unusable — refusing to start on a stale file fallback: %w", err)
+	}
+	store, err := accounts.LoadBackend(context.Background(), backend)
+	if err != nil {
+		backend.Close()
+		return nil, err
+	}
+	log.Printf("accounts: redis backend %s (%d accounts)", backend.Addr(), len(store.Accounts()))
+	return store, nil
 }
 
 // run wires the stack and serves until a signal arrives.
@@ -47,10 +133,11 @@ func run() error {
 		return err
 	}
 
-	store, err := accounts.Load(cfg.AccountsFile())
+	store, err := openStore(cfg)
 	if err != nil {
 		return err
 	}
+	defer store.Close()
 
 	// Egress labels: accounts.json names them, the environment carries the
 	// endpoints and their credentials. An account whose label has no endpoint is
@@ -134,31 +221,17 @@ func run() error {
 		RiskWindow: cfg.PoolStatsWindow(),
 	}, probe, renew)
 
-	sessions := session.New(session.Options{
-		TTL: cfg.StickyTTL(),
-		Max: cfg.StickyMax(),
-	})
-
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
 		Pool:         p,
 		Accounts:     store,
-		Sessions:     sessions,
 		Client:       client,
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
 		// 0 = per-channel caps; a positive value is the operator override
 		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 		MaxQueryChars: cfg.MaxQueryChars(),
-		// Non-streaming by default (ADR 0016); MIMO2API_ALLOW_STREAM=true only for
-		// a client that genuinely needs SSE.
-		AllowStream: cfg.AllowStream(),
-		Keepalive:   cfg.Keepalive(),
-		Debug:       cfg.Debug(),
-
-		// Session identity (SDD §4.3.1, ADR 0009).
-		SessionWait: cfg.SessionWait(),
-		ForkPolicy:  cfg.SessionForkPolicy(),
+		Debug:         cfg.Debug(),
 
 		// Audio surface (M18).
 		AudioPoll:      cfg.AudioPoll(),
@@ -178,8 +251,8 @@ func run() error {
 	srv.RefreshModelRedirects(warmCtx)
 	cancelWarm()
 
-	// Background janitors (SDD §3): recovery probes every probeInterval,
-	// session sweep on the same loop, plus a 6h STS keepalive sweep (§2.3).
+	// Background janitors (SDD §3): recovery probes every probeInterval, plus
+	// the STS keepalive sweep (§2.3).
 	ctx, stopJanitors := context.WithCancel(context.Background())
 	janitorDone := make(chan struct{})
 	go func() {
@@ -200,9 +273,6 @@ func run() error {
 				// model mid-flight must not start failing requests that used to
 				// work (TTL-guarded inside).
 				srv.RefreshModelRedirects(ctx)
-				if n := sessions.Sweep(); n > 0 {
-					log.Printf("session: swept %d expired entr%s", n, plural(n))
-				}
 			case <-refreshTick.C:
 				stsSweep(ctx, store, client, srv)
 			}

@@ -17,7 +17,6 @@ import (
 	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -66,11 +65,7 @@ func newRefreshStack(t *testing.T, passToken string) *otpAdminStack {
 		APIKeys:  []string{"sk-admin-test"},
 		Pool:     p,
 		Accounts: store,
-		Sessions: session.New(session.Options{}),
 		Client:   client,
-		// These in-package stacks exercise the streaming path; the deployed
-		// default is non-streaming (ADR 0016).
-		AllowStream: true,
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)
@@ -89,12 +84,12 @@ func TestTransparentRefreshRetryOn401(t *testing.T) {
 	)
 
 	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	if resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("chat after refresh = %v %q, want a clean 200", resp, body)
 	}
-	if !strings.Contains(body, "[DONE]") {
-		t.Errorf("stream did not complete: %q", body)
+	if !strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, "Hello world") {
+		t.Errorf("chat did not complete: %q", body)
 	}
 	if hits := s.upstream.ChatHits(); hits != 2 {
 		t.Errorf("upstream chat attempts = %d, want exactly 2 (original + one retry)", hits)
@@ -135,7 +130,7 @@ func TestRefreshFailureDisablesAndMapsError(t *testing.T) {
 	s.upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusUnauthorized})
 
 	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	if resp == nil {
 		t.Fatal("no response")
 	}

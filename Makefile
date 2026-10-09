@@ -6,7 +6,7 @@ GO         ?= go
 IMAGE      ?= mimo2api:test
 COVER_DIR  := .cover
 # internal packages that carry coverage floors (docs/TDD.md §6.2).
-PKGS       := adapter pool session mimo api accounts config
+PKGS       := adapter pool mimo api accounts config
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-race cover cover-check vet fmt hygiene test-docker run clean
@@ -43,7 +43,7 @@ cover-check: cover ## Fail with a clear message if a package is below its §6.2 
 		else \
 			echo "cover-check: ok   internal/$$p $${got}% (floor $${floor}%)"; \
 		fi; }; \
-	check adapter 90; check pool 85; check session 90; check mimo 80; \
+	check adapter 90; check pool 85; check mimo 80; \
 	check api 70; check accounts 80; check config 80; \
 	[ $$fail -eq 0 ] || { echo "cover-check: FAILED — package(s) below floor (docs/TDD.md §6.2)"; exit 1; }; \
 	echo "cover-check: all packages meet their floors"

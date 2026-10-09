@@ -13,10 +13,17 @@ import (
 
 // Defaults per SDD §6 config surface.
 const (
-	DefaultHost         = "0.0.0.0"
-	DefaultPort         = 8080
+	DefaultHost = "0.0.0.0"
+	// DefaultPort is the listen port when neither MIMO2API_PORT nor the
+	// platform's PORT is set (ADR 0018: the hosted deployment — Belmo —
+	// publishes 3000).
+	DefaultPort         = 3000
 	DefaultUpstreamBase = "https://aistudio.xiaomimimo.com"
-	DefaultAccountsFile = "/data/accounts.json"
+	// DefaultAccountsFile is relative on purpose: a hosted build has no
+	// /data mount, and a relative path creates only what the process may
+	// write. The container deployment sets MIMO2API_ACCOUNTS_FILE explicitly
+	// (ADR 0018).
+	DefaultAccountsFile = "data/accounts.json"
 	DefaultDefaultModel = "mimo-v2.6-pro"
 	DefaultTimezone     = "Asia/Shanghai"
 	DefaultLogLevel     = "info"
@@ -32,14 +39,8 @@ const (
 	// because a renewal re-mints the session cookie and never the credential —
 	// the passToken's own 30-day clock is what a password login resets.
 	DefaultSessionRefresh = 12 * time.Hour
-	DefaultStickyTTL      = 30 * time.Minute
-	DefaultStickyMax      = 500
-	// DefaultSessionWait bounds how long a second streaming request waits for
-	// its own session before forking (ADR 0009 decision 5).
-	DefaultSessionWait = 2 * time.Second
-	DefaultMaxInflight = 2
-	DefaultQueueWait   = 15 * time.Second
-	DefaultKeepalive   = 15 * time.Second
+	DefaultMaxInflight    = 2
+	DefaultQueueWait      = 15 * time.Second
 
 	// Audio surface (M18): the Studio's own poll cadence is 1s and its task
 	// deadlines are tens of seconds, so these are the honest defaults.
@@ -64,13 +65,9 @@ const (
 	// (adapter.MaxQueryChars: 50k fastchat, 90k others — SDD §2.8).
 	DefaultMaxQueryChars = 0
 	DefaultReplayCap     = 20
-	// DefaultAllowStream: chat is non-streaming on this deployment (ADR 0016).
-	// A request asking for stream:true is refused with a clear 400 rather than
-	// silently served as one blob; flip the env var for a client that needs SSE.
-	DefaultAllowStream = false
-	DefaultCooldown429 = 60 * time.Second
-	DefaultCooldown5xx = 30 * time.Second
-	DefaultCooldownCap = 10 * time.Minute
+	DefaultCooldown429   = 60 * time.Second
+	DefaultCooldown5xx   = 30 * time.Second
+	DefaultCooldownCap   = 10 * time.Minute
 	// DefaultCooldownTransport: the transport class has its own ladder (SDD
 	// §4.5.1) — a dead connection or a stall is less likely to be the account's
 	// fault than an upstream 5xx, so it cools for less and escalates less far.
@@ -94,14 +91,8 @@ type Config struct {
 	requestTimeout       time.Duration
 	sseIdleTimeout       time.Duration
 	sessionRefresh       time.Duration
-	stickyTTL            time.Duration
-	stickyMax            int
-	allowStream          bool
-	sessionWait          time.Duration
-	sessionFork          string
 	maxInflight          int
 	queueWait            time.Duration
-	keepalive            time.Duration
 	audioPoll            time.Duration
 	catalogTTL           time.Duration
 	ttsTimeout           time.Duration
@@ -124,6 +115,11 @@ type Config struct {
 	logLevel             string
 	otpAuto              bool
 	crossRegionAgree     bool
+
+	// redisHost/redisToken are the Upstash contract (DS_REDIS_HOST /
+	// DS_REDIS_TOKEN, ADR 0018). Both empty means the accounts file backend.
+	redisHost  string
+	redisToken string
 }
 
 // Load reads the MIMO2API_* environment. Invalid numeric values produce an
@@ -144,12 +140,8 @@ func Load() (*Config, error) {
 		requestTimeout:       DefaultRequestTimeout,
 		sseIdleTimeout:       DefaultSSEIdleTimeout,
 		sessionRefresh:       DefaultSessionRefresh,
-		stickyTTL:            DefaultStickyTTL,
-		stickyMax:            DefaultStickyMax,
-		sessionWait:          DefaultSessionWait,
 		maxInflight:          DefaultMaxInflight,
 		queueWait:            DefaultQueueWait,
-		keepalive:            DefaultKeepalive,
 		audioPoll:            DefaultAudioPoll,
 		catalogTTL:           DefaultCatalogTTL,
 		ttsTimeout:           DefaultTTSTimeout,
@@ -169,9 +161,13 @@ func Load() (*Config, error) {
 		// dispatch is an explicit operator decision (MIMO2API_OTP_AUTO=true).
 		// A default of true meant any login attempt — including the startup
 		// catalog warm-up — silently spent an SMS.
-		allowStream:      getenvBool("MIMO2API_ALLOW_STREAM", DefaultAllowStream),
 		otpAuto:          getenvBool("MIMO2API_OTP_AUTO", false),
 		crossRegionAgree: getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
+		// Not MIMO2API_-prefixed on purpose: the hosted deployment sets the
+		// same two variables as the reference deployment
+		// (Sliverkiss/simple-chat), so one Upstash instance serves both.
+		redisHost:  getenv("DS_REDIS_HOST", ""),
+		redisToken: getenv("DS_REDIS_TOKEN", ""),
 	}
 
 	keys := ParseAPIKeys(os.Getenv("MIMO2API_API_KEYS"))
@@ -182,7 +178,10 @@ func Load() (*Config, error) {
 	}
 
 	var err error
-	if c.port, err = getenvInt("MIMO2API_PORT", DefaultPort); err != nil {
+	// Port: MIMO2API_PORT wins; otherwise the platform's own PORT variable
+	// (Belmo/Railway/Heroku convention) is honoured so a hosted deploy works
+	// without configuration; otherwise the default (ADR 0018).
+	if c.port, err = portFromEnv(); err != nil {
 		return nil, err
 	}
 	if c.requestTimeout, err = getenvMillis("MIMO2API_REQUEST_TIMEOUT_MS", DefaultRequestTimeout); err != nil {
@@ -194,25 +193,10 @@ func Load() (*Config, error) {
 	if c.sessionRefresh, err = getenvHours("MIMO2API_SESSION_REFRESH_HOURS", DefaultSessionRefresh); err != nil {
 		return nil, err
 	}
-	if c.stickyTTL, err = getenvSeconds("MIMO2API_STICKY_TTL_S", DefaultStickyTTL); err != nil {
-		return nil, err
-	}
-	if c.sessionWait, err = getenvMillis("MIMO2API_SESSION_WAIT_MS", DefaultSessionWait); err != nil {
-		return nil, err
-	}
-	if c.sessionFork, err = getenvEnum("MIMO2API_SESSION_FORK_POLICY", "wait", "wait", "fork"); err != nil {
-		return nil, err
-	}
-	if c.stickyMax, err = getenvInt("MIMO2API_STICKY_MAX", DefaultStickyMax); err != nil {
-		return nil, err
-	}
 	if c.maxInflight, err = getenvInt("MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", DefaultMaxInflight); err != nil {
 		return nil, err
 	}
 	if c.queueWait, err = getenvSeconds("MIMO2API_QUEUE_WAIT_S", DefaultQueueWait); err != nil {
-		return nil, err
-	}
-	if c.keepalive, err = getenvMillis("MIMO2API_KEEPALIVE_INTERVAL_MS", DefaultKeepalive); err != nil {
 		return nil, err
 	}
 	if c.replayCap, err = getenvInt("MIMO2API_REPLAY_CAP", DefaultReplayCap); err != nil {
@@ -282,29 +266,15 @@ func (c *Config) Port() int                     { return c.port }
 func (c *Config) APIKeys() []string             { return append([]string(nil), c.apiKeys...) }
 func (c *Config) UpstreamBase() string          { return c.upstreamBase }
 func (c *Config) AccountsFile() string          { return c.accountsFile }
+func (c *Config) RedisHost() string             { return c.redisHost }
+func (c *Config) RedisToken() string            { return c.redisToken }
 func (c *Config) DefaultModel() string          { return c.defaultModel }
 func (c *Config) RequestTimeout() time.Duration { return c.requestTimeout }
 func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
 func (c *Config) SessionRefresh() time.Duration { return c.sessionRefresh }
-func (c *Config) StickyTTL() time.Duration      { return c.stickyTTL }
-func (c *Config) StickyMax() int                { return c.stickyMax }
-
-// SessionWait is the bound a second streaming request waits for its session
-// before forking (SDD §4.3.1, REQ-8).
-func (c *Config) SessionWait() time.Duration { return c.sessionWait }
-
-// AllowStream reports whether chat may serve stream:true. False by default
-// (ADR 0016): this deployment is non-streaming, so the SSE emission path is
-// reachable only when an operator turns it back on.
-func (c *Config) AllowStream() bool { return c.allowStream }
-
-// SessionForkPolicy is "wait" (default) or "fork": whether a busy session is
-// waited for or forked immediately.
-func (c *Config) SessionForkPolicy() string { return c.sessionFork }
-func (c *Config) MaxInflight() int          { return c.maxInflight }
-func (c *Config) QueueWait() time.Duration  { return c.queueWait }
-func (c *Config) Keepalive() time.Duration  { return c.keepalive }
-func (c *Config) AudioPoll() time.Duration  { return c.audioPoll }
+func (c *Config) MaxInflight() int              { return c.maxInflight }
+func (c *Config) QueueWait() time.Duration      { return c.queueWait }
+func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
 
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
@@ -400,6 +370,19 @@ func getenv(name, def string) string {
 		return strings.TrimSpace(v)
 	}
 	return def
+}
+
+// portFromEnv resolves the listen port: MIMO2API_PORT, else the platform's
+// PORT, else DefaultPort. A malformed value fails loudly naming the variable
+// it came from (CONF-005).
+func portFromEnv() (int, error) {
+	if v, ok := os.LookupEnv("MIMO2API_PORT"); ok && strings.TrimSpace(v) != "" {
+		return getenvInt("MIMO2API_PORT", DefaultPort)
+	}
+	if v, ok := os.LookupEnv("PORT"); ok && strings.TrimSpace(v) != "" {
+		return getenvInt("PORT", DefaultPort)
+	}
+	return DefaultPort, nil
 }
 
 func getenvInt(name string, def int) (int, error) {

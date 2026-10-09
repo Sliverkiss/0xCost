@@ -27,7 +27,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +35,6 @@ import (
 	"github.com/yg/mimo2api/internal/config"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 )
 
 // upstreamBase is the real service the live suite talks to (SDD §2.1).
@@ -71,13 +69,12 @@ type testAccount struct {
 // harness is the full stack under test: real upstream client, real pool, real
 // session store, real HTTP surface — only the accounts file is a copy.
 type harness struct {
-	srv      *httptest.Server
-	store    *accounts.Store
-	sessions *session.Store
-	pool     *pool.Pool
-	client   *mimo.Client
-	path     string
-	acct     testAccount
+	srv    *httptest.Server
+	store  *accounts.Store
+	pool   *pool.Pool
+	client *mimo.Client
+	path   string
+	acct   testAccount
 }
 
 // accountsPath resolves the operator's accounts file.
@@ -217,20 +214,17 @@ func newHarness(t *testing.T, accountsFilePath string, otpAuto bool) *harness {
 		Cooldown5xx: cfg.Cooldown5xx(),
 		CooldownCap: cfg.CooldownCap(),
 	}, probe, renew)
-	sessions := session.New(session.Options{TTL: cfg.StickyTTL(), Max: cfg.StickyMax()})
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
 		Pool:         p,
 		Accounts:     store,
-		Sessions:     sessions,
 		Client:       client,
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
-		Keepalive:    cfg.Keepalive(),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{srv: ts, store: store, sessions: sessions, pool: p, client: client, path: accountsFilePath}
+	return &harness{srv: ts, store: store, pool: p, client: client, path: accountsFilePath}
 }
 
 // httpResp is a decoded response envelope.
@@ -333,41 +327,6 @@ type sseFrame struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error"`
-}
-
-// parseSSE splits a raw SSE body into frames plus the DONE marker.
-func parseSSE(t *testing.T, raw string) ([]sseFrame, bool) {
-	t.Helper()
-	var frames []sseFrame
-	done := false
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
-			done = true
-			continue
-		}
-		var f sseFrame
-		if err := json.Unmarshal([]byte(payload), &f); err != nil {
-			t.Fatalf("bad SSE frame %q: %v", truncate(payload, 200), err)
-		}
-		frames = append(frames, f)
-	}
-	return frames, done
-}
-
-// streamContent concatenates the delta contents of a frame list.
-func streamContent(frames []sseFrame) string {
-	var b strings.Builder
-	for _, f := range frames {
-		for _, c := range f.Choices {
-			b.WriteString(c.Delta.Content)
-		}
-	}
-	return b.String()
 }
 
 // storedSession reads the account's session back from the accounts copy.

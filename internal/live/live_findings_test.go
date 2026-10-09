@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
-	"github.com/yg/mimo2api/internal/session"
 )
 
 // noMutation is the identity mutation for harnesses that use the account as-is.
@@ -190,145 +188,20 @@ func TestLive009FastchatUsageMerge(t *testing.T) {
 		t.Skip("catalog has no ultraspeed model")
 	}
 	r := h.do(t, http.MethodPost, "/v1/chat/completions",
-		chatBody(ultra, true, userMsg("count from 1 to 5, digits only")))
+		chatBody(ultra, false, userMsg("count from 1 to 5, digits only")))
 	if r.Status != http.StatusOK {
-		t.Fatalf("fastchat stream (%s) = %d %s", ultra, r.Status, truncate(string(r.Body), 400))
+		t.Fatalf("fastchat chat (%s) = %d %s", ultra, r.Status, truncate(string(r.Body), 400))
 	}
-	frames, done := parseSSE(t, string(r.Body))
-	var usages []struct {
-		prompt, completion, total int
-	}
-	for _, f := range frames {
-		if f.Usage != nil {
-			usages = append(usages, struct{ prompt, completion, total int }{f.Usage.PromptTokens, f.Usage.CompletionTokens, f.Usage.TotalTokens})
-		}
-	}
+	chat := decodeChat(t, r)
 	var lines []string
-	lines = append(lines, fmt.Sprintf("model=%s frames=%d done=%v usage_events=%d", ultra, len(frames), done, len(usages)))
-	for i, u := range usages {
-		lines = append(lines, fmt.Sprintf("usage[%d] prompt=%d completion=%d total=%d", i, u.prompt, u.completion, u.total))
-	}
-	if len(usages) == 0 {
-		lines = append(lines, "VERDICT: no usage event in the fastchat stream — SSE-012 analogue cannot be validated")
+	lines = append(lines, fmt.Sprintf("model=%s usage=%+v", ultra, chat.Usage))
+	lines = append(lines, "note: the upstream emits several usage events per turn; merging them into this one total is the client's job (TDD SSE-012, unit-covered) now that the API is non-streaming")
+	if chat.Usage.TotalTokens <= 0 {
+		lines = append(lines, "VERDICT: no usage in the fastchat response — the fastchat channel reports nothing usable")
 	} else {
-		monotonic := true
-		for i := 1; i < len(usages); i++ {
-			if usages[i].total < usages[i-1].total {
-				monotonic = false
-			}
-		}
-		lines = append(lines, fmt.Sprintf("last total >= all earlier totals: %v", monotonic))
-		if !monotonic {
-			lines = append(lines, "VERDICT: totals DECREASE across usage events — last-wins would under-report; document + fix the merge rule")
-		} else if len(usages) > 1 {
-			lines = append(lines, "VERDICT: repeated usage events are monotonic — last-wins is safe")
-		} else {
-			lines = append(lines, "VERDICT: a single usage event — no merge question for this model/run")
-		}
+		lines = append(lines, "VERDICT: the fastchat channel reports usage on the non-streaming path")
 	}
-	if !done {
-		lines = append(lines, "NOTE: stream ended without data: [DONE]")
-	}
-	recordFindings(t, "LIVE-009", "fastchat repeated usage events", lines)
-}
-
-// phase1State is the saved stickiness snapshot for LIVE-010 phase 2.
-type phase1State struct {
-	SavedAt    int64           `json:"saved_at"`
-	AccountID  string          `json:"account_id"`
-	Question   string          `json:"question"`
-	Answer     string          `json:"answer"`
-	Fact       string          `json:"fact"`
-	Entries    []session.Entry `json:"entries"`
-	AccountRef string          `json:"account_ref"`
-}
-
-func phase1Path() string {
-	if p := os.Getenv("MIMO2API_LIVE_PHASE1_STATE"); p != "" {
-		return p
-	}
-	return filepath.Join(os.TempDir(), "mimo2api-live-phase1.json")
-}
-
-// LIVE-010: does a sticky conversation survive upstream GC without an
-// explicit /conversation/save? Two-phase by construction (24h gap).
-//
-//	phase 1 (default): run a turn, snapshot the session store, print the resume
-//	                   instruction.
-//	phase 2: MIMO2API_LIVE_PHASE=2 — restore the snapshot, send a delta turn
-//	         with the same history, and check whether the upstream still has
-//	         the context.
-func TestLive010ConversationSurvivesGC(t *testing.T) {
-	liveGate(t)
-	const fact = "my lucky token is ZQ7"
-	phase := os.Getenv("MIMO2API_LIVE_PHASE")
-	if phase == "" || phase == "1" {
-		h := newLiveHarness(t, noMutation, true)
-		r := h.do(t, http.MethodPost, "/v1/chat/completions",
-			chatBody("mimo-v2.6-pro", false, userMsg(fact+", remember it")))
-		if r.Status != http.StatusOK {
-			t.Fatalf("phase 1 turn = %d %s", r.Status, truncate(string(r.Body), 300))
-		}
-		c := decodeChat(t, r)
-		if len(c.Choices) != 1 {
-			t.Fatalf("phase 1 choices = %d", len(c.Choices))
-		}
-		snap := phase1State{
-			SavedAt:    time.Now().Unix(),
-			AccountID:  h.acct.ID,
-			Question:   fact + ", remember it",
-			Answer:     c.Choices[0].Message.Content,
-			Fact:       fact,
-			Entries:    h.sessions.Snapshot(),
-			AccountRef: h.path,
-		}
-		b, _ := json.MarshalIndent(snap, "", "  ")
-		path := phase1Path()
-		if err := os.WriteFile(path, b, 0o600); err != nil {
-			t.Fatalf("write phase-1 state: %v", err)
-		}
-		t.Logf("phase 1 saved %d sticky entries to %s; resume with MIMO2API_LIVE_PHASE=2 after >=24h", len(snap.Entries), path)
-		return
-	}
-
-	// Phase 2.
-	raw, err := os.ReadFile(phase1Path())
-	if err != nil {
-		t.Skipf("no phase-1 state at %s: run the suite once without MIMO2API_LIVE_PHASE=2 first", phase1Path())
-	}
-	var snap phase1State
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		t.Fatalf("parse phase-1 state: %v", err)
-	}
-	if age := time.Since(time.Unix(snap.SavedAt, 0)); age < 20*time.Hour {
-		t.Skipf("phase-1 snapshot is only %s old; the GC question needs >=24h", age.Round(time.Minute))
-	}
-	h := newLiveHarness(t, noMutation, true)
-	h.sessions.Restore(snap.Entries)
-	r := h.do(t, http.MethodPost, "/v1/chat/completions",
-		chatBody("mimo-v2.6-pro", false,
-			userMsg(snap.Question),
-			assistantMsg(snap.Answer),
-			userMsg("what is my lucky token?")))
-	lines := []string{
-		fmt.Sprintf("snapshot age: %s, restored entries: %d", time.Since(time.Unix(snap.SavedAt, 0)).Round(time.Minute), len(snap.Entries)),
-		fmt.Sprintf("phase 2 status: %d", r.Status),
-	}
-	if r.Status != http.StatusOK {
-		lines = append(lines, fmt.Sprintf("body: %s", truncate(string(r.Body), 300)))
-		lines = append(lines, "VERDICT: the delta turn failed after the gap — inspect the upstream error before amending SDD §4.3")
-		recordFindings(t, "LIVE-010", "sticky conversation across upstream GC", lines)
-		return
-	}
-	c := decodeChat(t, r)
-	answer := c.Choices[0].Message.Content
-	lines = append(lines, fmt.Sprintf("answer: %s", truncate(answer, 300)))
-	if strings.Contains(answer, "ZQ7") {
-		lines = append(lines, "VERDICT: context survived the gap — upstream auto-save suffices, no /conversation/save call needed")
-	} else {
-		lines = append(lines, "VERDICT: context LOST after the gap — SDD §4.3 must be amended to call POST /open-apis/chat/conversation/save on store")
-	}
-	recordFindings(t, "LIVE-010", "sticky conversation across upstream GC", lines)
+	recordFindings(t, "LIVE-009", "fastchat usage reporting", lines)
 }
 
 // splitCodes parses a comma-separated one-time-code list.
@@ -345,11 +218,11 @@ func splitCodes(raw string) []string {
 // LIVE-011: how deep does the fastchat (ultraspeed) context really go?
 //
 // The Studio's own client keeps only three rounds for ultraspeed
-// (`ultraspeedContextRoundLimit: 3`, docs/web-surface-reverse.md §11.3), but the
-// channel itself is stateful (it returns dialogId) and may keep more. Plant a
-// fact at round 1 and ask for it back at round 6 through the gateway: recall
-// proves the upstream depth exceeds the Studio's client-side truncation, which
-// is why the gateway keeps server-side chaining instead of copying that policy.
+// (`ultraspeedContextRoundLimit: 3`, docs/web-surface-reverse.md §11.3). The
+// gateway does not truncate anything: every request replays the whole history
+// (ADR 0017), so this plants a fact at round 1 and asks for it back at round 6 —
+// recall proves the replay survives the fastchat channel's 50,000-character
+// per-query ceiling for a six-turn conversation.
 func TestLive011UltraDeepContext(t *testing.T) {
 	liveGate(t)
 	h := newLiveHarness(t, noMutation, true)
@@ -388,13 +261,13 @@ func TestLive011UltraDeepContext(t *testing.T) {
 	lastAnswer := ""
 	for i, q := range questions {
 		msgs = append(msgs, userMsg(q))
-		r := h.do(t, http.MethodPost, "/v1/chat/completions", chatBody(ultra, true, msgs...))
+		r := h.do(t, http.MethodPost, "/v1/chat/completions", chatBody(ultra, false, msgs...))
 		if r.Status != http.StatusOK {
 			t.Fatalf("round %d (%s) = %d %s", i+1, ultra, r.Status, truncate(string(r.Body), 400))
 		}
-		frames, done := parseSSE(t, string(r.Body))
-		answer := stripThinking(streamContent(frames))
-		lines = append(lines, fmt.Sprintf("round %d: frames=%d done=%v answer=%q", i+1, len(frames), done, truncate(answer, 60)))
+		c := decodeChat(t, r)
+		answer := stripThinking(c.Choices[0].Message.Content)
+		lines = append(lines, fmt.Sprintf("round %d: answer=%q", i+1, truncate(answer, 60)))
 		lastAnswer = answer
 		msgs = append(msgs, map[string]string{"role": "assistant", "content": answer})
 		time.Sleep(pace)

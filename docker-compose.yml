@@ -1,10 +1,14 @@
-# mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
-# in-binary healthcheck (distroless has no curl/wget).
+# mimo2api compose (SDD §6): container port 3000 (ADR 0018), /data volume for
+# accounts.json, in-binary healthcheck (distroless has no curl/wget).
 #
 # ONE container, ONE published port (ADR 0016, superseding the tool layer of
 # ADR 0012): host 21223 → the gateway itself.
 #
-#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:8080
+#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:3000
+#
+# A hosted deployment without a durable file system (Belmo) instead sets
+# DS_REDIS_HOST + DS_REDIS_TOKEN and keeps its accounts in Upstash — same
+# binary, no volume (ADR 0018).
 #
 # The tool layer is gone: MiMo has no native function calling, the middleware
 # serving it injected a protocol prompt that spent 1,355–5,222 characters of the
@@ -23,7 +27,7 @@ services:
       # TLS and the public hostname belong to the reverse proxy in front (Caddy
       # terminates :443 and proxies to 127.0.0.1:21223), and every other service
       # on this host binds 127.0.0.1 too — an exposed API port is an exposed key.
-      - "127.0.0.1:21223:8080"
+      - "127.0.0.1:21223:3000"
     volumes:
       - ./data:/data # accounts.json + runtime state (SDD §4.7)
     environment:
@@ -39,15 +43,13 @@ services:
       #   SMS on its own — the operator finishes a human gate (ADR 0013).
       - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
-      # 0 = per-channel caps (50k fastchat / 90k others); a positive value is the
+      # 0 = per-channel caps (50k fastchat / 102,400 others); a positive value is the
       # operator override for a client that sends more context than the Studio's
       # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
       - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}
-      # Chat is non-streaming on this deployment (ADR 0016): a request asking for
-      # stream:true is refused with a clear 400 instead of being silently served
-      # as one blob (never a silent downgrade). Flip to true only for a client
-      # that genuinely needs SSE.
-      - MIMO2API_ALLOW_STREAM=${MIMO2API_ALLOW_STREAM:-false}
+      # Chat has no streaming path at all (ADR 0017): stream:true is refused
+      # with a clear 400. There is no switch — the SSE writer and the session
+      # store are deleted, not disabled.
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s

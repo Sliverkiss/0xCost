@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/testserver"
@@ -64,68 +63,6 @@ func TestAPINonStreamHappyPath(t *testing.T) {
 	if ch.Message.ReasoningContent != "" {
 		// reasoning_content omitted when empty (API-001).
 		t.Errorf("reasoning_content must be absent when empty")
-	}
-}
-
-// API-002: stream happy path — role chunk → content deltas → finish →
-// usage (choices:[]) → [DONE] (SDD §5.4).
-func TestAPIStreamHappyPath(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
-		resp.Body.Close()
-		t.Fatalf("content-type = %q", ct)
-	}
-	events, comments := testutil.ReadSSE(t, resp)
-	if len(events) < 5 {
-		t.Fatalf("events = %d, want >=5: %v", len(events), events)
-	}
-	if len(comments) != 0 {
-		t.Errorf("no keepalives expected on a fast stream, got %v", comments)
-	}
-	// First event: role-only delta.
-	first := testutil.ParseChunk(t, events[0])
-	if len(first.Choices) != 1 || first.Choices[0].Delta.Role != "assistant" {
-		t.Errorf("first chunk = %+v", first.Choices)
-	}
-	if first.Object != "chat.completion.chunk" {
-		t.Errorf("object = %q", first.Object)
-	}
-	// One id for the whole stream.
-	chatID := first.ID
-	var content strings.Builder
-	sawFinish, sawUsage, sawDone := false, false, false
-	for _, e := range events[1:] {
-		if e == "[DONE]" {
-			sawDone = true
-			continue
-		}
-		c := testutil.ParseChunk(t, e)
-		if c.ID != chatID {
-			t.Errorf("chunk id changed: %q vs %q", c.ID, chatID)
-		}
-		if len(c.Choices) == 0 {
-			if c.Usage == nil {
-				t.Errorf("choices-empty chunk without usage: %s", e)
-			} else {
-				sawUsage = true
-			}
-			continue
-		}
-		if c.Choices[0].FinishReason != nil && *c.Choices[0].FinishReason == "stop" {
-			sawFinish = true
-			continue
-		}
-		content.WriteString(c.Choices[0].Delta.Content)
-	}
-	if content.String() != "Hello world" {
-		t.Errorf("streamed content = %q", content.String())
-	}
-	if !sawFinish || !sawUsage || !sawDone {
-		t.Errorf("finish/usage/done = %v/%v/%v", sawFinish, sawUsage, sawDone)
 	}
 }
 
@@ -250,49 +187,29 @@ func TestAPIMaxTokensIgnored(t *testing.T) {
 	}
 }
 
-// API-010: enable_thinking → reasoning deltas before content.
-func TestAPIReasoningDeltas(t *testing.T) {
+// API-010: enable_thinking → reasoning_content on the message (the streaming
+// delta variant died with the SSE path, ADR 0017).
+func TestAPIReasoningContent(t *testing.T) {
 	ts := testserver.NewTestServer(t, []testserver.TestAccount{{
 		ID: "acc1", PH: testutil.TestPH, Cookie: testutil.TestCookie,
 		Script: []testutil.ScriptStep{{Body: testutil.FixtureSSEThinking}},
 	}}, nil)
-	body := `{"model":"mimo-v2.6-pro","stream":true,"enable_thinking":true,` +
+	body := `{"model":"mimo-v2.6-pro","stream":false,"enable_thinking":true,` +
 		`"messages":[{"role":"user","content":"2+2"}]}`
 	resp, err := ts.Chat(body, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, _ := testutil.ReadSSE(t, resp)
-	var reasoning, content strings.Builder
-	fr, fc := -1, -1
-	for i, e := range events {
-		if e == "[DONE]" {
-			continue
-		}
-		c := testutil.ParseChunk(t, e)
-		for _, ch := range c.Choices {
-			if ch.Delta.ReasoningContent != "" {
-				reasoning.WriteString(ch.Delta.ReasoningContent)
-				if fr < 0 {
-					fr = i
-				}
-			}
-			if ch.Delta.Content != "" {
-				content.WriteString(ch.Delta.Content)
-				if fc < 0 {
-					fc = i
-				}
-			}
-		}
+	comp := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp))
+	if len(comp.Choices) != 1 {
+		t.Fatalf("choices = %d", len(comp.Choices))
 	}
-	if reasoning.String() != "Let me check the math." {
-		t.Errorf("reasoning = %q", reasoning.String())
+	msg := comp.Choices[0].Message
+	if msg.ReasoningContent != "Let me check the math." {
+		t.Errorf("reasoning_content = %q", msg.ReasoningContent)
 	}
-	if content.String() != "The answer is 4." {
-		t.Errorf("content = %q", content.String())
-	}
-	if fr < 0 || fc < 0 || fr > fc {
-		t.Errorf("reasoning first=%d content first=%d", fr, fc)
+	if msg.Content != "The answer is 4." {
+		t.Errorf("content = %q", msg.Content)
 	}
 }
 
@@ -302,24 +219,15 @@ func TestAPIReasoningAlias(t *testing.T) {
 		ID: "acc1", PH: testutil.TestPH, Cookie: testutil.TestCookie,
 		Script: []testutil.ScriptStep{{Body: testutil.FixtureSSEThinking}},
 	}}, nil)
-	body := `{"model":"mimo-v2.6-pro","stream":true,"reasoning":{"type":"enabled"},` +
+	body := `{"model":"mimo-v2.6-pro","stream":false,"reasoning":{"type":"enabled"},` +
 		`"messages":[{"role":"user","content":"2+2"}]}`
 	resp, err := ts.Chat(body, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, _ := testutil.ReadSSE(t, resp)
-	var reasoning strings.Builder
-	for _, e := range events {
-		if e == "[DONE]" {
-			continue
-		}
-		for _, ch := range testutil.ParseChunk(t, e).Choices {
-			reasoning.WriteString(ch.Delta.ReasoningContent)
-		}
-	}
-	if reasoning.String() != "Let me check the math." {
-		t.Errorf("reasoning = %q", reasoning.String())
+	comp := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp))
+	if got := comp.Choices[0].Message.ReasoningContent; got != "Let me check the math." {
+		t.Errorf("reasoning_content = %q", got)
 	}
 }
 
@@ -329,20 +237,16 @@ func TestAPIThinkingOffStripsReasoning(t *testing.T) {
 		ID: "acc1", PH: testutil.TestPH, Cookie: testutil.TestCookie,
 		Script: []testutil.ScriptStep{{Body: testutil.FixtureSSEThinking}},
 	}}, nil)
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "2+2"}), "")
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "2+2"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, _ := testutil.ReadSSE(t, resp)
-	for _, e := range events {
-		if e == "[DONE]" {
-			continue
-		}
-		for _, ch := range testutil.ParseChunk(t, e).Choices {
-			if ch.Delta.ReasoningContent != "" {
-				t.Errorf("reasoning leaked with thinking off: %q", ch.Delta.ReasoningContent)
-			}
-		}
+	comp := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp))
+	if got := comp.Choices[0].Message.ReasoningContent; got != "" {
+		t.Errorf("reasoning leaked with thinking off: %q", got)
+	}
+	if comp.Choices[0].Message.Content != "The answer is 4." {
+		t.Errorf("content = %q, want the answer without the reasoning block", comp.Choices[0].Message.Content)
 	}
 }
 
@@ -481,45 +385,6 @@ func TestAPIHealthz(t *testing.T) {
 	}
 }
 
-// API-019: keepalive comments during upstream silence.
-func TestAPIKeepalive(t *testing.T) {
-	fixture := testutil.FixtureSSEStall
-	// Split AFTER the first message delta so a piece reaches the client,
-	// commit happens, and the stall then proves keepalives fire mid-silence.
-	firstMsg := strings.Index(fixture, "event:message")
-	split := strings.Index(fixture[firstMsg+1:], "event:message") + firstMsg + 1
-	ts := testserver.NewTestServer(t, []testserver.TestAccount{{
-		ID: "acc1", PH: testutil.TestPH, Cookie: testutil.TestCookie,
-		Script: []testutil.ScriptStep{{
-			Body:           fixture,
-			StallMidStream: 300 * time.Millisecond,
-			MidStreamSplit: split,
-		}},
-	}}, &testserver.TestServerOptions{Keepalive: 50 * time.Millisecond})
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, comments := testutil.ReadSSE(t, resp)
-	if len(comments) == 0 {
-		t.Fatal("no keepalive comments during the stall")
-	}
-	for _, c := range comments {
-		if !strings.HasPrefix(c, ":") {
-			t.Errorf("comment frame malformed: %q", c)
-		}
-	}
-	// Comments never appear inside data payloads.
-	for _, e := range events {
-		if strings.Contains(e, ": keepalive") {
-			t.Errorf("keepalive leaked into data payload: %q", e)
-		}
-	}
-	if len(events) == 0 {
-		t.Fatal("no data events")
-	}
-}
-
 // API-022: temperature/top_p passthrough into upstream modelConfig.
 func TestAPISamplingPassthrough(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
@@ -551,37 +416,6 @@ func TestAPISamplingPassthrough(t *testing.T) {
 	if strings.Contains(r2.RawBody, "temperature") || strings.Contains(r2.RawBody, "topP") {
 		t.Errorf("sampling fields must be absent: %s", r2.RawBody)
 	}
-}
-
-// API-002 (golden, TDD §2.1 `openai_stream_expected.txt`): the byte-level
-// chunk sequence for the `sse_basic` upstream stream must match the committed
-// golden with only the id/timestamp normalized. The structural assertions
-// above pin parsed values; this pins frame order and shape, which is what a
-// client's SSE parser actually has to survive.
-func TestAPI002GoldenChunkSequence(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := normalizeStreamForGolden(string(raw))
-	want := testutil.LoadFixture(t, "openai_stream_expected.txt")
-	if got != want {
-		t.Errorf("stream does not match the golden\n--- got ---\n%s\n--- want ---\n%s", got, want)
-	}
-}
-
-// normalizeStreamForGolden rewrites the two per-request values (chunk id and
-// creation timestamp) so a golden can be compared across runs.
-func normalizeStreamForGolden(s string) string {
-	s = goldenChatID.ReplaceAllString(s, `"id":"chatcmpl-00000000000000000000000000000000"`)
-	s = goldenCreated.ReplaceAllString(s, `"created":0`)
-	return s
 }
 
 var (

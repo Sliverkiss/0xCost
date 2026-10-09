@@ -21,6 +21,29 @@ import (
 // twoAccounts (from api_test.go): distinct scripted identities for
 // cooldown/exclusion rows.
 
+// holdSlot starts a stalled chat turn in the background so the pool's single
+// in-flight slot stays taken while the caller probes the busy mapping.
+//
+// Why a goroutine: the gateway is non-streaming (ADR 0017), so ts.Chat only
+// returns once the whole body has arrived — a stalled turn cannot be awaited
+// inline the way it could when the first SSE byte released the caller. The
+// returned function waits for the stalled turn to finish.
+func holdSlot(t *testing.T, ts *testserver.TestServer) func() {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+		if err == nil && resp != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	// Let the lease be taken before the caller queues a second request.
+	time.Sleep(150 * time.Millisecond)
+	return func() { <-done }
+}
+
 // readErr drains an error response and asserts the OpenAI error shape.
 func readErr(t *testing.T, resp *http.Response) (status int, msg, typ, code string) {
 	t.Helper()
@@ -106,20 +129,15 @@ func TestERRMAPPoolBusy(t *testing.T) {
 		MaxInflight: 1,
 		QueueWait:   50 * time.Millisecond,
 	})
-	// Occupy the single slot: commit early, then stall mid-stream so the
-	// handler keeps the lease while the second request queues.
+	// Occupy the single slot: stall mid-stream so the handler keeps the lease
+	// while the second request queues.
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{
 		Body:           testutil.FixtureSSEStall,
 		StallMidStream: 2 * time.Second,
-		MidStreamSplit: 134, // after dialogId + first message frame → commit
+		MidStreamSplit: 134,
 	})
-	slow, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer slow.Body.Close()
-	// ensure the stall actually holds the slot
-	time.Sleep(20 * time.Millisecond)
+	release := holdSlot(t, ts)
+	defer release()
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +264,7 @@ func TestERRMAPUpstream5xxRetryRecovers(t *testing.T) {
 func TestERRMAPContentFilter(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSESensitive})
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "bad topic"}), "")
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "bad topic"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,9 +336,8 @@ func TestERRMAPRetryAfterPrivacy(t *testing.T) {
 		StallMidStream: 2 * time.Second,
 		MidStreamSplit: 134,
 	})
-	slow, _ := ts2.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
-	defer slow.Body.Close()
-	time.Sleep(20 * time.Millisecond)
+	release2 := holdSlot(t, ts2)
+	defer release2()
 	resp2, _ := ts2.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	status2, _, _, code2 := readErr(t, resp2)
 	if status2 != http.StatusTooManyRequests || code2 != "pool_busy" {
@@ -351,54 +368,28 @@ func TestERRMAPRetryAfterPrivacy(t *testing.T) {
 	}
 }
 
-// API-021 / ERRMAP-012: streaming post-first-byte failure → error-text content delta →
-// delta:{} + finish_reason:"stop" → [DONE] (never a bare hang, never
-// restarted deltas).
-func TestERRMAPStreamErrorShape(t *testing.T) {
+// API-021 / ERRMAP-012: an upstream failure in the middle of the body is
+// reported as an HTTP error, never as a 200 carrying a blank or truncated
+// answer. The old streaming contract this case pinned (an error-text delta,
+// then finish_reason:"stop" then [DONE]) died with the SSE path (ADR 0017).
+func TestERRMAPUpstreamMidBodyError(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEError})
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, _ := testutil.ReadSSE(t, resp)
-	if len(events) == 0 {
-		t.Fatal("no events streamed")
+	status, msg, typ, code := readErr(t, resp)
+	t.Logf("mid-body error maps to %d %q %q %q", status, msg, typ, code)
+	if status == http.StatusOK {
+		t.Fatal("status = 200: a mid-body upstream failure must not be reported as a success")
 	}
-	var content strings.Builder
-	sawFinish, sawDone := false, false
-	sawErrText := false
-	chatID := ""
-	for i, e := range events {
-		if e == "[DONE]" {
-			sawDone = true
-			continue
-		}
-		c := testutil.ParseChunk(t, e)
-		if i == 0 {
-			chatID = c.ID
-			continue
-		}
-		if c.ID != chatID {
-			t.Errorf("chunk id changed mid-error: %q vs %q", c.ID, chatID)
-		}
-		if len(c.Choices) == 0 {
-			continue
-		}
-		if c.Choices[0].FinishReason != nil && *c.Choices[0].FinishReason == "stop" {
-			sawFinish = true
-			continue
-		}
-		if strings.Contains(c.Choices[0].Delta.Content, "[upstream error]") {
-			sawErrText = true
-		}
-		content.WriteString(c.Choices[0].Delta.Content)
+	if code == "" || typ == "" || msg == "" {
+		t.Errorf("envelope = %d %q %q %q, want a complete OpenAI error shape", status, msg, typ, code)
 	}
-	if !sawErrText {
-		t.Errorf("no error-text delta; streamed = %q", content.String())
-	}
-	if !sawFinish || !sawDone {
-		t.Errorf("finish/done = %v/%v — stream must terminate honestly", sawFinish, sawDone)
+	if !strings.Contains(strings.ToLower(msg), "upstream") {
+		t.Errorf("msg = %q, want the upstream named as the source", msg)
 	}
 }
 
@@ -410,7 +401,7 @@ func TestAPI020StreamingPreFirstByteErrorIsPlainJSON(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
 
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}

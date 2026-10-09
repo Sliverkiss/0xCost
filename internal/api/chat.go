@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 )
 
 // handleChat is POST /v1/chat/completions (SDD §5.1/§5.2).
@@ -32,11 +30,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		am[i] = adapter.Msg{Role: m.Role, Content: m.Content}
 	}
 
-	// Non-streaming deployment (ADR 0016): refuse stream:true up front, before any
-	// pool interaction, and name the fix. Silent conversion to a one-shot JSON
-	// body would hand an SSE client a response it cannot parse.
-	if req.Stream && !s.allowStream {
-		s.logger.Printf("chat: refused streaming request from %s (this deployment serves non-streaming chat only)", r.RemoteAddr)
+	// This gateway has no streaming path at all (ADR 0017): refuse stream:true
+	// up front, before any pool interaction, and name the fix. Converting it
+	// silently to a one-shot JSON body would hand an SSE client a response it
+	// cannot parse, and the upstream answer is a single collected turn either
+	// way.
+	if req.Stream {
+		s.logger.Printf("chat: refused streaming request from %s (this gateway serves non-streaming chat only)", r.RemoteAddr)
 		s.MapError(w, &streamUnsupportedError{})
 		return
 	}
@@ -112,17 +112,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		citations: req.citationsWanted(),
 		temp:      req.Temperature,
 		topP:      req.TopP,
-		stream:    req.Stream,
 		requested: req.Model,
-		sessionID: req.SessionID,
-		tools:     string(req.Tools),
-		cred:      credentialOf(r),
 	}
 	p.run(w, r)
 }
 
-// chatPipeline carries one client request through pool → session →
-// upstream → response mapping (SDD §3 data flow).
+// chatPipeline carries one client request through pool → upstream → response
+// mapping (SDD §3 data flow). There is no streaming state here because there is
+// no streaming path: one request is one collected answer (ADR 0017).
 type chatPipeline struct {
 	srv       *Server
 	msgs      []adapter.Msg
@@ -131,108 +128,28 @@ type chatPipeline struct {
 	thinking  bool
 	temp      *float64
 	topP      *float64
-	stream    bool
 	requested string
 	// search is the upstream webSearchStatus (disabled|auto|enabled) and
 	// citations says whether citations are returned (M19).
 	search    string
 	citations bool
-	// sessionID / tools / cred feed the identity ladder (SDD §4.3.1). tools is
-	// part of the derived key because a changed tool set is a different agent
-	// session (ADR 0009 decision 2).
-	sessionID string
-	tools     string
-	cred      string
 }
 
-// attemptPlan is the resolved plan for one upstream attempt.
+// attemptPlan is the resolved plan for one upstream attempt: the queries to
+// replay, in order, against one fresh upstream conversation.
 type attemptPlan struct {
 	queries        []string
 	conversationID string
 	prevDialogID   string
-	entry          *session.Entry // verified session hit (streaming only); nil = replay
-	sessionKey     string         // store key for the finished turn (streaming only)
 }
 
-// sseWriter serializes SSE writes: the keepalive goroutine writes comments
-// concurrently with turn writes (SDD §5.4, TDD API-019).
-type sseWriter struct {
-	mu sync.Mutex
-	w  http.ResponseWriter
-	fl http.Flusher
-}
-
-func (s *sseWriter) data(payload string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
-		return err
-	}
-	if s.fl != nil {
-		s.fl.Flush()
-	}
-	return nil
-}
-
-func (s *sseWriter) comment(text string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fmt.Fprintf(s.w, ": %s\n\n", text)
-	if s.fl != nil {
-		s.fl.Flush()
-	}
-}
-
-// run: resolve the session (streaming only), claim it, then execute with §7.1
-// classification and §7.2 retry policy.
+// run executes one request against a leased account with §7.1 classification and
+// §7.2 retry policy. A turn is always one-shot (ADR 0017): no session identity is
+// resolved, nothing is read from or written to a conversation store, and the
+// replay below is always a full replay into a fresh upstream conversation.
 func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	s := p.srv
 	ctx := r.Context()
-
-	// Non-streaming is one-shot: no identity is resolved, the session store is
-	// never read or written, and no session header is returned (SDD §4.3.1,
-	// REQ-10). A session id supplied here is ignored, on purpose.
-	var stickyEntry *session.Entry
-	var ident session.Identity
-	var sessionKey string
-	var forkedSession bool
-	var forkWaited bool
-	var forkFrom string
-	if p.stream {
-		ident = session.Resolve(session.ResolveInput{
-			Credential: p.cred,
-			HeaderID:   r.Header.Get("X-Mimo-Session-Id"),
-			BodyID:     p.sessionID,
-			Model:      p.model,
-			System:     adapter.SystemPreamble(p.msgs),
-			Tools:      p.tools,
-			FirstMsg:   firstNonSystem(p.msgs),
-			Mint:       adapter.RandomHex32,
-		})
-		sessionKey = ident.Key
-		w.Header().Set("X-Mimo-Session-Id", ident.PublicID)
-
-		// Fork policy (REQ-8): one live chain writer per session. A second
-		// request waits for the bound, then forks onto a fresh session instead
-		// of interleaving into someone else's upstream dialogue.
-		held, waited := s.sessions.Acquire(ctx, sessionKey, s.forkWait())
-		if !held {
-			forkedSession, forkWaited, forkFrom = true, waited, ident.PublicID
-			ident = session.Resolve(session.ResolveInput{Credential: p.cred, Mint: adapter.RandomHex32})
-			sessionKey = ident.Key
-			w.Header().Set("X-Mimo-Session-Id", ident.PublicID)
-			s.sessions.Acquire(ctx, sessionKey, 0)
-		}
-		// Exactly one release per claim — including a forked session, or its
-		// in-flight count would never return to zero and every later turn on
-		// that id would fork again.
-		defer s.sessions.Release(sessionKey)
-		if !forkedSession {
-			if e, ok := s.sessions.Lookup(sessionKey, p.msgs); ok {
-				stickyEntry = &e
-			}
-		}
-	}
 
 	var excluded []string
 	var lastErr error
@@ -242,87 +159,32 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 		var lease *pool.Lease
 		var plan *attemptPlan
 
-		if stickyEntry != nil && attempts == 0 {
-			// Sticky hit: prefer the stored account (SDD §4.3). Falls back
-			// to a normal pick (wasSticky=false) when the account is
-			// busy/cooling.
-			l, wasSticky, err := s.pool.AcquireSticky(ctx, stickyEntry.AccountID)
-			if err != nil {
-				lastErr = err
-				break
-			}
-			lease = l
-			if wasSticky {
-				if dp, derr := adapter.PlanDelta(p.msgs, stickyEntry.MsgCount); derr == nil {
-					plan = &attemptPlan{
-						queries:        dp.Queries,
-						conversationID: stickyEntry.ConversationID,
-						prevDialogID:   stickyEntry.PreviousDialogID,
-						entry:          stickyEntry,
-						sessionKey:     sessionKey,
-					}
-				}
-			}
+		l, err := s.pool.Acquire(ctx, excluded...)
+		if err != nil {
+			lastErr = err
+			break
 		}
-		if lease == nil {
-			l, err := s.pool.Acquire(ctx, excluded...)
-			if err != nil {
-				lastErr = err
-				break
-			}
-			lease = l
+		lease = l
+		fp, ferr := adapter.PlanFullReplay(p.msgs, s.replayCap)
+		if ferr != nil {
+			lease.Release()
+			s.MapError(w, ferr)
+			return
 		}
-		if plan == nil {
-			fp, ferr := adapter.PlanFullReplay(p.msgs, s.replayCap)
-			if ferr != nil {
-				lease.Release()
-				s.MapError(w, ferr)
-				return
-			}
-			plan = &attemptPlan{
-				queries:        fp.Queries,
-				conversationID: adapter.RandomHex32(), // fresh every attempt (SDD §4.2)
-				sessionKey:     sessionKey,
-			}
+		plan = &attemptPlan{
+			queries:        fp.Queries,
+			conversationID: adapter.RandomHex32(), // fresh every attempt (SDD §4.2)
 		}
 
-		if plan.entry != nil {
-			w.Header().Set("X-Mimo-Session-Mode", "chain")
-			s.debugf("session: decision=chain session=%s source=%s frontier=%d history=%d",
-				ident.PublicID, ident.Source, plan.entry.MsgCount, adapter.CountNonSystem(p.msgs))
-			s.debugf("chat: sticky continuation account=%s conversation=%s prevDialog=%s deltaQueries=%d msgCount=%d",
-				lease.ID, plan.conversationID, plan.prevDialogID, len(plan.queries), plan.entry.MsgCount)
-		} else {
-			decision := "replay"
-			switch {
-			case !p.stream:
-				decision = "one-shot"
-			case forkedSession:
-				decision = "fork"
-			}
-			if p.stream {
-				w.Header().Set("X-Mimo-Session-Mode", decision)
-				if forkedSession {
-					s.debugf("session: decision=%s session=%s source=%s pinned=%s waited=%v frontier=0 history=%d",
-						decision, ident.PublicID, ident.Source, forkFrom, forkWaited, adapter.CountNonSystem(p.msgs))
-				} else {
-					s.debugf("session: decision=%s session=%s source=%s frontier=0 history=%d",
-						decision, ident.PublicID, ident.Source, adapter.CountNonSystem(p.msgs))
-				}
-			}
-			s.debugf("chat: full replay account=%s conversation=%s (fresh) queries=%d replayCap=%d",
-				lease.ID, plan.conversationID, len(plan.queries), s.replayCap)
-		}
+		s.debugf("chat: full replay account=%s conversation=%s (fresh) queries=%d replayCap=%d",
+			lease.ID, plan.conversationID, len(plan.queries), s.replayCap)
 
-		delivered, err := p.execute(ctx, w, lease, plan)
+		// One terminal outcome per attempt (ADR 0017): the JSON body is written
+		// exactly once, at the end, so every error here is pre-response and the
+		// request stays retryable (SDD §7.2 commit boundary).
+		err = p.execute(ctx, w, lease, plan)
 		if err == nil {
 			return // success (execute released via finishTurn)
-		}
-		if delivered {
-			// Stream committed and honestly terminated inside execute
-			// (SDD §7.2 commit boundary). No retry, no replay.
-			lease.Release()
-			return
 		}
 		lastErr = err
 
@@ -339,12 +201,8 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// 1 transparent refresh-retry, same account (SDD §7.1, TDD
 			// RENEW-005).
 			if rerr := s.refreshSession(ctx, lease.ID); rerr == nil {
-				delivered2, err2 := p.execute(ctx, w, lease, plan)
+				err2 := p.execute(ctx, w, lease, plan)
 				if err2 == nil {
-					return
-				}
-				if delivered2 {
-					lease.Release()
 					return
 				}
 				lastErr = err2
@@ -433,7 +291,6 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			s.debugf("chat: upstream busy, retrying in %s (account=%s, model=%s)", busyRetryBackoff, lease.ID, p.model)
-			stickyEntry = nil
 			attempts++
 			select {
 			case <-time.After(busyRetryBackoff):
@@ -450,9 +307,8 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case p.isEmptyResponse(err):
-			// 1 retry, fresh ids, full replay (SDD §7.1, TDD SSE-013).
+			// 1 retry, fresh ids, full replay (SDD §7.1, TDD EMPTY-001).
 			lease.Release()
-			stickyEntry = nil
 			attempts++
 			continue
 
@@ -462,12 +318,6 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// the 5xx ladder (SDD §4.5.1, TDD POOLATTR-001).
 			s.reportFailure(lease.ID, err)
 			lease.Release()
-			if stickyEntry != nil {
-				// The sticky slot pointed at a sick account: discard it so
-				// the retry builds a fresh conversation (TDD STICKY-008).
-				s.sessions.Delete(stickyEntry.SessionKey)
-				stickyEntry = nil
-			}
 			excluded = append(excluded, lease.ID)
 			attempts++
 			continue
@@ -479,19 +329,16 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	s.MapError(w, lastErr)
 }
 
-// execute runs the turn plan on the leased account and delivers the
-// response. Commit is lazy: the first client-visible byte is written only
-// when the first content/reasoning piece arrives, so empty turns and
-// pre-byte failures stay retryable (SDD §7.2). Returns (delivered, err):
-// delivered=true means the client stream is complete (success or honest
-// error termination) and no retry may happen. execute never releases the
-// lease — success paths release via finishTurn, error paths leave it to
-// the caller.
-func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease *pool.Lease, plan *attemptPlan) (bool, error) {
+// execute runs the turn plan on the leased account and delivers the response.
+// Nothing reaches the client until the whole answer is collected, so every
+// failure here is pre-response and the request stays retryable (SDD §7.2 commit
+// boundary, ADR 0017). execute never releases the lease — success releases via
+// finishTurn, error paths leave it to the caller.
+func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease *pool.Lease, plan *attemptPlan) error {
 	s := p.srv
 	cookie, ph, err := s.creds(ctx, lease.ID)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	id := adapter.NewChatID()
@@ -501,54 +348,8 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 		modelEcho = p.model
 	}
 
-	sw := &sseWriter{w: w}
-	sw.fl, _ = w.(http.Flusher)
-
-	committed := false // first client byte written (SDD §7.2 boundary)
-	kaStop := make(chan struct{})
-	kaDone := make(chan struct{})
-	kaStarted := false
-	defer func() {
-		if kaStarted {
-			close(kaStop)
-			<-kaDone
-		}
-	}()
-
-	// commit writes the SSE headers + role chunk exactly once and starts
-	// the keepalive ticker (SDD §5.4, TDD API-019).
-	commit := func() error {
-		if committed {
-			return nil
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		committed = true
-		if err := sw.data(adapter.EncodeChunk(adapter.ShapeRoleChunk(id, modelEcho, created))); err != nil {
-			return err
-		}
-		kaStarted = true
-		go func() {
-			defer close(kaDone)
-			t := time.NewTicker(s.keepalive)
-			defer t.Stop()
-			for {
-				select {
-				case <-kaStop:
-					return
-				case <-t.C:
-					sw.comment("keepalive")
-				}
-			}
-		}()
-		return nil
-	}
-
 	var usageSum adapter.Usage
 	var lastDialogID string
-	var gotContent bool
-	var citations []adapter.Citation
 
 	for qi, query := range plan.queries {
 		prev := plan.prevDialogID
@@ -571,77 +372,36 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			OnEvent: func(name string, dataLen int, prefix string) {
 				s.debugf("chat: upstream event %s (%d bytes) %s", name, dataLen, prefix)
 			},
-			// Capture citations as they arrive so a streaming client can be
-			// handed them before [DONE] (M19).
-			OnCitations: func(cits []adapter.Citation) {
-				citations = cits
-			},
 			OnFirstByte: func() {
 				s.pool.RecordFirstByte(lease.ID, time.Since(attemptStart))
 			},
-			// Capture the dialogId the moment it arrives so a client
-			// disconnect mid-stream still advances the sticky anchor (SDD
-			// §7.3, TDD STICKY-010).
+			// The dialogId of this turn, recorded so the log line can name the
+			// upstream conversation a failure belonged to.
 			OnDialogID: func(dialogID string) {
 				lastDialogID = dialogID
 			},
 		}
 		isFinal := qi == len(plan.queries)-1
-		if p.stream && isFinal {
-			// Only the final replay turn streams; earlier turns collect
-			// (SDD §5.3B). Reasoning is stripped when thinking is off (TDD
-			// API-010).
-			chatReq.OnPiece = func(piece adapter.Piece) error {
-				if err := ctx.Err(); err != nil {
-					return err // client disconnect propagates upstream (§7.3)
-				}
-				if piece.Type == "reasoning" && !p.thinking {
-					return nil
-				}
-				if err := commit(); err != nil {
-					return err
-				}
-				gotContent = true
-				return sw.data(adapter.EncodeChunk(adapter.ShapeTextChunk(id, modelEcho, created, piece)))
-			}
-		}
 
 		res, err := s.clientFor(lease.Egress).Chat(ctx, cookie, ph, chatReq)
 		if err != nil {
+			// Client disconnect (SDD §7.3, TDD API-024): abort upstream (already
+			// done via ctx); neither success nor failure, and nothing was sent.
 			if ctx.Err() != nil {
-				// Client disconnect (SDD §7.3, TDD API-024/STICKY-010):
-				// abort upstream (already done via ctx), keep the sticky
-				// entry when a dialogId exists, count neither success nor
-				// failure.
-				if plan.entry != nil && lastDialogID != "" {
-					s.sessions.UpdateDialog(plan.sessionKey, lastDialogID, p.msgs)
-				}
-				return committed, ctx.Err()
+				return ctx.Err()
 			}
-			if committed {
-				// Post-first-byte failure: honest termination, never a
-				// restart (SDD §7.3, TDD API-021/STICKY-009). Content-level
-				// errors carry no pool action; everything else is sick and is
-				// cooled down on its own class's ladder (SDD §4.5.1).
-				if !isContentErr(err) {
-					s.reportFailure(lease.ID, err)
-				}
-				if plan.entry != nil {
-					s.sessions.Delete(plan.sessionKey)
-				}
-				s.terminateStream(sw, id, modelEcho, created, err)
-				return true, err
-			}
-			return false, err
+			return err
 		}
 		usageSum = adapter.AddUsage(usageSum, adapter.MapUsage(res.Usage))
 		if res.DialogID != "" {
 			lastDialogID = res.DialogID
 		}
-		if !p.stream && qi == len(plan.queries)-1 {
-			// Non-streaming JSON delivery (SDD §5.4).
+		if isFinal {
+			// The one and only delivery point (SDD §5.4, ADR 0017). Every earlier
+			// turn of a replay is collected and only its tokens are kept in the
+			// upstream conversation.
 			if res.Content == "" && res.Reasoning == "" {
-				return false, mimo.ErrEmptyResponse
+				return mimo.ErrEmptyResponse
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -649,96 +409,41 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			if !p.citations {
 				cits = nil // include_citations:false → search still ran
 			}
-			for _, w := range res.CitationWarnings {
-				s.debugf("chat: skipping a web_search payload: %s", w)
+			for _, warn := range res.CitationWarnings {
+				s.debugf("chat: skipping a web_search payload: %s", warn)
 			}
 			if len(cits) > 0 {
 				s.debugf("chat: turn returned %d web-search citations", len(cits))
 			}
-			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, res.Reasoning, usageSum, cits...)
-			if err := encodeJSON(w, comp); err != nil {
-				return false, err
+			// Thinking off means the client asked for an answer, not the model's
+			// working: the streaming path used to skip reasoning pieces at this
+			// point, so the non-streaming path must strip it too (TDD API-010
+			// companion).
+			reasoning := res.Reasoning
+			if !p.thinking {
+				reasoning = ""
 			}
-			p.finishTurn(lease, plan, lastDialogID)
-			return false, nil
+			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, reasoning, usageSum, cits...)
+			if err := encodeJSON(w, comp); err != nil {
+				return err
+			}
+			p.finishTurn(lease, lastDialogID)
+			return nil
 		}
 	}
 
-	// Streaming finish (SDD §5.4): finish chunk, usage chunk with
-	// choices:[], [DONE].
-	if !committed || !gotContent {
-		// Zero pieces reached the client: empty response — retryable
-		// pre-byte (SDD §7.1, TDD SSE-013).
-		return false, mimo.ErrEmptyResponse
-	}
-	// Citations go out before the finish chunk so a client that stops reading
-	// at finish_reason still sees them (M19). choices:[] keeps standard
-	// clients compatible.
-	if p.citations && len(citations) > 0 {
-		s.debugf("chat: turn returned %d web-search citations", len(citations))
-		if err := sw.data(adapter.EncodeChunk(adapter.ShapeCitationsChunk(id, modelEcho, created, citations))); err != nil {
-			return true, err
-		}
-	}
-	if err := sw.data(adapter.EncodeChunk(adapter.ShapeFinishChunk(id, modelEcho, created))); err != nil {
-		return true, err
-	}
-	if err := sw.data(adapter.EncodeChunk(adapter.ShapeUsageChunk(id, modelEcho, created, usageSum))); err != nil {
-		return true, err
-	}
-	if err := sw.data("[DONE]"); err != nil {
-		return true, err
-	}
-	p.finishTurn(lease, plan, lastDialogID)
-	return true, nil
+	// Unreachable: the final query always delivers or returns above. Kept as a
+	// defensive empty-response so a future change to the loop cannot silently
+	// answer 200 with nothing.
+	return mimo.ErrEmptyResponse
 }
 
-// finishTurn records success and advances the session store (SDD §4.3.1, TDD
-// STICKY-011). Streaming turns advance the verified session or store a fresh
-// one; non-streaming is one-shot and never touches the store (REQ-10).
-func (p *chatPipeline) finishTurn(lease *pool.Lease, plan *attemptPlan, lastDialogID string) {
+// finishTurn records success and releases the lease. There is no conversation
+// store to advance: every request is one-shot (ADR 0017, superseding ADR 0009).
+func (p *chatPipeline) finishTurn(lease *pool.Lease, lastDialogID string) {
 	p.srv.pool.ReportSuccess(lease.ID)
-	if !p.stream {
-		lease.Release()
-		return
-	}
-	if plan.entry != nil {
-		p.srv.sessions.UpdateDialog(plan.sessionKey, lastDialogID, p.msgs)
-	} else if lastDialogID != "" {
-		now := time.Now().Unix()
-		p.srv.sessions.Save(session.Entry{
-			SessionKey:       plan.sessionKey,
-			AccountID:        lease.ID,
-			ConversationID:   plan.conversationID,
-			PreviousDialogID: lastDialogID,
-			FrontierHash:     adapter.FrontierHash(p.msgs),
-			MsgCount:         adapter.CountNonSystem(p.msgs),
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		})
-	}
+	p.srv.debugf("chat: turn ok account=%s dialog=%s", lease.ID, lastDialogID)
 	lease.Release()
-}
-
-// firstNonSystem returns the first non-system message content — a derived-key
-// input (REQ-4).
-func firstNonSystem(msgs []adapter.Msg) string {
-	for _, m := range msgs {
-		if m.Role != "system" {
-			return m.Content
-		}
-	}
-	return ""
-}
-
-// terminateStream appends the honest error-termination frames (SDD §7.3:
-// error-text content delta → delta:{} + finish_reason:"stop" → [DONE];
-// never a hang, never restarted deltas).
-func (s *Server) terminateStream(sw *sseWriter, id, model string, created int64, err error) {
-	piece := adapter.Piece{Type: "content", Text: "\n\n[upstream error] " + err.Error()}
-	_ = sw.data(adapter.EncodeChunk(adapter.ShapeTextChunk(id, model, created, piece)))
-	_ = sw.data(adapter.EncodeChunk(adapter.ShapeFinishChunk(id, model, created)))
-	_ = sw.data("[DONE]")
 }
 
 // creds resolves the upstream cookie + ph for an account, performing

@@ -1,7 +1,12 @@
 # 0009 — Sessions are streaming-only, explicitly identified when possible, and verified before chaining
 
 Date: 2026-10-09
-Status: accepted
+Status: superseded by ADR 0017 (the streaming path and the session store are deleted)
+
+**Superseded 2026-10-09 (ADR 0017):** the deployment serves one non-streaming
+answer per request and keeps no conversation state, so none of the semantics this
+record defines (streaming-only chaining, identity ladder, fork, verification) are
+reachable. It stays as the record of how chaining was made correct while it ran.
 
 ## Context
 

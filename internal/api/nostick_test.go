@@ -1,160 +1,159 @@
 package api_test
 
+// NOSTICK-001..003, replacement for the sticky-store cases deleted with
+// internal/session (ADR 0017).
+//
+// The old suite proved these invariants by watching the store's counters; with
+// the store gone the same rules are asserted where they are actually observable
+// — in the payloads the gateway sends upstream:
+//
+//   * identical client histories must not share an upstream conversation,
+//   * every client request gets a fresh conversationId,
+//   * nothing chains between two client requests (no cross-request prevDialogId),
+//   * within one request the turns of a replay DO chain: that is what makes a
+//     multi-turn history one upstream conversation (SDD §5.3).
+
 import (
-	"io"
+	"context"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/yg/mimo2api/internal/testserver"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
-// NOSTICK-001..004: non-streaming requests never touch the sticky store —
-// every turn is a fresh conversation (SDD §4.2).
+// NOSTICK-001: two byte-identical requests → two upstream conversations, both
+// starting fresh (no prevDialogId on the first turn of either).
+func TestNOSTICKIdenticalHistoryNewConversation(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-// NOSTICK-001: identical history ≠ same conversation — two byte-identical
-// non-streaming requests land on different accounts (round-robin) with
-// different upstream conversationIds.
-func TestNostickIdenticalHistoryDifferentConversation(t *testing.T) {
-	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	body := testutil.ChatBody("mimo-v2.6-pro", false,
-		[2]string{"user", "hello"}, [2]string{"assistant", "hi"}, [2]string{"user", "what's 2+2"})
+	body := testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"})
 	for i := 0; i < 2; i++ {
-		resp, err := ts.Chat(body, "")
-		if err != nil {
-			t.Fatal(err)
+		status, respBody := chatOnce(t, ts, body)
+		if status != http.StatusOK {
+			t.Fatalf("request %d = %d %s, want 200", i+1, status, respBody)
 		}
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			t.Fatalf("request %d: status = %d body=%s", i, resp.StatusCode, b)
-		}
-		resp.Body.Close()
 	}
-	reqs := ts.Upstream.Requests()
-	if len(reqs) != 4 { // 2 user turns × 2 requests (assistant history not re-sent, SDD §5.3B)
-		t.Fatalf("upstream requests = %d, want 4", len(reqs))
-	}
-	// Different accounts per request (round-robin band).
-	if reqs[0].PH == reqs[2].PH {
-		t.Errorf("identical history reused account %q", reqs[0].PH)
-	}
-	// Different fresh conversationIds per request.
-	if reqs[0].ConvID == reqs[2].ConvID {
-		t.Errorf("identical history reused conversationId %q", reqs[0].ConvID)
-	}
-}
 
-// NOSTICK-002: fresh conversationId every time — 5 non-streaming requests
-// (mixed histories) produce 5 distinct 32-hex conversationIds.
-func TestNostickFreshConversationIDs(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	for i := 0; i < 5; i++ {
-		body := testutil.ChatBody("mimo-v2.6-pro", false,
-			[2]string{"user", "hello"}, [2]string{"assistant", "hi"}, [2]string{"user", "what's 2+2"})
-		resp, err := ts.Chat(body, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			t.Fatalf("request %d: status = %d body=%s", i, resp.StatusCode, b)
-		}
-		resp.Body.Close()
+	reqs := ts.Upstream.RequestsFor(acct[0].PH)
+	if len(reqs) != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (one per client request)", len(reqs))
 	}
-	reqs := ts.Upstream.Requests()
-	if len(reqs) != 10 { // 2 user turns × 5 requests (assistant history not re-sent)
-		t.Fatalf("upstream requests = %d, want 10", len(reqs))
+	if reqs[0].ConvID == "" {
+		t.Error("first request carried no conversationId")
 	}
-	// Every request's FIRST turn carries a distinct 32-hex conversationId;
-	// turns within one request share it (chaining happens inside the
-	// request's own replay, SDD §5.3).
-	seen := map[string]bool{}
-	for i := 0; i < 5; i++ {
-		first := reqs[i*2]
-		if seen[first.ConvID] {
-			t.Errorf("conversationId %q reused across requests", first.ConvID)
-		}
-		seen[first.ConvID] = true
-		if !isHex32(first.ConvID) {
-			t.Errorf("conversationId %q is not 32-char hex", first.ConvID)
-		}
-		if reqs[i*2+1].ConvID != first.ConvID {
-			t.Errorf("turn 2 of request %d broke conversation chaining", i)
+	if reqs[0].ConvID == reqs[1].ConvID {
+		t.Errorf("conversationId reused across requests: %q — identical history must not resume a conversation", reqs[0].ConvID)
+	}
+	for i, req := range reqs {
+		if req.PrevDlg != "" {
+			t.Errorf("request %d sent prevDialogId %q, want a fresh conversation", i+1, req.PrevDlg)
 		}
 	}
 }
 
-// NOSTICK-003: the store is never consulted for non-streaming requests —
-// size unchanged, zero lookups.
-func TestNostickStoreUntouched(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	before := ts.Sessions.Len()
-	lookupsBefore := ts.Sessions.Lookups()
-	for i := 0; i < 3; i++ {
-		resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
+// NOSTICK-002: a multi-turn history is one upstream conversation per request —
+// the replayed turns chain inside the request (so the model sees the history)
+// while the conversation id is still new for every client call.
+func TestNOSTICKReplayChainsWithinRequestOnly(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	body := `{"model":"mimo-v2.6-pro","stream":false,"messages":[` +
+		`{"role":"user","content":"first"},` +
+		`{"role":"assistant","content":"ack"},` +
+		`{"role":"user","content":"second"}]}`
+	status, respBody := chatOnce(t, ts, body)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200", status, respBody)
 	}
-	if after := ts.Sessions.Len(); after != before {
-		t.Errorf("store size changed: %d → %d", before, after)
+
+	reqs := ts.Upstream.RequestsFor(acct[0].PH)
+	if len(reqs) != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (one per user turn)", len(reqs))
 	}
-	if n := ts.Sessions.Lookups() - lookupsBefore; n != 0 {
-		t.Errorf("non-streaming performed %d store lookups, want 0", n)
+	if reqs[0].ConvID != reqs[1].ConvID {
+		t.Errorf("conversationId changed inside one request: %q then %q", reqs[0].ConvID, reqs[1].ConvID)
+	}
+	if reqs[0].PrevDlg != "" {
+		t.Errorf("first turn sent prevDialogId %q, want none", reqs[0].PrevDlg)
+	}
+	if reqs[1].PrevDlg == "" {
+		t.Error("second turn sent no prevDialogId — the replay did not chain onto the first turn's dialog")
+	}
+
+	// And the next client request starts over rather than resuming this one.
+	status, respBody = chatOnce(t, ts, body)
+	if status != http.StatusOK {
+		t.Fatalf("second request = %d %s, want 200", status, respBody)
+	}
+	reqs = ts.Upstream.RequestsFor(acct[0].PH)
+	second := reqs[2:]
+	if len(second) != 2 {
+		t.Fatalf("second request made %d upstream calls, want 2", len(second))
+	}
+	if second[0].ConvID == reqs[0].ConvID {
+		t.Errorf("second request reused conversationId %q", second[0].ConvID)
+	}
+	if second[0].PrevDlg != "" {
+		t.Errorf("second request chained across requests: prevDialogId %q", second[0].PrevDlg)
 	}
 }
 
-// NOSTICK-004: no cross-request chaining — both requests' first upstream
-// turn carries previousDialogueId null; chaining only inside a request's
-// own replay.
-func TestNostickNoCrossRequestChaining(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	hist := testutil.ChatBody("mimo-v2.6-pro", false,
-		[2]string{"user", "first question"}, [2]string{"user", "second question"})
-	for i := 0; i < 2; i++ {
-		resp, err := ts.Chat(hist, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			t.Fatalf("request %d: status = %d body=%s", i, resp.StatusCode, b)
-		}
-		resp.Body.Close()
-	}
-	reqs := ts.Upstream.Requests()
-	if len(reqs) != 4 {
-		t.Fatalf("upstream requests = %d, want 4", len(reqs))
-	}
-	// First turn of EACH request: previousDialogueId null.
-	for i := 0; i < 2; i++ {
-		if r := reqs[i*2]; r.PrevDlg != "" {
-			t.Errorf("request %d first turn carried previousDialogueId %q — must be null", i, r.PrevDlg)
-		}
-	}
-	// Second turn of each request chains to its own first turn's dialogId —
-	// same-request chaining only (SDD §5.3).
-	for i := 0; i < 2; i++ {
-		if r := reqs[i*2+1]; r.PrevDlg == "" {
-			t.Errorf("request %d second turn: previousDialogueId missing (intra-request chaining)", i)
-		}
-	}
-}
+// DISCONNECT-001 (replacement for STICKY-010, ADR 0017): a client that hangs up
+// while the turn is still upstream is neither a success nor a failure — the lease
+// comes back, the account is not cooled down, and nothing is written to a dead
+// pipe. There is no first byte to have committed: the whole answer is written at
+// the end, so a disconnect can only happen pre-response.
+func TestDisconnectBeforeResponseReleasesTheLease(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{
+		Body:           testutil.FixtureSSEStall,
+		StallMidStream: 5 * time.Second,
+		MidStreamSplit: 134,
+	})
 
-// isHex32 reports whether s is 32 lowercase hex chars (uuid4 sans dashes,
-// SDD §2.4).
-func isHex32(s string) bool {
-	if len(s) != 32 {
-		return false
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL()+"/v1/chat/completions",
+		strings.NewReader(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"})))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
+	req.Header.Set("Content-Type", "application/json")
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("request returned after the client cancelled, want a transport error")
+	}
+
+	// The lease must return even though the upstream call was still stalled.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap := ts.Pool.Snapshot()
+		if len(snap) == 1 && snap[0].InFlight == 0 {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("in-flight never returned to 0: %+v", snap)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return true
+	if class, _, _ := ts.Pool.CooldownInfoOf(acct[0].ID); class != "" {
+		t.Errorf("client disconnect cooled the account down: class %q", class)
+	}
+	if n := len(ts.Pool.Snapshot()[0].Failures); n != 0 {
+		t.Errorf("client disconnect recorded failures: %v", ts.Pool.Snapshot()[0].Failures)
+	}
 }

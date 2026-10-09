@@ -10,7 +10,6 @@ package api_test
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -93,7 +92,7 @@ func TestWS003OnlineSuffix(t *testing.T) {
 	ts := testserver.NewTestServer(t, acct, nil)
 	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-flash:online", true, [2]string{"user", "hi"}))
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-flash:online", false, [2]string{"user", "hi"}))
 	if status != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", status, body)
 	}
@@ -181,36 +180,34 @@ func TestWS006IncludeCitationsFalse(t *testing.T) {
 	}
 }
 
-// WS-007: on a stream the citations arrive as one extra chunk with empty
-// choices, placed before the finish chunk so a client that stops at
-// finish_reason still sees the sources.
-func TestWS007StreamCitationsChunkOrder(t *testing.T) {
+// WS-007: the citations ride in the JSON body (top level) and on the message as
+// annotations, without one being dropped or duplicated. The streaming chunk
+// variant died with the SSE path (ADR 0017).
+func TestWS007CitationsInBody(t *testing.T) {
 	acct := oneAccount()
 	ts := testserver.NewTestServer(t, acct, nil)
 	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEWebSearch})
 
-	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-flash", true, [2]string{"user", "hi"}))
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-flash", false, [2]string{"user", "hi"}))
 	if status != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", status, body)
 	}
-	citIdx := strings.Index(body, `"citations":[`)
-	finIdx := strings.Index(body, `"finish_reason":"stop"`)
-	doneIdx := strings.Index(body, "[DONE]")
-	if citIdx < 0 {
-		t.Fatalf("stream = %s, want a citations chunk", body)
-	}
-	if finIdx < 0 || doneIdx < 0 {
-		t.Fatalf("stream = %s, want finish chunk and [DONE]", body)
-	}
-	if !(citIdx < finIdx && finIdx < doneIdx) {
-		t.Errorf("chunk order: citations@%d finish@%d done@%d, want citations before finish before [DONE]", citIdx, finIdx, doneIdx)
-	}
-	if !strings.Contains(body, `"choices":[]`) {
-		t.Errorf("stream = %s, want the citations chunk to carry empty choices", body)
-	}
-	// It must be exactly one chunk, not one per result.
+	// One top-level citations array, not one per result and not duplicated.
 	if n := strings.Count(body, `"citations":[`); n != 1 {
-		t.Errorf("citations chunks = %d, want 1", n)
+		t.Errorf("citations arrays = %d, want exactly 1: %s", n, body)
+	}
+	comp := testutil.ParseCompletion(t, []byte(body))
+	if len(comp.Citations) != 2 {
+		t.Fatalf("citations = %d, want the 2 results of the fixture", len(comp.Citations))
+	}
+	if comp.Citations[0].Title == "" || comp.Citations[0].URL == "" {
+		t.Errorf("citation = %+v, want title and url populated", comp.Citations[0])
+	}
+	// The same results reach the message as annotations, so an SDK that reads
+	// annotations sees the sources too.
+	ann := comp.Choices[0].Message.Annotations
+	if len(ann) != len(comp.Citations) {
+		t.Errorf("annotations = %d, want %d (one per citation)", len(ann), len(comp.Citations))
 	}
 }
 
@@ -230,45 +227,21 @@ func TestWS008NoCitationsWhenUpstreamSilent(t *testing.T) {
 	}
 }
 
-// wsStreamText pulls the concatenated content deltas out of an SSE body.
-func wsStreamText(t *testing.T, body string) string {
-	t.Helper()
-	var out strings.Builder
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "data: ") || strings.Contains(line, "[DONE]") {
-			continue
-		}
-		var ch struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ch); err != nil {
-			continue
-		}
-		for _, c := range ch.Choices {
-			out.WriteString(c.Delta.Content)
-		}
-	}
-	return out.String()
-}
-
 // WS-009: citations never disturb the answer text itself.
 func TestWS009SearchTurnStillAnswers(t *testing.T) {
 	acct := oneAccount()
 	ts := testserver.NewTestServer(t, acct, nil)
 	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEWebSearch})
 
-	resp, err := ts.Chat(searchBody("mimo-v2.6-flash", true, map[string]any{"web_search_status": "auto"}), "")
+	resp, err := ts.Chat(searchBody("mimo-v2.6-flash", false, map[string]any{"web_search_status": "auto"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if got := wsStreamText(t, string(raw)); got != "检索到两条来源。" {
-		t.Errorf("streamed text = %q, want %q (citations must not leak into content)", got, "检索到两条来源。")
+	comp := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp))
+	if got := comp.Choices[0].Message.Content; got != "检索到两条来源。" {
+		t.Errorf("answer = %q, want %q (citations must not leak into content)", got, "检索到两条来源。")
+	}
+	if len(comp.Citations) == 0 {
+		t.Error("citations = 0, want the search results alongside an untouched answer")
 	}
 }

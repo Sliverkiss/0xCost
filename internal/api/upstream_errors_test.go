@@ -52,15 +52,15 @@ func TestUpstreamBusyRetriedThenSucceeds(t *testing.T) {
 		testutil.ScriptStep{Body: testutil.FixtureSSEBasic},
 	)
 
-	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}))
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}))
 	if status != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200 after the busy retry", status, body)
 	}
 	if n := len(ts.Upstream.Requests()); n != 2 {
 		t.Fatalf("upstream calls = %d, want 2 (busy turn + retry)", n)
 	}
-	if !containsEvent(body, `"finish_reason":"stop"`) || !containsEvent(body, "[DONE]") {
-		t.Errorf("body = %q, want a completed OpenAI stream from the successful retry", body)
+	if !strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, "Hello world") {
+		t.Errorf("body = %q, want a completed answer from the successful retry", body)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestUpstreamBusyTwiceMapsTo503(t *testing.T) {
 		testutil.ScriptStep{Body: sseErrorFrame("服务器繁忙，请稍后再试")},
 	)
 
-	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}))
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}))
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d body=%s, want 503 upstream_busy", status, body)
 	}
@@ -97,7 +97,7 @@ func TestUpstreamModelRejectedFailsFast(t *testing.T) {
 	ph := acct[0].PH
 	ts.Upstream.Script(ph, testutil.ScriptStep{Body: sseErrorFrame("模型名称错误")})
 
-	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", true, [2]string{"user", "hello"}))
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", "hello"}))
 	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s, want 400 model_not_available_on_channel", status, body)
 	}

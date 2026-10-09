@@ -2,9 +2,10 @@
 
 OpenAI-compatible API gateway for Xiaomi MiMo AI Studio. Go + stdlib only,
 single static binary, Docker delivery. Point any OpenAI SDK / client at it
-and it translates requests into MiMo web-chat sessions across an account
-pool with stickiness, transparent session renewal, and rate-limit-aware
-routing.
+and it translates requests into MiMo chat turns across an account pool with
+transparent session renewal and rate-limit-aware routing. Chat is one
+non-streaming answer per request: every client message is replayed into a fresh
+upstream conversation, and nothing about a conversation is stored (ADR 0017).
 
 ## Quick start (Docker)
 
@@ -23,9 +24,10 @@ printf 'MIMO2API_API_KEYS=%s\n' "your-key" > data/deploy.env
 chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/accounts.json
 
 # 3. run — one container, and it publishes host 21223 on the LOOPBACK ONLY → the
-#    gateway itself. TLS and the public hostname are the reverse proxy's job
-#    (Caddy terminates :443 and proxies to 127.0.0.1:21223), so this port never
-#    needs to be reachable from outside — an exposed API port is an exposed key.
+#    gateway itself (container port 3000, ADR 0018). TLS and the public hostname
+#    are the reverse proxy's job (Caddy terminates :443 and proxies to
+#    127.0.0.1:21223), so this port never needs to be reachable from outside —
+#    an exposed API port is an exposed key.
 docker compose --env-file data/deploy.env up -d --build
 
 # 4. use — same key and same base_url for chat, audio and the admin surface
@@ -39,9 +41,11 @@ curl http://localhost:21223/v1/chat/completions \
   }'
 ```
 
-Chat is **non-streaming** (ADR 0016): `stream: true` is refused with
+Chat is **non-streaming** and there is no switch: `stream: true` is refused with
 `400 stream_unsupported` rather than answered in a shape an SSE client cannot
-parse. Set `MIMO2API_ALLOW_STREAM=true` to serve it again.
+parse (ADR 0017 — the SSE emission path and the conversation store it existed for
+are deleted, not disabled). Set `stream: false`, or use a client that can read one
+JSON body.
 
 If the very first `up` prints `dependency failed to start: container mimo2api
 is unhealthy`, run `up -d` once more: the health window (30 s `start_period`)
@@ -59,7 +63,7 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **non-streaming** (ADR 0016; `stream: true` → `400 stream_unsupported` unless `MIMO2API_ALLOW_STREAM=true`). `tools` is reported as dropped in `X-Mimo-Warnings`. Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. Extra fields: `web_search_status` (`disabled`\|`auto`\|`enabled`) and `include_citations`; the model suffix `:online` means `web_search_status: enabled` |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -109,26 +113,22 @@ total.
 
 **Web search**: with `web_search_status: enabled` (or the `:online` suffix) the
 upstream searches and returns results inline. The gateway surfaces them as
-OpenAI `annotations` on the message plus a top-level `citations` array; on a
-stream they arrive as one extra chunk with `choices: []` before the finish
-chunk. The page bodies the upstream sends (tens of KB each) are deliberately not
-forwarded. `include_citations: false` keeps the search but drops the payload.
+OpenAI `annotations` on the message plus a top-level `citations` array, in the one
+JSON body (search was never affected by the streaming change). The page bodies the
+upstream sends (tens of KB each) are deliberately not forwarded. `include_citations: false` keeps the search but drops the payload.
 Citations are best-effort: the upstream also answers with `(citation:N)` markers
 when it returns no result set at all.
 
-**Sessions (streaming only, not reachable on this deployment)**: a streaming request continues an upstream
-conversation when it can prove it owns one. The gateway resolves the session
-from `X-Mimo-Session-Id` (header) or `session_id` (body field), else derives one
-from the model, system preamble, tools and first message — scoped to your API
-key. Every streaming response returns `X-Mimo-Session-Id` (pin it next turn to
-own the session) and `X-Mimo-Session-Mode` (`chain`, `replay` or `fork`).
-Reuse requires the stored frontier to verify against your history, so a
-rewritten history replays rather than chaining onto a lookalike, and a second
-concurrent request for a busy session waits `MIMO2API_SESSION_WAIT_MS` and then
-forks onto its own session instead of interleaving. `stream: false` is
-one-shot by design: no session, no store read or write, no header (ADR 0009).
-Since chat is non-streaming (ADR 0016), nothing on the public API reaches this
-path today; it is kept for `MIMO2API_ALLOW_STREAM=true`.
+**Conversations (no server-side state)**: the gateway keeps nothing about your
+conversation — no session header, no store, no chaining across requests
+(ADR 0017, superseding ADR 0009's streaming-only sessions). Send the history you
+want the model to see: every request replays it into a **fresh** upstream
+conversation, so two byte-identical requests are two independent answers. Inside
+one request the replayed turns do chain, which is what makes a multi-turn history
+one conversation, and at most `MIMO2API_REPLAY_CAP` user turns are sent. The
+practical consequence: to "continue" a conversation, send the earlier messages
+again (and mind the 102,400-character ceiling on the composed first query,
+ADR 0015).
 
 Upstream task kinds are cached per account, so a steady stream of audio requests
 does not create a conversation row per request.
@@ -193,6 +193,33 @@ and the TTS/VoiceDesign/VoiceClone v2.1 family). It then refuses the retired id 
   600s), the resolution map the janitor tick (`MIMO2API_PROBE_INTERVAL_S`, default
   60s). `MIMO2API_LOG_LEVEL=debug` logs every substitution.
 
+## Deploying to Belmo (no volume, Upstash store)
+
+The binary is a plain Go program with no cgo and no sidecars, and the repository
+ships a `nixpacks.toml`, so a Belmo deploy is: connect the repo, set the
+environment, deploy.
+
+```
+MIMO2API_API_KEYS=<your key>
+DS_REDIS_HOST=<your Upstash endpoint>      # bare host, host:port, or a full rediss:// URL
+DS_REDIS_TOKEN=<your Upstash token>
+MIMO2API_OTP_AUTO=false                    # never spend an SMS automatically (ADR 0013)
+```
+
+- **Port**: the app binds `MIMO2API_PORT` if set, else the platform's own `PORT`,
+  else **3000** (ADR 0018) — nothing to configure on Belmo.
+- **Accounts live in Upstash** (one JSON key per account plus an index set, ADR
+  0018): a redeploy keeps the pool, its device identities and its refresh tokens.
+  Seed it once from a local file with `mimo2api -import-redis data/accounts.json`
+  (run locally against the same `DS_REDIS_HOST`; it verifies the write by reading
+  the store back).
+- **Or keep the file backend** by leaving `DS_REDIS_HOST` unset: the accounts file
+  defaults to `data/accounts.json` (relative, directory created on demand), so an
+  ephemeral filesystem costs a re-login per deploy rather than a crash. The
+  container deployment on this host does exactly that with `./data` mounted.
+- **Health**: `GET /healthz` for the platform's HTTP check, or
+  `mimo2api healthcheck` on a host without curl.
+
 ## Configuration (environment)
 
 All variables are `MIMO2API_`-prefixed. Defaults:
@@ -200,21 +227,19 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | Variable | Default | Description |
 |---|---|---|
 | `MIMO2API_HOST` | `0.0.0.0` | Bind host; empty `API_KEYS` forces `127.0.0.1` |
-| `MIMO2API_PORT` | `8080` | Listen port |
+| `MIMO2API_PORT` | `3000` | Listen port; when unset the platform's own `PORT` is honoured (Belmo/Railway/Heroku), then this default (ADR 0018) |
 | `MIMO2API_API_KEYS` | *(empty)* | Comma-separated Bearer keys; empty = open auth + bind-local |
 | `MIMO2API_UPSTREAM_BASE` | `https://aistudio.xiaomimimo.com` | MiMo AI Studio base URL |
-| `MIMO2API_ACCOUNTS_FILE` | `/data/accounts.json` | Accounts + persisted runtime state |
+| `MIMO2API_ACCOUNTS_FILE` | `data/accounts.json` | Accounts + persisted runtime state. Relative by default so a hosted build with no volume can start; the directory is created on demand. Ignored when `DS_REDIS_HOST` is set |
+| `DS_REDIS_HOST` | *(empty)* | Upstash/Redis host for the account store (ADR 0018). Set → Redis **is** the account store (a file fallback would silently serve nobody); a bare host or `https://…` URL is assembled with the token, a full `rediss://`/`redis://` string is used as-is. Note the name has no `MIMO2API_` prefix: the reference deployment uses the same pair |
+| `DS_REDIS_TOKEN` | *(empty)* | Token for the assembled connection string (required unless `DS_REDIS_HOST` is already a full redis URL) |
+| `DS_REDIS_INSECURE` | *(unset)* | Set to `1` to allow a plaintext `redis://` to a **non-loopback** host (local dev only). The store refuses it by default: credentials and session cookies live in Redis |
 | `MIMO2API_DEFAULT_MODEL` | `mimo-v2.6-pro` | Model for unknown/missing ids |
 | `MIMO2API_REQUEST_TIMEOUT_MS` | `300000` | Upstream request timeout |
-| `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | No-SSE-event watchdog (stream stall abort) |
+| `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | Upstream no-SSE-event watchdog: MiMo streams its answer to us, so this aborts a stalled upstream read (it is not a client-facing keepalive) |
 | `MIMO2API_SESSION_REFRESH_HOURS` | `12` | Background STS keepalive sweep (ADR 0014: it refreshes the session cookie, never the credential) |
-| `MIMO2API_STICKY_TTL_S` | `1800` | Session idle TTL |
-| `MIMO2API_STICKY_MAX` | `500` | Session LRU cap |
-| `MIMO2API_SESSION_WAIT_MS` | `2000` | How long a second streaming request waits for its own session before forking |
-| `MIMO2API_SESSION_FORK_POLICY` | `wait` | `wait` (then fork) or `fork` (never wait) when a session is already streaming |
 | `MIMO2API_MAX_INFLIGHT_PER_ACCOUNT` | `2` | Per-account concurrency semaphore |
 | `MIMO2API_QUEUE_WAIT_S` | `15` | Acquire queue wait bound |
-| `MIMO2API_KEEPALIVE_INTERVAL_MS` | `15000` | SSE keepalive comment interval |
 | `MIMO2API_REPLAY_CAP` | `20` | Max replayed user turns per request |
 | `MIMO2API_PROBE_INTERVAL_S` | `60` | Cooldown recovery probe sweep |
 | `MIMO2API_EGRESS_<LABEL>` | — | Endpoint for an egress **label** (`hk1` → `MIMO2API_EGRESS_HK1`, dashes become underscores). Accounts name labels in `accounts.json` (`"egress": "hk1"`) and the endpoint plus any credentials live only here. A label with no endpoint is a startup error naming it — never a silent direct connection. `http`, `https`, `socks5` and `socks5h` are accepted |
@@ -236,7 +261,6 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
 | `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the synthesis budget |
 | `MIMO2API_MAX_QUERY_CHARS` | `0` | Operator override for the chat character guardrail (ADR 0015). `0` = per-channel defaults: **50,000** characters for ultraspeed/fastchat (49,500 served / 52,000 refused; the Studio's own `ultraspeedQueryLimitLength: 5e4`) and **102,400** for every other model — the platform's measured ceiling for one query text (exactly 102,400 served, 102,415 refused, identical for ASCII and CJK, so it counts characters). The cap counts the **query text the platform receives**, not each message: the system messages the planner splices into the first user query spend the same budget (that is also why the tool layer's injected protocol prompt — 1,355 chars for one tool, 5,222 for thirty — had to go, ADR 0016), and the error says how much of it was preamble. Anything above is refused upstream too, so rejecting locally only saves a wasted call; an upstream refusal is still translated into `400 context_too_long` with an actionable message |
-| `MIMO2API_ALLOW_STREAM` | `false` | Serve `stream: true` on `/v1/chat/completions`. Off (ADR 0016): the deployment is non-streaming, so a streaming request is refused with `400 stream_unsupported` naming the fix rather than answered in a shape an SSE client cannot parse. On, the SSE path and its session chaining are reachable again |
 | `MIMO2API_SPEECH_MAX_CHARS` | `1024` | `/v1/audio/speech` input cap, clamped to the upstream's **1024 character** per-synthesis limit ("播报内容长度不能超过1024"). Lower it to refuse earlier; a higher value cannot take effect (ADR 0010) |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
@@ -245,9 +269,18 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 Security: with no API keys configured the server binds `127.0.0.1` only —
 open auth never reaches the network (SDD §5.1).
 
-## Accounts file format
+## Account storage format
 
-JSON, one flat array, mode `0600`, git-ignored. Login credentials are
+Two interchangeable backends (ADR 0018); the runtime keeps the pool in memory and
+writes through, so this is storage, not a request path.
+
+- **File** (default): `MIMO2API_ACCOUNTS_FILE`, JSON, one flat array, mode `0600`,
+  git-ignored, atomic write, directory created on demand.
+- **Upstash** (`DS_REDIS_HOST`): one JSON key per account
+  (`mimo2api:accounts:<id>`, the same record shape) plus an index set
+  (`mimo2api:accounts:index`) — no volume, survives a redeploy.
+
+Login credentials are
 needed once; runtime state is persisted back automatically (sessions,
 cooldowns, disabled reasons survive restarts):
 
@@ -308,7 +341,7 @@ cooldowns, disabled reasons survive restarts):
 | Document | What it holds |
 |---|---|
 | `docs/SDD.md` | Design: protocol chain, pool/session/sticky model, error mapping, deployment |
-| `docs/TDD.md` | Test design: §2 fixtures, §3 case-by-case IDs (API/RENEW/STICKY/ERRMAP/LOGIN/DOCKER), §6 gates |
+| `docs/TDD.md` | Test design: §2 fixtures (§2.1.3 lists what retired with the streaming path), §3 case-by-case IDs (API/RENEW/ERRMAP/LOGIN/DOCKER), §6 gates |
 | `docs/login-chain-reverse.md` | The live-verified login chain, our code vs the real traffic, open questions |
 | `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
 | `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010, LIVE-SESS-001/002, LIVE-TTS-003) |

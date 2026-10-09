@@ -1,8 +1,12 @@
 # Spec — Session identity and isolation
 
-Status: **accepted** — the owner's decisions are recorded in §9 and ADR
-[0009](../decisions/0009-sessions-are-streaming-only-and-verified.md);
-implementation follows the SESS cases in `docs/TDD.md` §3.5.1
+Status: **RETIRED (ADR 0017)** — the session identity surface and the store that
+served it are deleted: no `X-Mimo-Session-Id`, no session resolution ladder, no
+state keyed per conversation. Every request is a full replay into a fresh upstream
+conversation. What was implemented while this spec was live followed the SESS cases
+in `docs/TDD.md` §3.5.1; those cases and this spec are retired together (see
+`docs/TDD.md` §2.1.3). The owner's original decisions remain recorded in §9 and ADR
+[0009](../decisions/0009-sessions-are-streaming-only-and-verified.md).
 Applies to: `/v1/chat/completions` conversation chaining, the sticky store, and
 everything that keys per-conversation state
 Author: Hermes (for review by the project owner)

@@ -83,7 +83,7 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | File | Package | Contains |
 |---|---|---|
 | `internal/adapter/adapter_test.go` | adapter | SSE-006..012 (splitter), API-003/004/017 (chunk shaping, usage mapping, system splice), API-013 (model normalization), turn-plan construction. (STICKY-001 fingerprint retired — see §3.1.) |
-| `internal/session/session_test.go` | session | STICKY-002/003/006/007/012/013 (keyed store semantics, frontier verification, fork accounting, fake clock), SESS-011/012/053 |
+| ~~`internal/session/session_test.go`~~ | — | **deleted** (ADR 0017) — the store, STICKY-002..013 and SESS-011/012/053 went with it |
 | `internal/pool/pool_test.go` | pool | POOL-001..016 (selection, cooldown, probes, semaphores; mock probe results injected) |
 | `internal/mimo/sse_test.go` | mimo | SSE-001..005 (byte parser over fixtures) |
 | `internal/mimo/login_test.go` | mimo | LOGIN-001..009 (passport flow vs httptest mock) |
@@ -93,10 +93,10 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/mimo/client_test.go` | mimo | SSE-013 (empty-response retry), upstream payload shaping, fastchat routing, header set |
 | `internal/api/api_test.go` | api | API-001..025 (endpoint wiring, full-stack against testutil.MockUpstream) |
 | `internal/api/auth_test.go` | api | AUTHMID-001..008 (auth middleware) |
-| `internal/api/sticky_test.go` | api | STICKY-005, 008..011 (end-to-end stickiness integration) |
-| `internal/session/identity_test.go` | session | SESS-004, 010..013, 020..022, 050, 051, 053 (identity ladder, frontier verification, fork and lifecycle semantics, fake clock) |
-| `internal/api/session_test.go` | api | SESS-001..003, 005, 030, 031, 040, 060..062 (ladder end-to-end, non-stream policy, migration, response header, debug line) |
-| `internal/api/nostick_test.go` | api | NOSTICK-001..004 |
+| ~~`internal/api/sticky_test.go`~~ | — | **deleted** (ADR 0017); STICKY-010's rule lives on as DISCONNECT-001 in `nostick_test.go` |
+| ~~`internal/session/identity_test.go`~~ | — | **deleted** (ADR 0017) — the identity ladder needs the store it keyed |
+| ~~`internal/api/session_test.go`~~ | — | **deleted** (ADR 0017) — the ladder end-to-end, the header and the debug line are gone |
+| `internal/api/nostick_test.go` | api | NOSTICK-001/002 (fresh `conversationId` per request, chaining only within a request's replay) + DISCONNECT-001 (a client that hangs up returns the lease) — rewritten for ADR 0017 |
 | `internal/pool/attribution_test.go` | pool | POOLATTR-001..007, 009..011 (per-class ladders and counters, class recorded with the cooldown, no upstream Retry-After) |
 | `internal/api/failure_class_test.go` | api | POOLATTR-003, 011 (the classifier table: stall/EOF/reset/dial/deadline are transport, an upstream answer never is) |
 | `internal/api/poolattr_e2e_test.go` | api | POOLATTR-004, 012, 013 (a live mid-stream stall cools on the transport ladder; 5xx and transport stay apart; audio calls are attributed) |
@@ -114,7 +114,7 @@ One `_test.go` per package plus a shared `internal/testutil` package. Go convent
 | `internal/api/models_redirect_test.go` | api | MODELS-014/015, CHAT-REDIR-001, AUDIO-REDIR-001 |
 | `internal/api/refresh_redirects_test.go` | api | REFRESH-001/002 (a retirement learned from the upstream's own refusal) |
 | `internal/testutil/testutil.go` (+ `testdata/`) | testutil | shared helpers (§2.2) |
-| `internal/live/live_test.go` | live | LIVE-001..010 + LIVE-SESS-001/002 (session chaining vs replay, one-shot) — separate package so it is never run implicitly; gated on `MIMO2API_LIVE=1` |
+| `internal/live/live_test.go` | live | LIVE-001..011 (LIVE-004/005/010 and LIVE-SESS-001/002 retired with the streaming path and the store, ADR 0017) — separate package so it is never run implicitly; gated on `MIMO2API_LIVE=1` |
 | `docker/docker_test.sh` (invoked via `go test` wrapper or Makefile target) | — | DOCKER-001..006 — shell-driven, skipped when `docker` binary absent |
 
 ### 2.1.1 The deployment's acceptance (ADR 0016)
@@ -142,6 +142,32 @@ Historical, kept because it records what was verified while the middleware ran:
 reporting the gateway's health; wrong key → 401 on both hops
 (`docs/live-findings.md`, LIVE-TOOLS-001). The middleware stays vendored in
 `deploy/toolforge/` — nothing builds or runs it.
+
+### 2.1.3 Retired with the streaming path and the session store (ADR 0017)
+
+The client-facing SSE path and the conversation store were deleted, not switched
+off (ADR 0017), so the cases whose subject was that machinery are retired here
+rather than silently dropped. The **upstream** SSE parser cases (SSE-001..013) stay
+in force: MiMo still answers every chat POST with `event:message` frames, and the
+thinking splitter, the usage merge and the fixture parser are load-bearing.
+
+| Retired | What it pinned | Replaced by |
+|---|---|---|
+| API-002 | the SSE frame sequence of a successful answer | API-001 (the same answer as one JSON body) |
+| API-010 (delta form) | reasoning delivered as `reasoning_content` deltas | API-010 rewritten: `reasoning_content` on the message; the thought-off case asserts it is stripped (the non-streaming path used to include it unconditionally — the conversion caught a real leak) |
+| API-019 | the SSE keepalive ticker and mid-stream stalls | — (a keepalive has no meaning without a stream) |
+| API-021 (frame form) | an upstream mid-body failure delivered as an error-text delta, then `finish_reason:stop`, then `[DONE]` | API-021 rewritten: the same upstream failure surfaces as an HTTP error envelope, never a 200 with a blank or truncated answer |
+| DEBUG-001 | the routing trace of a sticky continuation | DEBUG-002 (the full-replay trace every request now logs) |
+| STICKY-002..013 | store semantics: keyed continuation match, replay guard, TTL/LRU/sliding expiry, persistence round-trip, frontier verification, fork accounting, reuse verification, the mint-and-store path | NOSTICK-001/002 (asserted at the wire: fresh `conversationId` per request, chaining only inside one request's replay) and DISCONNECT-001 for the released-lease rule |
+| SESS-001..062 (`docs/specs/session-identity.md`) | the identity ladder (`X-Mimo-Session-Id` → body → derived key), isolation between sessions, migration, response header, debug line | — (there is no session identity surface: the header, the store and the spec are retired together) |
+| NOSTICK-001..004 | "non-streaming never touches the store", proven through the store's counters | NOSTICK-001/002 — the same invariants, now observable only in the upstream payloads, which is where they always mattered |
+| CONF-015 | `MIMO2API_ALLOW_STREAM` default and override | — (the variable is gone; `stream:true` is refused unconditionally) |
+| CONF-* (sticky/keepalive/fork rows) | `MIMO2API_STICKY_TTL_S`, `_STICKY_MAX`, `_KEEPALIVE_INTERVAL_MS`, `_SESSION_WAIT_MS`, `_SESSION_FORK_POLICY` parsing | — (the variables are gone; `MIMO2API_SESSION_REFRESH_HOURS` stays — that is the credential keepalive, ADR 0014) |
+| STREAM-001 | the deployed default was non-streaming, checked with no upstream call | kept, retitled: the refusal is now structural, so the case asserts `400 stream_unsupported` **and** zero upstream calls with no configuration involved |
+| LIVE-004 | the live streaming frame contract | — (LIVE-003 covers the live JSON shape) |
+| LIVE-005 | live stickiness (a second turn resuming stored state) | LIVE-011 (replay depth: a fact planted at turn 1 is recalled at turn 6 because the history is replayed) |
+| LIVE-010 | a conversation surviving the store's GC | — (there is no store to garbage-collect) |
+| DISCONNECT-001 (new) | — | replaces STICKY-010: a client that hangs up mid-turn returns the lease, cools nothing, records no failure |
 
 ### 2.1 Recorded SSE fixtures (`internal/testutil/testdata/`)
 
@@ -209,7 +235,11 @@ order).
 | API-017 | System-message splice | — | messages: [system A, system B, user U] | first query = `A\n\nB\n\n---\n\nU`; systems never dropped | §5.3 |
 | API-013 | Model normalization & routing | — | ids: `mimo-v2.6-pro-studio`, `mimo-v2.6-pro-ultraspeed-studio`, `auto`, unknown `foo` | `-studio` stripped → pro; ultraspeed → fastchat route flag; `auto`/missing → default model; unknown → model-not-found error naming available ids | §2.6, §5.2 |
 
-### 3.2 Session store (P1)
+### 3.2 Session store (P1) — **RETIRED (ADR 0017)**
+
+The whole family below is retired: `internal/session` is deleted. Kept as the
+record of what the store promised while it ran; see §2.1.3 for the replacements.
+
 
 | ID | Description | Precondition | Stimulus | Expected result | SDD § |
 |---|---|---|---|---|---|
@@ -242,7 +272,7 @@ order).
 | POOL-015 | Selection score prefers idle | 2 accounts: A warm (inflight 2/2 history, low EWMA), B idle (0 inflight, higher EWMA) | Acquire | B selected — `(inflight/capacity)*100 + ewma + warm_penalty` favors B within `best*1.15+1` band | §4.4 |
 | POOL-016 | Context cancel releases slot | account at max in-flight with a waiting acquire | cancel the holder's context | semaphore slot released; waiter acquires; no leak (repeat 100× under `-race`) | §3, §4.4 |
 
-### 3.4 Non-streaming: no stickiness (P0)
+### 3.4 Non-streaming: no stickiness (P0) — now the only path (ADR 0017)
 
 | ID | Description | Precondition | Stimulus | Expected result | SDD § |
 |---|---|---|---|---|---|
@@ -251,7 +281,11 @@ order).
 | NOSTICK-003 | Store untouched | session store instrumented | non-streaming requests | store size unchanged before/after; no lookup performed (assert via store counter) | §4.2 |
 | NOSTICK-004 | No cross-request chaining | mock upstream recording | two requests sharing history, each with 2 user messages | both requests' first upstream turn has `previousDialogueId: null`; chaining happens only within a request's own replay | §5.3 |
 
-### 3.5 Streaming stickiness — end-to-end (P0)
+### 3.5 Streaming stickiness — end-to-end (P0) — **RETIRED (ADR 0017)**
+
+Retired with the streaming path: non-streaming is no longer a policy for one
+request shape, it is the only shape there is.
+
 
 | ID | Description | Precondition | Stimulus | Expected result | SDD § |
 |---|---|---|---|---|---|
@@ -261,7 +295,7 @@ order).
 | STICKY-009 | Post-first-byte failure commit boundary | sticky account streams 2 deltas then aborts mid-stream | streaming request on warm store | no account switch, no replay, no restart of deltas; stream terminates with error content delta + `finish_reason:"stop"` + `[DONE]`; stale sticky entry deleted | §4.3, §7.2 |
 | STICKY-010 | Client disconnect keeps entry | warm store, stream in progress, dialogId already received | cancel client request mid-stream | upstream request aborted (mock sees ctx cancel); sticky entry kept (context advanced); counted as neither success nor failure; pool slot released | §7.3 |
 
-### 3.5.1 Session identity & isolation (SESS-*, P0 — proposed)
+### 3.5.1 Session identity & isolation (SESS-*, P0) — **RETIRED (ADR 0017)**
 
 Spec: `docs/specs/session-identity.md`; design summary: SDD §4.3.1. These cases
 are written before the code (RED by construction — the feature does not exist
@@ -521,6 +555,28 @@ Rows assert both status/shape and the triggering path.
 
 ### 3.10 Accounts store & config (P1)
 
+**Backends (ADR 0018).** The store is a thin in-memory set over a `Backend`
+(`internal/accounts/backend.go`); Redis is one implementation of it.
+
+| # | Case | Precondition | Stimulus | Expectation | SDD § |
+|---|---|---|---|---|---|
+| STORE-001 | File backend: missing file is an empty set | path under a directory that does not exist | `FileBackend.Load` | no error, zero accounts, nothing created on disk | §4.7 |
+| STORE-002 | File backend: invalid JSON names the file | readable file with `{oops` | `Load` | error naming the path (ACC-007 rule kept) | §4.7 |
+| STORE-003 | File backend: save creates the directory, mode 0600, round-trips | empty store, nested path | `ReplaceAll` then a fresh `Load` | directory created on demand, file 0600, record identical | §4.7 |
+| STORE-004 | A no-op update creates nothing | loaded file backend | `Update` of an unknown id | no error, no file written | §4.7 |
+| STORE-005 | Redis backend: round trip + upsert | fake RESP server | `SaveAccount` ×2 (one replaced), `Load` | both records returned with every field, no duplicate row | §4.7 |
+| STORE-006 | Redis backend: bad rows never brick the pool | index with an unparseable key and a key with no data | `Load` | the good rows are returned, bad ones skipped with a log | §4.7 |
+| STORE-007 | Redis backend: a broken pipe heals | live connection closed under the store | `SaveAccount` again | one re-dial, command succeeds | §4.7 |
+| STORE-008 | Redis backend: auth failure is fatal | fake server requiring a password | `OpenUpstash` with the wrong one | error at Open, no store | §4.7 |
+| STORE-009 | Plaintext Redis off-loopback is refused | `DS_REDIS_INSECURE` unset | `NewRedisBackend(redis://10.1.2.3:6379)` | refused, message names encryption | §4.7 |
+| STORE-010 | Configured Redis is the source of truth | `DS_REDIS_HOST` set, server unreachable | startup | fail fast — never a silent file fallback | §4.7 |
+| STORE-011 | The store loads the backend once and writes through | counting backend | 3 reads, then `Update` | exactly 1 load (startup), 1 save (the mutation) | §4.7 |
+| STORE-012 | A failed backend write keeps the live value | backend whose save fails | `Update` | error reported **and** the in-memory value is the new one | §4.7 |
+| CONF-016 | Port resolution | — | `MIMO2API_PORT` / `PORT` / neither / malformed | explicit wins, then the platform's `PORT`, then 3000; a malformed value errors naming its variable | §6 |
+| CONF-017 | Upstash pair is read unprefixed | — | `DS_REDIS_HOST`/`DS_REDIS_TOKEN` set/unset | present → both returned; absent → file backend | §4.7 |
+| CONF-018 | Accounts path defaults to a relative path | — | nothing set / explicit path | `data/accounts.json`, overridden by `MIMO2API_ACCOUNTS_FILE` | §4.7 |
+| CONF-019 | Accessors mirror the parsed config | full env | `Load` | every accessor answers its parsed value (a table, so a new knob with no case shows up here) | §6 |
+
 | ID | Description | Expected | SDD § |
 |---|---|---|---|
 | ACC-001 | Load round-trip | save → load → deep-equal accounts (incl. runtime state fields) | §4.7 |
@@ -573,7 +629,7 @@ API-013 (model normalization).
 - Why first: the splitter and fingerprint are depended on by session (wave 2), mimo
   (wave 5), and api (wave 6). Everything downstream compiles against these signatures.
 
-### Wave 2 — `internal/session` (needs adapter.Fingerprint + testutil.FakeClock)
+### Wave 2 — `internal/session` — **RETIRED (ADR 0017)** (was: needs adapter.Fingerprint + testutil.FakeClock)
 
 Build `testutil.FakeClock` here (first consumer). Write: STICKY-002 → 003 → 006 → 012
 → 007 → 013 (the keyed store, its frontier verification and lifecycle). SESS-011/012/053
@@ -582,7 +638,7 @@ arrive in wave 2.5 as the verification and cost cases.
 - Green unlocks: pool cooldown timing (wave 4 reuses FakeClock), api sticky wiring
   (wave 6), and pins the replay-guard semantics the whole stickiness contract rests on.
 
-### Wave 2.5 — session identity & isolation (proposed; needs wave 2 green)
+### Wave 2.5 — session identity & isolation — **RETIRED (ADR 0017)** (needed wave 2 green)
 
 The milestone that replaces content-derived-only identity (spec
 `docs/specs/session-identity.md`, SDD §4.3.1). Order inside the wave, because

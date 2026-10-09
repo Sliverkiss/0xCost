@@ -21,7 +21,6 @@ import (
 	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -76,11 +75,7 @@ func newRecoveryStack(t *testing.T, auth2 string, otpAuto bool) *recoveryStack {
 		APIKeys:  []string{"sk-admin-test"},
 		Pool:     p,
 		Accounts: store,
-		Sessions: session.New(session.Options{}),
 		Client:   client,
-		// These in-package stacks exercise the streaming path; the deployed
-		// default is non-streaming (ADR 0016).
-		AllowStream: true,
 	})
 	return &recoveryStack{ts: t, srv: srv, pool: p, store: store, passport: passport, upstream: up}
 }

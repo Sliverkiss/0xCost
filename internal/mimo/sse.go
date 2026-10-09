@@ -96,10 +96,6 @@ type streamer struct {
 	// citations accumulates web-search results across events (the upstream
 	// may send more than one web_search event per turn).
 	citations []adapter.Citation
-	// onCitations, when set, receives the accumulated citations after each
-	// web_search event so a streaming client can be handed them before the
-	// stream ends.
-	onCitations func([]adapter.Citation)
 	// onTap, when set, observes every parsed event before dispatch
 	// (test hook for event-order assertions).
 	onTap func(ev Event)
@@ -203,9 +199,6 @@ func (s *streamer) handleEvent(ev Event) (bool, error) {
 				cits[i].Index = len(s.citations) + i
 			}
 			s.citations = append(s.citations, cits...)
-			if s.onCitations != nil {
-				s.onCitations(s.citations)
-			}
 		}
 	case "doc", "tip_ratio", "tip_truncate":
 		// Search/parse progress: nothing client-visible to carry.

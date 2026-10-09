@@ -336,10 +336,6 @@ type ChatRequest struct {
 	// OnEvent, when non-nil, reports each upstream event's name and payload
 	// size as it arrives (debug tracing; M19).
 	OnEvent func(name string, dataLen int, prefix string)
-	// OnCitations, when non-nil, receives the accumulated web-search
-	// citations after each web_search event — a streaming client gets them
-	// before the stream ends (M19).
-	OnCitations func([]adapter.Citation)
 }
 
 // ChatResult is the completed turn.
@@ -485,7 +481,6 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	st.onPiece = req.OnPiece
 	st.onFirstByte = req.OnFirstByte
 	st.onDialogID = req.OnDialogID
-	st.onCitations = req.OnCitations
 	st.onEvent = req.OnEvent
 	if _, err := st.parseEvents(streamCtx, stream); err != nil {
 		st.finish() // flush splitter state even on failure

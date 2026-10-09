@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -68,9 +69,9 @@ func TestGet(t *testing.T) {
 	})
 }
 
-// saveLocked must surface a filesystem error instead of silently claiming
+// A write must surface a filesystem error instead of silently claiming
 // success, and must not leave a partial file behind.
-func TestSaveLockedPropagatesMkdirError(t *testing.T) {
+func TestSavePropagatesFilesystemError(t *testing.T) {
 	dir := t.TempDir()
 	// A regular file standing in for the parent directory makes MkdirAll fail
 	// with ENOTDIR.
@@ -78,8 +79,16 @@ func TestSaveLockedPropagatesMkdirError(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(blocker, "accounts.json")
-	s := &Store{path: target, accounts: []Account{{ID: "a", Enabled: true}}}
+	target := filepath.Join(dir, "accounts.json")
+	s, err := LoadBackend(context.Background(), NewFileBackend(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.accounts = []Account{{ID: "a", Enabled: true}}
+	// Point the backend at the unusable path *after* a successful load, so the
+	// case exercises the write path and not the load path.
+	s.backend.(*FileBackend).path = filepath.Join(blocker, "accounts.json")
+	target = filepath.Join(blocker, "accounts.json")
 
 	if err := s.Update(Account{ID: "a", Enabled: true}); err == nil {
 		t.Fatal("expected an error when the parent path is not a directory")

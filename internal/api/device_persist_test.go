@@ -20,7 +20,6 @@ import (
 	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -72,11 +71,7 @@ func newDeviceStack(t *testing.T) *deviceStack {
 		APIKeys:  []string{"sk-admin-test"},
 		Pool:     p,
 		Accounts: store,
-		Sessions: session.New(session.Options{}),
 		Client:   client,
-		// These in-package stacks exercise the streaming path; the deployed
-		// default is non-streaming (ADR 0016).
-		AllowStream: true,
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)
@@ -106,7 +101,7 @@ func TestLoginPresentsAndPersistsDeviceIdentity(t *testing.T) {
 	s.upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
 	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	if resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("chat = %v %q, want 200 (the login must have repaired the missing session)", resp, body)
 	}

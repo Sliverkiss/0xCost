@@ -141,7 +141,7 @@ func TestTooLongRefusalDoesNotPenalizeAccount(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSETooLong})
 
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}), "")
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,29 +215,29 @@ func TestComposedQueryUnderCapIsServed(t *testing.T) {
 	}
 }
 
-// STREAM-001: the deployed default is non-streaming (ADR 0016), so a request that
-// asks for SSE is refused by name with the fix, before any account work — an
+// STREAM-001: the gateway has no streaming path at all (ADR 0017), so a request
+// that asks for SSE is refused by name with the fix, before any account work — an
 // OpenAI client that got a one-shot JSON body instead would fail on the parse.
-func TestStreamingRefusedOnNonStreamingDeployment(t *testing.T) {
-	off := false
-	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{AllowStream: &off})
+func TestStreamingRefused(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hello"}), "")
+	body := `{"model":"mimo-v2.6-pro","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	resp, err := ts.Chat(body, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for stream:true on a non-streaming deployment", resp.StatusCode)
+		t.Fatalf("status = %d, want 400: the gateway has no streaming path", resp.StatusCode)
 	}
 	raw, _ := io.ReadAll(resp.Body)
-	body := string(raw)
-	if !strings.Contains(body, `"code":"stream_unsupported"`) {
+	got := string(raw)
+	if !strings.Contains(got, `"code":"stream_unsupported"`) {
 		t.Errorf("body = %s, want code stream_unsupported", body)
 	}
-	if !strings.Contains(body, `stream\": false`) && !strings.Contains(body, `"stream": false`) {
-		t.Errorf("body = %s, want the fix named", body)
+	if !strings.Contains(got, "stream") || !strings.Contains(got, "false") {
+		t.Errorf("body = %s, want the fix named", got)
 	}
 	if ts.Upstream.ChatHits() != 0 {
 		t.Errorf("upstream hits = %d, want 0 (refused before any account work)", ts.Upstream.ChatHits())

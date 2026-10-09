@@ -5,9 +5,7 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,14 +18,13 @@ import (
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
-	"github.com/yg/mimo2api/internal/session"
 )
 
 // Server wires the whole stack behind one http.Handler (SDD §3).
 type Server struct {
-	pool     *pool.Pool
-	store    *accounts.Store
-	sessions *session.Store
+	pool  *pool.Pool
+	store *accounts.Store
+
 	client   *mimo.Client
 	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
 	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
@@ -39,11 +36,11 @@ type Server struct {
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 	allowStream   bool
 	maxQueryChars int
-	keepalive     time.Duration
-	logger        *log.Logger
-	debug         bool
-	sessionWait   time.Duration
-	forkPolicy    string
+
+	logger *log.Logger
+	debug  bool
+
+	forkPolicy string
 
 	// Web-surface audio + catalog (audio.go).
 	audioConvs     *mimo.ConversationCache
@@ -144,9 +141,9 @@ func (s *Server) resolveModel(id string) string {
 }
 
 // debugf logs only when the server was built with Options.Debug
-// (MIMO2API_LOG_LEVEL=debug). Routing decisions — sticky continuation versus
-// full replay — are the first thing an operator needs when a conversation
-// appears to lose context, and far too noisy for the default level.
+// (MIMO2API_LOG_LEVEL=debug). It carries the routing trace an operator needs
+// when a request misbehaves — which account served it, how many queries the
+// replay sent — and is far too noisy for the default level.
 func (s *Server) debugf(format string, args ...any) {
 	if !s.debug {
 		return
@@ -159,25 +156,14 @@ type Options struct {
 	APIKeys      []string // parsed list; empty = open auth
 	Pool         *pool.Pool
 	Accounts     *accounts.Store
-	Sessions     *session.Store
 	Client       *mimo.Client
 	DefaultModel string // "auto"/missing model resolution (SDD §5.2)
 	ReplayCap    int    // max replayed user turns (SDD §5.3B, default 20)
-	// AllowStream enables serving stream:true. False (the zero value, and the
-	// config default) means chat is non-streaming: a streaming request is
-	// refused with a clear 400 instead of being served as one blob (ADR 0016).
-	AllowStream bool
 	// MaxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
 	MaxQueryChars int
-	Keepalive     time.Duration // SSE keepalive interval (SDD §5.4, default 15s)
-	// SessionWait bounds how long a second streaming request waits for its own
-	// session before forking (SDD §4.3.1, REQ-8, default 2s).
-	SessionWait time.Duration
-	// ForkPolicy is "wait" (default) or "fork" (SDD §4.3.1).
-	ForkPolicy string
-	Logger     *log.Logger
-	Debug      bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
+	Logger        *log.Logger
+	Debug         bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
 
 	// Audio surface (M18): poll cadence and per-flow deadlines.
 	AudioPoll time.Duration // TTS/ASR status poll interval (default 1s)
@@ -196,20 +182,11 @@ type Options struct {
 // New builds a Server. All collaborators must be wired (real or test
 // doubles).
 func New(opts Options) *Server {
-	if opts.SessionWait <= 0 {
-		opts.SessionWait = 2 * time.Second
-	}
-	if opts.ForkPolicy == "" {
-		opts.ForkPolicy = "wait"
-	}
 	if opts.DefaultModel == "" {
 		opts.DefaultModel = adapter.DefaultModels[0]
 	}
 	if opts.ReplayCap <= 0 {
 		opts.ReplayCap = 20
-	}
-	if opts.Keepalive <= 0 {
-		opts.Keepalive = 15 * time.Second
 	}
 	if opts.AudioPoll <= 0 {
 		opts.AudioPoll = time.Second
@@ -245,18 +222,13 @@ func New(opts Options) *Server {
 	return &Server{
 		pool:           opts.Pool,
 		store:          opts.Accounts,
-		sessions:       opts.Sessions,
-		sessionWait:    opts.SessionWait,
-		forkPolicy:     opts.ForkPolicy,
 		client:         opts.Client,
 		otp:            newOTPStore(),
 		recovery:       newRecoveryState(),
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,
-		allowStream:    opts.AllowStream,
 		maxQueryChars:  opts.MaxQueryChars,
-		keepalive:      opts.Keepalive,
 		logger:         logger,
 		debug:          opts.Debug,
 		audioConvs:     mimo.NewConversationCache(0),
@@ -306,44 +278,9 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 					"missing or invalid API key", 0)
 				return
 			}
-			// Session state is scoped to the calling credential (spec REQ-3,
-			// INV-2). Only a one-way handle is carried, never the key itself.
-			r = r.WithContext(context.WithValue(r.Context(), credentialCtxKey{}, credentialHandle(token)))
 		}
 		next(w, r)
 	}
-}
-
-// forkWait returns how long a second streaming request waits for its own
-// session before forking: the configured bound, or zero when the policy is
-// "fork" (SDD §4.3.1, REQ-8).
-func (s *Server) forkWait() time.Duration {
-	if s.forkPolicy == "fork" {
-		return 0
-	}
-	return s.sessionWait
-}
-
-// credentialCtxKey is the request-context key for the calling credential's
-// non-reversible handle.
-type credentialCtxKey struct{}
-
-// credentialHandle derives the opaque credential identity used to scope session
-// keys. Hashed so a session key can never be inverted into an API key (INV-3);
-// a deployment without auth has a single, empty scope.
-func credentialHandle(token string) string {
-	if token == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte("mimo2api-credential|" + token))
-	return hex.EncodeToString(sum[:16])
-}
-
-// credentialOf returns the calling credential's handle, empty when the
-// deployment runs without auth.
-func credentialOf(r *http.Request) string {
-	h, _ := r.Context().Value(credentialCtxKey{}).(string)
-	return h
 }
 
 // parseBearer extracts the token from "Authorization: Bearer <key>".

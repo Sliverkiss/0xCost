@@ -308,7 +308,12 @@ source — it is usually a per-request nonce.
 Additive only: with no new fields and no new headers, the request behaves
 exactly as today (REQ-17).
 
-### 2.5 SSE response format
+### 2.5 SSE response format (the **upstream's**, not ours)
+
+> This is the format MiMo answers our chat POST with; the client parses it frame by
+> frame and collects the turn. The gateway no longer **emits** SSE to its own
+> clients (ADR 0017) — do not read this section as a client-facing contract.
+
 
 `text/event-stream`, colon **without** space (`PROTOCOL.md:43-63`). Parser reference:
 `mimo-web-api/src/upstream.js:72-123` (tolerates `event:x` and `event: x`, `\n` and `\r\n`).
@@ -613,7 +618,12 @@ full-history replay every turn — expensive (multiplied token usage) and
 fingerprint-fragile. Non-streaming requests in v1 don't chain turns across calls (§5.3),
 so they need no stickiness — which also makes them the natural load-shedding path.
 
-### 4.3 Sticky-session store
+### 4.3 Sticky-session store — **DELETED (ADR 0017)**
+
+> Historical: the store was streaming-only (ADR 0009) and the deployment served
+> non-streaming, so it was deleted rather than kept behind a switch. Kept here as
+> the record of the design. Every request is a full replay now; see §5.3 and SDD §5.7.
+
 
 In-process, with optional JSON persistence for restart survival
 (`mimo-web-proxy` persists to `data/conversations.json`, `convstore.go:39-60`).
@@ -822,9 +832,33 @@ exists:
 | `event:error` (other) / `sensitive_query` mid-stream | fail the request; no pool action (content-level, not account-level) |
 | Empty response, no error | one retry with fresh `msgId` + fresh `conversationId` (`mimo-web-proxy/internal/handler/chat.go:283-324` empty-response rotation) |
 
-### 4.7 Accounts file format
+### 4.7 Account storage: file or Upstash (ADR 0018)
 
-`data/accounts.json` (mode 0600, like simple-chat `json.go:54-56`), hot-reloadable:
+Two interchangeable backends behind one interface (`internal/accounts/backend.go`).
+The runtime always works on the in-memory set: the backend is read **once** at
+startup and written through on every mutation, so a request path never touches
+storage.
+
+| backend | chosen by | format |
+|---|---|---|
+| `FileBackend` (default) | nothing set | `MIMO2API_ACCOUNTS_FILE` (default `data/accounts.json`), mode 0600, atomic temp+fsync+rename, directory created on demand |
+| `RedisBackend` (Upstash) | `DS_REDIS_HOST` (+ `DS_REDIS_TOKEN`) | one JSON key per account, `mimo2api:accounts:<id>`, plus an index set `mimo2api:accounts:index` |
+
+Why a second backend: the hosted deployment (Belmo, ADR 0018) has no durable file
+system, and a container restart must not cost a re-login of the whole pool. A
+configured-but-unreachable Redis is **fatal at startup** rather than a silent
+fallback to an empty file — the operator named a source of truth.
+
+The Redis client is a ~200-line RESP2 implementation in
+`internal/accounts/redis.go` (stdlib only: no go-redis dependency). It refuses a
+plaintext `redis://` URL to a non-loopback host, because account passwords and
+session cookies live in that store (`DS_REDIS_INSECURE=1` accepts it for a local
+server). Seeding a hosted pool from a local file:
+`mimo2api -import-redis data/accounts.json`.
+
+#### File format
+
+`data/accounts.json` (mode 0600, like simple-chat `json.go:54-56`):
 
 ```jsonc
 {
@@ -914,7 +948,7 @@ passive classification depends on (REQ-15).
 
 | Route | Behavior |
 |---|---|
-| `POST /v1/chat/completions` | Chat, non-streaming: always one JSON body (ADR 0016). `stream:true` → `400 stream_unsupported` unless `MIMO2API_ALLOW_STREAM=true`, in which case SSE. |
+| `POST /v1/chat/completions` | Chat, always one JSON body: there is no streaming path (ADR 0017). `stream:true` → `400 stream_unsupported`, unconditionally, before any account work. |
 | `GET /v1/models` | Model list (§2.6), OpenAI `list` shape. |
 | `GET /v1/models/{id}` | Single model or 404 with available ids (`xm2api/server.mjs:751-776`). |
 | `GET /healthz` | Liveness + pool summary (states only, no credentials — xm2api `summaryOf` precedent, `lib/accounts.mjs:92-107`). |
@@ -1082,7 +1116,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mimo2api ./cmd/mim
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/mimo2api /mimo2api
 VOLUME /data
-EXPOSE 8080
+EXPOSE 3000
 USER nonroot
 ENTRYPOINT ["/mimo2api"]
 ```
@@ -1098,7 +1132,7 @@ services:
   mimo2api:
     build: .
     ports:
-      - "8080:8080"
+      - "3000:3000"
     volumes:
       - ./data:/data          # accounts.json + runtime state (§4.7)
     environment:
@@ -1115,7 +1149,7 @@ services:
 ```
 
 Healthcheck note: distroless has no `curl`/`wget`, so the binary exposes a tiny
-`mimo2api healthcheck` subcommand that does `GET http://127.0.0.1:8080/healthz`
+`mimo2api healthcheck` subcommand that does `GET http://127.0.0.1:3000/healthz`
 and exits 0/1 — a common static-binary pattern.
 
 Config surface — env vars, prefixed `MIMO2API_` to stay collision-free in compose
@@ -1123,21 +1157,18 @@ files (defaults):
 
 ```
 MIMO2API_HOST=0.0.0.0                # empty API_KEYS forces 127.0.0.1 bind (§5.1)
-MIMO2API_PORT=8080
+MIMO2API_PORT=3000                   # else the platform's PORT (Belmo), else 3000 (ADR 0018)
 MIMO2API_API_KEYS=                   # comma-separated; empty = open (bind-local)
 MIMO2API_UPSTREAM_BASE=https://aistudio.xiaomimimo.com
-MIMO2API_ACCOUNTS_FILE=/data/accounts.json
+MIMO2API_ACCOUNTS_FILE=data/accounts.json  # relative default: no /data mount needed (ADR 0018)
+DS_REDIS_HOST=                       # Upstash: when set, Redis is the account store (§4.7)
+DS_REDIS_TOKEN=                      # its token (required for a bare host / https URL)
 MIMO2API_DEFAULT_MODEL=mimo-v2.6-pro
 MIMO2API_REQUEST_TIMEOUT_MS=300000   # upstream idle/stream timeout (mimo-web-api config.js:127)
 MIMO2API_SSE_IDLE_TIMEOUT_S=180      # no-event watchdog (mimo-web-proxy chat.go:62)
-MIMO2API_SESSION_REFRESH_HOURS=6     # timer sweep (session.js:203-230)
-MIMO2API_STICKY_TTL_S=1800           # §4.3
-MIMO2API_STICKY_MAX=500
-MIMO2API_SESSION_FORK_POLICY=wait    # wait|fork — concurrent same-session, streaming (§4.3.1, REQ-8)
-MIMO2API_SESSION_WAIT_MS=2000        # bound for `wait` before forking
+MIMO2API_SESSION_REFRESH_HOURS=12    # credential keepalive sweep (ADR 0014; NOT the deleted session store)
 MIMO2API_MAX_INFLIGHT_PER_ACCOUNT=2
 MIMO2API_QUEUE_WAIT_S=15
-MIMO2API_KEEPALIVE_INTERVAL_MS=15000
 MIMO2API_X_TIMEZONE=Asia/Shanghai
 MIMO2API_USER_AGENT=<Chrome UA, matched to sec-ch-ua>
 MIMO2API_AUDIO_POLL_MS=1000          # TTS/ASR status poll cadence (§2.7)
@@ -1191,7 +1222,14 @@ the source-tree `data/` — same file, container-native path.
   (`AcquireWithWaitExcluding` pattern, `pool.go:505-507`).
 - Every retry regenerates `msgId` (§2.4 dedup).
 
-### 7.3 Stream interruption
+### 7.3 Stream interruption — **RETIRED (ADR 0017)**
+
+> Superseded: there is no stream to interrupt between the client and the gateway,
+> and the answer is written in one piece. What survives is the client-disconnect and
+> upstream-stall classification below (the middle bullet's rule, and the `SSE_IDLE_TIMEOUT_S`
+> upstream read timeout) — pinned by DISCONNECT-001. The error-delta rule is gone:
+> an upstream failure before the body is written is now an HTTP error (TDD API-021).
+
 
 - Upstream stalls (no SSE event for `SSE_IDLE_TIMEOUT_S=180`) → abort upstream, emit
   error frame, close. (`mimo-web-proxy` `chat.go:62,112-120`.)
@@ -1322,16 +1360,25 @@ client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one published 
   `finish_reason: tool_calls` with `{"city":"上海"}` and the result fed back
   produced the final answer (docs/live-findings.md, LIVE-TOOLS-001).
 
-## §5.7 Chat transport: non-streaming (ADR 0016)
+## §5.7 Chat transport: no streaming at all (ADR 0017, superseding ADR 0016 §2)
 
-`MIMO2API_ALLOW_STREAM` defaults to **false**. A request carrying `stream: true`
-is refused with `400 stream_unsupported` before any pool or account work, with the
-fix in the message; the gateway does not convert it into a one-shot JSON body,
-because an SSE client cannot parse that and the failure would surface far from its
-cause. The SSE emission path, the incremental splitter and the session machinery
-(ADR 0009: chaining is streaming-only, non-streaming is one-shot) stay in the
-code and stay tested behind the switch — the test harness enables them, the
-deployed default does not.
+A request carrying `stream: true` is refused with `400 stream_unsupported` before
+any pool or account work, with the fix in the message. The refusal is now
+**structural**: `MIMO2API_ALLOW_STREAM`, the SSE emission path, the keepalive
+ticker, the pre-first-byte commit boundary and the whole conversation store
+(`internal/session/`, the `X-Mimo-Session-Id` contract, the fork policy and their
+environment variables) are deleted, not disabled. Every request is one collected
+answer delivered as a single JSON body, and every request is a **full replay**
+(`adapter.PlanFullReplay`) into a fresh upstream conversation — the behaviour that
+was already the non-streaming path's contract under ADR 0009.
+
+Two things did **not** change and must not be read as collateral: the upstream is
+still SSE (§2.5 describes the format the client parses), and web search, TTS and
+ASR are untouched — citations ride in the JSON body and the audio surface never
+consulted the switch.
+
+What this buys and what it costs is in ADR 0017. The retired test material and its
+replacements are listed in `docs/TDD.md` §2.1.3.
 
 ## Appendix B — Open questions (to resolve during implementation spike)
 

@@ -1,0 +1,22 @@
+# Belmo (and any nixpacks-based) build (ADR 0018).
+#
+# The project is pure Go with no cgo and no module tooling beyond go.mod, so
+# the Go provider is all that is needed:
+#
+#   - build  : one static binary from cmd/mimo2api
+#   - start  : run it; the listen port comes from MIMO2API_PORT, else the
+#              platform's own PORT (Belmo injects it), else 3000
+#   - health : GET /healthz (the binary also implements
+#              `mimo2api healthcheck` for environments without curl)
+#
+# Accounts come from Upstash when DS_REDIS_HOST + DS_REDIS_TOKEN are set in the
+# environment (no durable file system is assumed — the default accounts path is
+# relative and its directory is created on demand); otherwise the accounts file
+# at MIMO2API_ACCOUNTS_FILE is used.
+providers = ["go"]
+
+[phases.build]
+cmds = ["CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o mimo2api ./cmd/mimo2api"]
+
+[start]
+cmd = "./mimo2api"

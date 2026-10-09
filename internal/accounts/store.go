@@ -1,13 +1,17 @@
-// Package accounts persists the account pool credentials store:
-// data/accounts.json, mode 0600, atomic write (temp + rename + fsync),
-// hot-reloadable (SDD §4.7).
+// Package accounts holds the account pool: the credentials, the device
+// identity and the runtime state, kept in memory and written through to a
+// persistence backend (ADR 0018, SDD §4.7).
+//
+// Two backends: accounts.json (default, mode 0600, atomic write) and Redis,
+// for a hosted deployment without a durable file system
+// (`DS_REDIS_HOST` + `DS_REDIS_TOKEN`, Upstash-shaped). The package is
+// deliberately pure Go/stdlib — the Redis client is a small RESP2
+// implementation in redis.go, so the binary keeps a dependency-free build.
 package accounts
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/yg/mimo2api/internal/egress"
@@ -63,34 +67,50 @@ func (e *ErrDuplicateID) Error() string {
 	return fmt.Sprintf("duplicate enabled account id %q at entry %d", e.ID, e.Index)
 }
 
-// Store wraps the file with a mutex and atomic persistence.
+// Store is the in-memory account set. Reads never touch the backend; every
+// mutation writes the changed account through (write-through, ADR 0018).
 type Store struct {
 	mu       sync.Mutex
-	path     string
+	backend  Backend
 	accounts []Account
 }
 
-// Load reads the accounts file. A missing file returns an empty store (not
-// an error — an empty pool surfaces as 503 no_accounts downstream). Invalid
-// JSON fails loudly naming the file (TDD ACC-007).
+// Load reads an accounts.json file into a new Store (the default backend).
+// A missing file returns an empty store (not an error — an empty pool
+// surfaces as 503 no_accounts downstream). Invalid JSON fails loudly naming
+// the file (TDD ACC-007).
 func Load(path string) (*Store, error) {
-	s := &Store{path: path}
-	data, err := os.ReadFile(path)
+	return LoadBackend(context.Background(), NewFileBackend(path))
+}
+
+// LoadBackend loads from any backend, validating what it returns.
+//
+// An empty backend is a valid state: a fresh hosted deployment boots with an
+// empty pool and is seeded through the admin surface or `-import-redis`.
+func LoadBackend(ctx context.Context, backend Backend) (*Store, error) {
+	accounts, err := backend.Load(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
-		}
-		return nil, fmt.Errorf("accounts file %s: %w", path, err)
+		return nil, err
 	}
-	var f File
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("accounts file %s: invalid JSON: %w", path, err)
+	if err := validate(accounts); err != nil {
+		return nil, fmt.Errorf("accounts: %w", err)
 	}
-	if err := validate(f.Accounts); err != nil {
-		return nil, fmt.Errorf("accounts file %s: %w", path, err)
+	return &Store{backend: backend, accounts: accounts}, nil
+}
+
+// Close releases the backend (a no-op for the file backend).
+func (s *Store) Close() error { return s.backend.Close() }
+
+// BackendName names the active backend for startup logs.
+func (s *Store) BackendName() string {
+	switch b := s.backend.(type) {
+	case *RedisBackend:
+		return "redis (" + b.Addr() + ")"
+	case *FileBackend:
+		return "file " + b.Path()
+	default:
+		return "custom"
 	}
-	s.accounts = f.Accounts
-	return s, nil
 }
 
 // validate rejects duplicate enabled ids; disabled duplicates are tolerated
@@ -136,58 +156,43 @@ func (s *Store) Get(id string) (Account, bool) {
 }
 
 // Update replaces the stored entry with the same id (runtime-state persist,
-// e.g. after login/refresh), then persists atomically. Unknown id is a no-op.
+// e.g. after login/refresh) and writes it through to the backend. Unknown id
+// is a no-op.
+//
+// A backend failure is returned but the in-memory value is kept: the live
+// pool state is correct and the next mutation re-writes the whole record, so
+// a transient store failure costs at most one re-login after a restart. The
+// caller logs it (SDD §4.7).
 func (s *Store) Update(a Account) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	found := false
 	for i := range s.accounts {
 		if s.accounts[i].ID == a.ID {
 			s.accounts[i] = a
-			return s.saveLocked()
+			found = true
+			break
 		}
 	}
-	return nil
+	if !found {
+		return nil
+	}
+	return s.backend.SaveAccount(context.Background(), a)
 }
 
-// saveLocked writes atomically: temp file in the same directory, fsync,
-// rename over the target, fsync the directory. File mode is 0600 (enforced
-// on create and on re-save of a pre-existing 0644 file, TDD ACC-003).
-func (s *Store) saveLocked() error {
-	f := File{Accounts: s.accounts}
-	data, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		return err
+// ReplaceAll swaps the whole set (import/seeding) and writes every account
+// through. Used by `-import-redis`, never on the request path.
+func (s *Store) ReplaceAll(ctx context.Context, accounts []Account) error {
+	if err := validate(accounts); err != nil {
+		return fmt.Errorf("accounts: %w", err)
 	}
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	for _, a := range accounts {
+		if err := s.backend.SaveAccount(ctx, a); err != nil {
+			return err
+		}
 	}
-	tmp, err := os.CreateTemp(dir, ".accounts-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after successful rename
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return err
-	}
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
-	}
+	s.mu.Lock()
+	s.accounts = append([]Account(nil), accounts...)
+	s.mu.Unlock()
 	return nil
 }

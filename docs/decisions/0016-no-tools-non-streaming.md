@@ -1,8 +1,12 @@
 # 0016. No function calling, and chat is non-streaming
 
 Date: 2026-10-09
-Status: accepted
+Status: accepted (partly superseded by ADR 0017)
 Supersedes: ADR 0012 (the tool layer) — the deployment no longer runs it.
+
+**Update 2026-10-09 (ADR 0017):** §1 (no tool layer) stands. §2 (the
+`MIMO2API_ALLOW_STREAM` switch) is superseded: the streaming path is now deleted
+outright rather than switched off, together with the session store it existed for.
 
 ## Context
 

@@ -30,7 +30,7 @@ func TestStallCoolsAccountAsTransport(t *testing.T) {
 		StallMidStream: 2 * time.Second,
 		MidStreamSplit: 20,
 	})
-	body := testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"})
+	body := testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"})
 	resp, _ := ts.Chat(body, "")
 	if resp != nil {
 		_ = resp.Body.Close()
