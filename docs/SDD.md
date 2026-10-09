@@ -688,6 +688,55 @@ from first-byte latency. (simple-chat implemented the EWMA term but never wired 
   over expiring/expired accounts, staggered to avoid synchronized bursts. If the probe
   itself 401s, trigger one STS renewal before disabling.
 
+### 4.5.1 Failure classes and per-class ladders (target design)
+
+Spec: `docs/specs/account-pool.md` §4. Today one counter (`failStreak`) and one ladder serve
+`429`, `5xx`, transport failures and stalls together — `pool.go:392` documents it as
+"Transport errors are treated the same" — so a local network blip escalates an account's
+cooldown exactly like an upstream 5xx, and afterwards nothing records which it was.
+
+The target design gives each class its own counter, its own base and its own cap:
+
+| Class | Signals | Own ladder (base → cap) | Client-facing |
+|---|---|---|---|
+| `transport` | connection error, timeout, SSE idle-stall, EOF mid-body | 15s → 5min | none (retry on another account) |
+| `upstream-5xx` | 5xx, non-SSE 200 body | 30s → 10min (unchanged) | 503 `upstream_busy` after retries |
+| `throttle-429` | 429 | 60s → 10min (unchanged) | 429 `upstream_rate_limited` |
+| `service-busy` | `event:error` "服务器繁忙，请稍后再试" | none — no pool action | 503 `upstream_busy` + `Retry-After: 2` |
+| `content` / `model-rejected` | other `event:error`, `sensitive_query`, "模型名称错误" | none — no pool action | 400/422 as today |
+| `account-auth` | 401/302 pre-first-byte after renewal | none — disabled | 502 `upstream_auth` |
+| `account-dead` | STS `70016`, dead passToken, OTP demand, captcha | none — disabled (permanent only for a dead passToken) | 502 as today |
+| `risk-control` | 451/461 | none — disabled, **form unverified** (§4.6.1) | 502 `account_restricted` |
+
+Rules:
+
+- **No cross-class escalation**: a `transport` failure after three `upstream-5xx` failures
+  starts the `transport` ladder at its own base (REQ-6).
+- **Every cooldown records its class** and the upstream status that caused it, so §4.9 can
+  report *why* an account is cooling (REQ-5).
+- **`ReportSuccess` clears every counter**; a successful renewal clears counters but never a
+  live cooldown, which is time-owned (REQ-6/REQ-7).
+- **The upstream's own `Retry-After` is never read**, not even internally: ladders are the
+  single source of cooldown timing (owner decision 2026-10-09, spec §10.2). It also stays
+  absent from client responses (ERRMAP-011).
+
+### 4.5.2 Risk-control signals: fail closed, recorded, never assumed
+
+451/461 are **not classified** by us: the reference implementation calls 461 permanent
+(`PROTOCOL.md:132-139`), our own docs record the form as unexercised
+(`docs/login-chain-reverse.md:169`), and we have never observed one live. Until evidence
+exists:
+
+- the account stays disabled (fail closed) and is not retried inside the request;
+- the event is recorded with account id, egress label, model, channel, upstream status and
+  body digest, timestamp, and how many other accounts on the same egress hit a
+  risk-control signal inside the configured window;
+- **`permanent` is not set on an unclassified signal** — it is set only for a dead
+  passToken, where we do have account-scoped evidence (REQ-10, INV-5);
+- the classification is obtained **passively**: whatever 451/461 events occur naturally are
+  correlated across accounts/egresses/models. Nothing in the gateway may deliberately
+  induce a risk-control response to study it (REQ-9).
+
 ### 4.6 Health transitions summary
 
 | Upstream signal | Pool action |
@@ -697,8 +746,9 @@ from first-byte latency. (simple-chat implemented the EWMA term but never wired 
 | 401 / 302 (pre-first-byte) | STS refresh + retry once; second failure → disabled |
 | STS `70016` / passToken rejected | disabled (needs re-login; admin surface or manual file edit) |
 | 451 | disabled with reason (account restricted) |
-| 461 | disabled, permanent flag (never auto-recovers) |
-| 5xx / transport / stream stall > 180s (`chat.go:62,112-120`) | cooldown from 30s |
+| 461 | disabled (fail closed); event recorded for classification; **no permanent flag** until the form is known (§4.5.2) |
+| 5xx (non-SSE 200 body) | cooldown ladder 30s → 10min |
+| transport / connection error / stream stall > 180s (`chat.go:62,112-120`) | cooldown ladder 15s → 5min, its **own** counter (§4.5.1) |
 | `event:error` "服务器繁忙，请稍后再试" (transient upstream throttle) | one retry after an 800ms pause; account stays available (platform load, not an account fault); still busy → 503 `upstream_busy` + `Retry-After: 2` |
 | `event:error` "模型名称错误" (channel refuses the model id) | 400 `model_not_available_on_channel`, no retry, log a warning (our routing/catalog disagree with upstream) |
 | `event:error` (other) / `sensitive_query` mid-stream | fail the request; no pool action (content-level, not account-level) |
@@ -717,6 +767,8 @@ from first-byte latency. (simple-chat implemented the EWMA term but never wired 
       "password": "<redacted>",  // passport login; see §8
       "enabled": true,
       "label": "test",
+      "egress": "hk1",            // optional egress LABEL only; endpoint+credentials
+                                  // come from MIMO2API_EGRESS_HK1 in the environment (§4.8)
       // runtime state (managed by the server, safe to persist):
       "user_id": "...",           // Xiaomi userId after first login
       "pass_token": "...",        // RT from passport (preferred if present)
@@ -748,6 +800,45 @@ Design notes:
   we reject duplicates at load instead, simpler and louder).
 
 ---
+
+
+### 4.8 Per-account egress (target design)
+
+Spec `docs/specs/account-pool.md` §7. An account may carry an **egress label**; accounts
+without one share the default egress `direct`.
+
+- **The file holds the label, the environment holds the secret**: `egress: "hk1"` in
+  `accounts.json`, and the endpoint (with any credentials) in `MIMO2API_EGRESS_HK1`. The
+  label is validated at startup against `[a-z0-9-]{1,16}`; a label with no matching
+  environment variable **fails startup**, listing every missing name (REQ-18). Silently
+  falling back to `direct` would send an account out of the egress the operator believes it
+  is behind.
+- **Applied to every upstream call for that account**: chat (normal and fastchat), TTS,
+  ASR, `bot/config`, renewal and the recovery probe. A partially applied egress would
+  produce exactly the mixed signals §4.5.2 has to diagnose (REQ-19).
+- **Isolation, not rotation**: no proxy pools, no health-scored egresses, no automatic
+  switch on failure (REQ-20). An account whose egress is braked waits, or the operator
+  intervenes.
+- Implementation note: today all accounts share one `http.Client` (`client.go:79`) over
+  Go's standard transport. Egress is applied per account through an injected dialer/proxy
+  function keyed on the request's account, not by varying the global fingerprint (which
+  stays a constant by design, SDD §2.4).
+
+### 4.9 Pool observability: `GET /v1/admin/pool`
+
+Spec §6, owner decision 2026-10-09. A **separate authenticated** endpoint, authenticated
+like `/v1/admin/otp/submit`. `/healthz` keeps its four aggregate numbers frozen — the
+Docker healthcheck subcommand parses that body.
+
+Per account: masked id, label, enabled, state (`available | cooldown | disabled`),
+in-flight vs capacity, EWMA first-byte latency, cooldown end **and its class + reason**,
+disabled reason and whether it is permanent, per-class failure counters (§4.5.1), last
+error code + timestamp, egress label, credential age.
+
+Suppressed by design: no cookie, no `ph`, no password, no proxy endpoint or credentials, no
+upstream body beyond a status/error digest (REQ-14). Risk-control events (§4.5.2) appear in
+the same view with their correlation counts, because that view is the instrument the
+passive classification depends on (REQ-15).
 
 ## 5. API surface
 
@@ -985,10 +1076,15 @@ MIMO2API_AUDIO_POLL_MS=1000          # TTS/ASR status poll cadence (§2.7)
 MIMO2API_AUDIO_TTS_TIMEOUT_S=60      # base per-piece deadline; +500ms per character, capped below
 MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S=900 # cap on one piece's deadline (ADR 0008)
 MIMO2API_AUDIO_ASR_TIMEOUT_S=120
-MIMO2API_SPEECH_MAX_CHARS=10000      # gateway total cap; the upstream refuses >1024 per synthesis
+MIMO2API_SPEECH_MAX_CHARS=1024       # clamps to the upstream's per-synthesis cap (ADR 0010)
 MIMO2API_TTS_VOICE=                  # empty = the account catalog's first voice
 MIMO2API_CATALOG_TTL_S=600           # per-account bot/config cache for /v1/models (§2.6)
 MIMO2API_LOG_LEVEL=info              # info|debug; debug adds the routing trace and upstream event names
+MIMO2API_COOLDOWN_TRANSPORT_S=15     # per-class ladders (§4.5.1); 5xx/429 keep 30s/60s
+MIMO2API_COOLDOWN_CAP_S=600
+MIMO2API_POOL_STATS_WINDOW_S=300     # window for correlating risk-control signals (§4.5.2)
+MIMO2API_EGRESS_HK1=<endpoint>       # per-account egress (§4.8): the label lives in
+                                     # accounts.json, the endpoint and its credentials here
 ```
 
 Default `ACCOUNTS_FILE` moves under `/data` (the container volume mount) rather than
@@ -1004,10 +1100,12 @@ the source-tree `data/` — same file, container-native path.
 |---|---|---|---|
 | Auth-expired | 401/302 pre-first-byte, STS refreshable | 1 transparent retry after refresh | refresh; fail → disabled |
 | Rate-limited | 429 | no (this request) | cooldown ladder 60s→10min |
-| Upstream sick | 5xx, transport, non-SSE 200 body (`upstream.js:208-223`), stall > 180s | 1 retry, another account, pre-first-byte only | cooldown from 30s |
-| Account dead | 451/461, STS 70016, login captcha/OTP demand | no | disabled (+permanent flag for 461) |
+| Upstream sick | 5xx, non-SSE 200 body (`upstream.js:208-223`) | 1 retry, another account, pre-first-byte only | `upstream-5xx` ladder 30s → 10min |
+| Transport | connection error, timeout, stall > 180s, EOF mid-body | 1 retry, another account, pre-first-byte only | `transport` ladder 15s → 5min, own counter (§4.5.1) |
+| Account dead | STS 70016, dead passToken, login captcha/OTP demand | no | disabled (permanent only for a dead passToken) |
+| Risk control (form unverified) | 451/461 | no | disabled, event recorded for classification; no permanent flag until the form is known (§4.5.2) |
 | Upstream busy (transient) | `event:error` "服务器繁忙，请稍后再试" | 1 retry after 800ms, pre-first-byte only | none — the account is healthy |
-| Speech too long | upstream business error "播报内容长度不能超过..." | no | none — 400 `input_too_long` (the gateway splits first, ADR 0008) |
+| Speech too long | `input` over 1024 characters | no | none — 400 `input_too_long` before any upstream work (ADR 0010) |
 | Model rejected | `event:error` "模型名称错误" | no | none — 400 to the client, warn |
 | Content-level | other `event:error`, `sensitive_query` | no | none — fail request |
 | Empty response | SSE completes, zero text, no error | 1 retry, fresh `msgId` + fresh `conversationId`, full replay (`chat.go:283-324`) | none |

@@ -137,6 +137,9 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |
 | `MIMO2API_SEC_CH_UA` | *(matching Chrome)* | Upstream `sec-ch-ua` header |
 | `MIMO2API_AUDIO_POLL_MS` | `1000` | TTS/ASR task status poll interval (the Studio's own cadence is 1s) |
+| `MIMO2API_COOLDOWN_TRANSPORT_S` | `15` | Base cooldown for the `transport` class (connection error, timeout, SSE stall, EOF mid-body) — its own ladder and counter, so a network blip no longer escalates an account's 5xx cooldown (SDD §4.5.1) |
+| `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window for correlating risk-control (451/461) signals across accounts on one egress (SDD §4.5.2) |
+| `MIMO2API_EGRESS_<LABEL>` | — | Endpoint (with credentials) for an egress label referenced by `accounts.json`. Only the label lives in the file; an unknown label fails startup (SDD §4.8) |
 | `MIMO2API_AUDIO_TTS_TIMEOUT_S` | `60` | **Base** synthesis deadline; the effective budget grows with the spoken text plus 500 ms per character: measured live at 12.8 s for 128 characters, 17.8 s for 384 and >220 s for 700, so the budget is deliberately generous |
 | `MIMO2API_AUDIO_ASR_TIMEOUT_S` | `120` | Transcription task deadline |
 | `MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S` | `900` | Cap on the synthesis budget |

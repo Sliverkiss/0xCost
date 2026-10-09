@@ -1,6 +1,6 @@
 # Spec — Account pool: attribution, risk-control form, observability, egress
 
-- **Status**: proposed (requirements and the open decisions below need the owner's call)
+- **Status**: accepted (owner decided the three open questions on 2026-10-09; see §10)
 - **Date**: 2026-10-09
 - **Owner**: operator
 - **Scope**: `internal/pool`, `internal/accounts`, the error-classification layer in
@@ -164,8 +164,8 @@ counters per class (§4), last error code + timestamp, egress label, and credent
 
 **REQ-13.** The aggregate `/healthz` contract must not change: the Docker healthcheck
 subcommand parses that body, and it is the only vendor-neutral surface. The detailed view
-is additive — either a query on `/healthz` (e.g. `?detail=1`) or a separate authenticated
-endpoint; the choice is an open decision (§10).
+is a **separate authenticated endpoint, `GET /v1/admin/pool`** (owner, §10.1), authenticated
+the same way as the existing `/v1/admin/otp/submit`.
 
 **REQ-14.** The diagnostic view must never leak a credential: no cookie, no `ph`, no
 password, no proxy URL with credentials, no upstream payload — only ids, states, reasons,
@@ -226,16 +226,18 @@ egress is braked (§5), its accounts wait or the operator intervenes.
 - **Session affinity across accounts**: sticky sessions pin an account on purpose
   (ADR 0009); the pool must not silently move a live conversation to another account.
 
-## 10. Open decisions (owner)
+## 10. Decisions (owner, 2026-10-09)
 
-1. §6 REQ-13: detailed view as `GET /healthz?detail=1` or a separate authenticated
-   endpoint? (Recommendation: separate `/v1/admin/pool`, so the healthcheck contract
-   stays frozen and the detail view can require admin auth like `/v1/admin/otp/submit`.)
-2. §3: use the upstream's own `Retry-After` hint *internally* to size cooldowns (still
-   never echoed to clients)? (Recommendation: yes for 429 only.)
-3. §7 REQ-16: label vocabulary — operator-chosen free text (`hk1`, `sg2`) or a fixed
-   enumeration validated at startup? (Recommendation: free text, validated non-empty and
-   `[a-z0-9-]{1,16}`, so the operator can name egresses the way they think about them.)
+1. §6 REQ-13 — **decided**: a separate authenticated `GET /v1/admin/pool`; `/healthz`
+   keeps its four aggregate numbers frozen for the healthcheck subcommand.
+2. §3: use the upstream's own `Retry-After` hint *internally* to size cooldowns? —
+   **decided: no.** Cooldowns are sized by our own ladders only (owner: "完全不用上游的
+   数字，只用我们自己的阶梯"). The upstream's number is still never echoed to clients
+   (ERRMAP-011). Consequence: REQ-2's per-class base/cap constants are the single source
+   of cooldown timing, and nothing in the pool may read a `Retry-After` value.
+3. §7 REQ-16: label vocabulary — **decided**: free text, validated at startup against
+   `[a-z0-9-]{1,16}`, so the operator names egresses the way they think about them
+   (`hk1`, `sg2`) without a vocabulary the gateway has to be edited to extend.
 
 ## 11. Acceptance plan
 
