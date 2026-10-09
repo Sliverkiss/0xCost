@@ -1,28 +1,35 @@
 # mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
 # in-binary healthcheck (distroless has no curl/wget).
 #
-# The tool layer (ADR 0012) is opt-in: toolforge starts alongside, and the
-# gateway forwards tool-bearing chat requests to it only when
-# MIMO2API_TOOLFORGE_URL is set. Both hops authenticate with the same key
-# (MIMO2API_TOOL_KEY), which must also be in MIMO2API_API_KEYS. Other endpoints
-# (models, audio, admin, healthz) never touch the middleware.
+# 8081 is the deployment's single entry point (ADR 0012):
+#
+#   client :8081 --(Bearer $MIMO2API_TOOL_KEY)--> toolforge
+#                 ├── /v1/chat/completions → tools stripped, XYML injected, call
+#                 │   parsed back; the model call runs on the gateway's own path
+#                 └── every other path → proxied to mimo2api verbatim
+#                     (/v1/models, /v1/audio/*, /v1/admin/*), same key
+#
+# One address, one key: the gateway needs no forwarding code, no internal surface
+# and no second credential. The gateway's 8080 is not published (it stays on the
+# compose network) — uncomment the mapping there for direct access.
 services:
   mimo2api:
     build: .
     image: mimo2api
     container_name: mimo2api
-    ports:
-      - "8080:8080"
+    # Not published: reachable as mimo2api:8080 on the compose network, and by
+    # clients through the tool layer's port below. Uncomment for direct access.
+    # ports:
+    #   - "8080:8080"
     volumes:
       - ./data:/data # accounts.json + runtime state (SDD §4.7)
     environment:
       - MIMO2API_ACCOUNTS_FILE=/data/accounts.json
-      - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
+      # The one key, shared by both hops: the middleware accepts it, then passes
+      # the caller's own header through, and this line is what authorises it here.
+      - MIMO2API_API_KEYS=${MIMO2API_TOOL_KEY:-}
       - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
       - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
-      # Empty = tool calling disabled; set to enable the middleware below.
-      - MIMO2API_TOOLFORGE_URL=${MIMO2API_TOOLFORGE_URL:-}
-      - MIMO2API_TOOLFORGE_KEY=${MIMO2API_TOOL_KEY:-}
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s
@@ -31,27 +38,27 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Function-calling middleware: implements tools/tool_calls on a model that has
-  # none, by prompt protocol. Not published by default — callers reach it through
-  # the gateway (compose `expose` is enough for that).
-  # The middleware is vendored in this repository (deploy/toolforge, see its
-  # PROVENANCE.md) and built from there: no clone, no credentials, and the change
-  # we depend on is ordinary code in our tree. Edit it and rebuild.
+  # The tool layer: chat with tools (and, if you point everything here, plain chat
+  # too — with no tools in the request it is a straight passthrough).
+  # Vendored in this repository (deploy/toolforge, see its PROVENANCE.md) and built
+  # from there: no clone, no GitHub access, no credentials at build time. Edit that
+  # tree and rebuild.
   toolforge:
     build:
       context: ./deploy/toolforge
       dockerfile: Dockerfile
     image: mimo2api-toolforge
     container_name: mimo2api-toolforge
-    expose:
-      - "8080"
+    ports:
+      - "8081:8080" # the deployment's single entry point
     environment:
       - MIMO2API_TOOL_KEY=${MIMO2API_TOOL_KEY:-}
-      - MIMO2API_RAW_URL=http://mimo2api:8080/v1/raw
+      - MIMO2API_UPSTREAM_URL=http://mimo2api:8080/v1
     volumes:
       - ./deploy/toolforge/config.yaml:/app/config.yaml:ro
     depends_on:
-      - mimo2api
+      mimo2api:
+        condition: service_healthy
     healthcheck:
       test:
         - "CMD-SHELL"

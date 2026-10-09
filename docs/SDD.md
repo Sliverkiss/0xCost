@@ -1227,29 +1227,38 @@ literals. (An earlier draft of this SDD carried them inline; scrubbed
 
 MiMo Studio implements no function calling (§2.1: the chat body has no `tools`
 field, and `bot/config` advertises no such capability). `tools` on the wire is
-therefore served by an external middleware (ToolForge) that injects an XYML
-prompt protocol and parses the tool call out of the model's text.
+therefore served by an external middleware (ToolForge) that injects an XYML prompt
+protocol and parses the tool call out of the model's text. It is vendored in this
+repository (`deploy/toolforge/`, PROVENANCE.md) and sits **in front of** chat:
 
 ```
-client ──tools──► POST /v1/chat/completions ──forward──► middleware ──prompt──►
-                 POST /v1/raw/chat/completions ──► pool ──► MiMo
+client :8081 --(Bearer KEY)--> middleware
+                              ├── /v1/chat/completions, /v1/responses → handled here,
+                              │   the model call then runs on /v1/chat/completions
+                              └── every other path → relayed verbatim to the gateway
 ```
 
-* **Trigger** (`needsToolLayer`): `tools`, `functions`, `tool_choice`, or any
-  message with `role: "tool"`. Nothing else is forwarded — a plain chat request
-  has no dependency on the middleware.
-* **Forward**: the raw body, the caller's `Authorization`, and the caller's
-  `X-Mimo-*` extensions (§4.3.1 session carriers). The answer is copied back
-  as-is, SSE included.
-* **Callback**: `POST /v1/raw/chat/completions`, authenticated like every other
-  path, and marked raw so it never forwards again (the recursion guard).
-* **Failure**: `502 tool_layer_unavailable`, never a silent answer without the
-  tool calls.
-* **Session identity**: unchanged — the caller's credential reaches the callback
-  hop through the middleware's `key_passthrough`, so REQ-3/INV-2 hold. A client
-  that mixes plain and tool turns should pin `session_id`, because the derived
-  identity includes the system prompt the middleware rewrites.
-* **Config**: `MIMO2API_TOOLFORGE_URL` (empty = off).
+* **One hop, one key**: `MIMO2API_TOOL_KEY` is the caller's credential, the
+  middleware's `allowed_keys` entry, and an entry in `MIMO2API_API_KEYS`. Its
+  `key_passthrough` + `passthrough_headers` carry the caller's `Authorization` and
+  `X-Mimo-*` (§4.3.1 session carriers) to the second hop, so REQ-3/INV-2 hold. A
+  client that needs its own namespace pins `X-Mimo-Session-Id`; a client that mixes
+  plain and tool turns should pin it too, because the derived identity includes the
+  system prompt the middleware rewrites.
+* **No gateway-side plumbing**: the middleware removes `tools` before calling us, so
+  the body that arrives has nothing to trigger a forward — no internal path, no
+  recursion guard, no forwarding code, and no configuration on our side.
+* **One published port**: `features.catch_all_proxy` relays the paths the middleware
+  does not implement (`/v1/models`, `/v1/audio/*`, `/v1/admin/*`) to the gateway
+  verbatim — method, query, body, headers — so a client keeps one base_url and one
+  key; `/healthz` on that port reports the gateway's health as well.
+* **Failure**: the middleware is a separate process, so a caller pointed at :8081
+  sees a connection error when it is down; a tool request sent to :8080 keeps
+  today's behaviour (tools reported as dropped in `X-Mimo-Warnings`). Neither ever
+  answers as if the model had ignored its tools.
+* **Deployment**: `MIMO2API_TOOL_KEY` (compose passes it to both services; unset =
+  nothing is reachable). The gateway's port is not published: it is reachable on the
+  compose network, and clients come in through the middleware.
 
 ## Appendix B — Open questions (to resolve during implementation spike)
 

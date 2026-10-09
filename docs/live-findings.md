@@ -254,6 +254,31 @@ with the same tools would land two different callers in the same session. Live
 observation of the headers at the callback hop: `authorization: Bearer
 sk-mimo-tool-demo` (the caller's own key) and the caller's `X-Mimo-Session-Id`.
 
+### LIVE-TOOLS-002 — the deployment's single entry point (2026-10-09)
+
+`docker compose up -d --build` with `MIMO2API_TOOL_KEY` set, one published port
+(8081), the gateway's 8080 left on the compose network. Real account, real model,
+real containers:
+
+| Call on :8081 | Result |
+|---|---|
+| `GET /healthz` | `{"status":"ok", ..., "upstream_health":{"status":"ok","code":200}}` |
+| `GET /v1/models` | 200, the gateway's real catalog (7 models) — relayed |
+| `POST /v1/chat/completions` + `tools` | 200, 18.3 s, `finish_reason: tool_calls`, `get_weather({"city":"广州"})` |
+| `POST /v1/audio/speech` | 200, 5.8 s, `content-type: audio/wav`, 153,644 bytes, RIFF/WAVE header intact |
+| `POST /v1/audio/transcriptions` (multipart, the WAV above) | 200, 2.8 s, `单口透传验收，今天天气不错。` |
+| `POST /v1/chat/completions` without tools | 200, 40.5 s, plain answer |
+| `GET /v1/admin/pool` | 200 — the admin surface relayed like any other path |
+| `GET /v1/models/nope` | 404 — the gateway's own status, not a proxy artefact |
+| wrong key / no key | 401 both |
+| `curl :8080/healthz` | connection refused — 8080 is not published |
+
+Two findings on the way, both fixed in the vendored copy: the config loader builds
+`FeaturesConfig` field by field, so the new flag was silently off until it was listed
+there (visible only because `/healthz` did not report `upstream_health`); and a
+client is not the only thing that talks to `httpx.AsyncClient` — the first version of
+the relay's tests patched the class globally and broke the test client itself.
+
 One oddity seen while running this, not caused by the tool layer and not yet
 explained: during round 2 the gateway logged an upstream `web_search` event with
 41 KB of results while `web_search_status` was left at its default (`disabled`).

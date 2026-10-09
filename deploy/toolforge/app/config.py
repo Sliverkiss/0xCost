@@ -77,6 +77,10 @@ class FeaturesConfig:
     # key_passthrough=true is shorthand for adding "authorization".
     passthrough_headers: List[str] = field(default_factory=list)
     model_passthrough: bool = False
+    # This middleware is the deployment's only published port: paths it does not
+    # implement (/v1/models, /v1/audio/*, /v1/admin/*) are passed to the upstream
+    # gateway verbatim. Off by default: upstream, the middleware is chat-only.
+    catch_all_proxy: bool = False
     sanitize_claude_code: bool = True
     # Phase 3
     enable_cli_profiles: bool = True
@@ -188,6 +192,9 @@ def load_config(path: str | Path) -> AppConfig:
         upstreams=upstreams,
         routing=RoutingConfig(aliases=aliases),
         features=FeaturesConfig(
+            # Every feature flag is listed here explicitly: the loader does not pass
+            # unknown keys through, so a flag missing from this call is silently off.
+            catch_all_proxy=bool(features_raw.get("catch_all_proxy", False)),
             fc_mode=str(features_raw.get("fc_mode") or "auto").strip(),
             enable_streaming=bool(features_raw.get("enable_streaming", True)),
             enable_fc_error_retry=bool(features_raw.get("enable_fc_error_retry", True)),

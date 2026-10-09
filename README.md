@@ -111,34 +111,47 @@ does not create a conversation row per request.
 
 ## Function calling (ADR 0012)
 
-MiMo Studio has no native function calling, so `tools` in a request is served by a
-middleware that injects a prompt protocol and parses the call back out of the
-model's text:
+MiMo Studio has no native function calling, so `tools` is served by a middleware that
+is the deployment's **single entry point**: it strips `tools`, injects an XYML prompt
+protocol, parses the call back out of the model's text, and calls this gateway's
+ordinary chat surface. Everything it does not implement is relayed to us verbatim:
 
 ```
-client ──tools──► mimo2api ──forward──► ToolForge ──XYML prompt + parse──►
-                                     ├──► mimo2api /v1/raw/chat/completions ──► MiMo
+client :8081 --(Bearer KEY)--> toolforge
+                              ├── /v1/chat/completions → tools handled here, then
+                              │   the model call runs on the gateway's own path
+                              └── anything else (/v1/models, /v1/audio/*, /v1/admin/*)
+                                  → relayed unchanged, same key
 ```
 
-- Opt-in: `MIMO2API_TOOLFORGE_URL` (empty = off, and then nothing changes).
-  `docker compose up -d --build` with `MIMO2API_TOOL_KEY` set brings the middleware
-  up alongside; only tool-bearing requests pay the extra hop. The middleware is
-  vendored under `deploy/toolforge/` (see its `PROVENANCE.md`) and built from this
-  repo — no clone, no GitHub access, no credentials at build time.
-- Only `tools` / `functions` / `tool_choice` / `role:"tool"` turns are forwarded —
-  plain chat, models, audio and admin stay exactly as they are.
-- The caller's own key is forwarded on both hops (our copy of the middleware does
-  that; see its `PROVENANCE.md`), so session state stays scoped per caller. Put the key in
-  `MIMO2API_API_KEYS` **and** in `deploy/toolforge/config.yaml`'s
-  `allowed_keys` (the compose passes `MIMO2API_TOOL_KEY` to both).
-- The middleware never runs tools; the client executes them and sends the result
-  back as a `role:"tool"` turn, which is forwarded like any other tool turn.
-- Down middleware = `502 tool_layer_unavailable` for tool requests. An answer
-  without the tool calls would look like a model that ignored its tools.
+- **One address, one key.** Clients keep a single `base_url` (`:8081`) and a single
+  key; audio, models and admin behave exactly as if the gateway were called
+  directly, because they are — the relay passes method, query, body (multipart
+  uploads, binary audio) and the caller's headers through, and `/healthz` there
+  reports the gateway's health too.
+- **One key, both hops.** `MIMO2API_TOOL_KEY` is the key the client sends, the
+  middleware's `allowed_keys` entry, and an entry in this gateway's
+  `MIMO2API_API_KEYS`. Our copy of the middleware passes the caller's own
+  `Authorization` and `X-Mimo-*` headers through to us (`key_passthrough`,
+  `passthrough_headers`) so the model call stays in the caller's session namespace.
+- **The gateway knows nothing about it.** There is no forwarding code, no internal
+  path and no recursion to guard: by the time a chat request reaches us the body has
+  no `tools` in it. Reaching the gateway directly (`8080`, on the compose network, or
+  published if you uncomment the mapping) gives today's behaviour for tool-bearing
+  requests: `tools` reported as dropped in `X-Mimo-Warnings`.
+- **The middleware never runs tools.** The client executes them and sends the result
+  back as a `role:"tool"` turn, which the middleware folds into the prompt protocol.
+- **The middleware is vendored** (`deploy/toolforge/`, see its `PROVENANCE.md`) and
+  built from this repo: no clone, no GitHub access, no credentials at build time.
+  `docker compose up -d --build` with `MIMO2API_TOOL_KEY` set starts both; without
+  it the middleware is inert and nothing changes.
 
-Live （real account, real model, both rounds）: a `get_weather(city)` request came
-back as `finish_reason: tool_calls` with `{"city":"东京"}`, and feeding that result
-back produced the final natural-language answer.
+Live (real account, real model, real containers, one published port): `get_weather(city)`
+through `:8081` came back as `finish_reason: tool_calls` with `{"city":"上海"}` and the
+result fed back produced the final answer; `/v1/models` returned the gateway's real
+7-model catalog; `/v1/audio/speech` returned real WAV bytes and `/v1/audio/transcriptions`
+a real transcript — both through the relay, multipart upload included. Details in
+`docs/live-findings.md` (LIVE-TOOLS-001).
 
 ## Superseded models (ADR 0011)
 
@@ -202,8 +215,6 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_SPEECH_MAX_CHARS` | `1024` | `/v1/audio/speech` input cap, clamped to the upstream's **1024 character** per-synthesis limit ("播报内容长度不能超过1024"). Lower it to refuse earlier; a higher value cannot take effect (ADR 0010) |
 | `MIMO2API_TTS_VOICE` | *(empty)* | Default voice id/name; empty = the account catalog's first voice |
 | `MIMO2API_CATALOG_TTL_S` | `600` | How long an account's Studio catalog (`bot/config`) is cached for `/v1/models` |
-| `MIMO2API_TOOLFORGE_URL` | – | Function-calling middleware endpoint; empty = tool calling disabled (ADR 0012) |
-| `MIMO2API_TOOLFORGE_KEY` | – | Credential presented to the middleware when the caller brought none (only for deployments with `MIMO2API_API_KEYS` empty) |
 | `MIMO2API_LOG_LEVEL` | `info` | `info` or `debug`. `debug` adds a per-request routing trace (session decision with the resolved id/source/frontier, the conversation/dialog id and delta size, or a full replay with the replay cap), plus the upstream event names of each turn (which is how the empty-citations bug was found) |
 
 Security: with no API keys configured the server binds `127.0.0.1` only —

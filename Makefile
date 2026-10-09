@@ -82,6 +82,13 @@ hygiene: ## Fail if real credentials (phones/password/pass+serviceToken) leak in
 	[ $$fail -eq 0 ] || { echo "hygiene: FAILED (docs/TDD.md §6.7)"; exit 1; }; \
 	echo "hygiene: clean — no real credentials outside data/"
 
+# The tool-calling middleware (ADR 0012) is vendored: run its own pytest suite.
+# Containerised so the Go toolchain needs no Python environment. Its `live`-marked
+# test needs real upstream credentials and is excluded.
+test-toolforge:
+	docker run --rm -v "$$PWD/deploy/toolforge:/app" -w /app python:3.12-slim \
+		sh -c "pip install -q -r requirements.txt pytest pytest-asyncio && python -m pytest -q -m 'not live'"
+
 test-docker: ## Run the DOCKER-001..006 harness (skips when docker is absent).
 	@bash docker/docker_test.sh
 

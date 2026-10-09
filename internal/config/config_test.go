@@ -37,33 +37,6 @@ func testEnv(t *testing.T, kv map[string]string) {
 	})
 }
 
-// CONF-TOOL: the tool layer is opt-in and comes from the environment.
-func TestToolLayerConfig(t *testing.T) {
-	testEnv(t, nil)
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.ToolLayerURL() != "" || c.ToolLayerKey() != "" {
-		t.Errorf("defaults = (%q, %q), want the tool layer off", c.ToolLayerURL(), c.ToolLayerKey())
-	}
-
-	testEnv(t, map[string]string{
-		"MIMO2API_TOOLFORGE_URL": "http://toolforge:8080/v1/chat/completions",
-		"MIMO2API_TOOLFORGE_KEY": "sk-demo",
-	})
-	c, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.ToolLayerURL() != "http://toolforge:8080/v1/chat/completions" {
-		t.Errorf("url = %q", c.ToolLayerURL())
-	}
-	if c.ToolLayerKey() != "sk-demo" {
-		t.Errorf("key = %q", c.ToolLayerKey())
-	}
-}
-
 // CONF-001: defaults with unset env.
 func TestDefaults(t *testing.T) {
 	testEnv(t, nil)

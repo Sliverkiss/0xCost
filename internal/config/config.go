@@ -70,9 +70,6 @@ const (
 	// correlated across accounts on one egress (SDD §4.5.2).
 	DefaultPoolStatsWindow = 5 * time.Minute
 	DefaultProbeInterval   = 60 * time.Second
-	// DefaultToolLayerURL is empty: the function-calling middleware is opt-in
-	// (ADR 0012). When set, tool-bearing chat requests are forwarded to it.
-	DefaultToolLayerURL = ""
 )
 
 // Config is the immutable runtime configuration (CONF-006: no mutation
@@ -96,8 +93,6 @@ type Config struct {
 	keepalive            time.Duration
 	audioPoll            time.Duration
 	catalogTTL           time.Duration
-	toolLayerURL         string
-	toolLayerKey         string
 	ttsTimeout           time.Duration
 	ttsMaxTimeout        time.Duration
 	asrTimeout           time.Duration
@@ -145,7 +140,6 @@ func Load() (*Config, error) {
 		keepalive:            DefaultKeepalive,
 		audioPoll:            DefaultAudioPoll,
 		catalogTTL:           DefaultCatalogTTL,
-		toolLayerURL:         DefaultToolLayerURL,
 		ttsTimeout:           DefaultTTSTimeout,
 		ttsMaxTimeout:        DefaultTTSMaxTimeout,
 		asrTimeout:           DefaultASRTimeout,
@@ -227,8 +221,6 @@ func Load() (*Config, error) {
 	if c.poolStatsWindow, err = getenvSeconds("MIMO2API_POOL_STATS_WINDOW_S", DefaultPoolStatsWindow); err != nil {
 		return nil, err
 	}
-	c.toolLayerURL = strings.TrimSpace(os.Getenv("MIMO2API_TOOLFORGE_URL"))
-	c.toolLayerKey = strings.TrimSpace(os.Getenv("MIMO2API_TOOLFORGE_KEY"))
 	if c.catalogTTL, err = getenvSeconds("MIMO2API_CATALOG_TTL_S", DefaultCatalogTTL); err != nil {
 		return nil, err
 	}
@@ -288,12 +280,6 @@ func (c *Config) AudioPoll() time.Duration  { return c.audioPoll }
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
 
-// ToolLayerURL is the function-calling middleware endpoint; empty = disabled.
-func (c *Config) ToolLayerURL() string { return c.toolLayerURL }
-
-// ToolLayerKey is the credential presented to the middleware when the caller
-// brought none (deployments that run their gateway with auth open).
-func (c *Config) ToolLayerKey() string      { return c.toolLayerKey }
 func (c *Config) TTSTimeout() time.Duration { return c.ttsTimeout }
 
 // TTSMaxTimeout caps the per-piece poll budget (see TTSTimeout).

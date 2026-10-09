@@ -21,7 +21,6 @@ import (
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/session"
-	"github.com/yg/mimo2api/internal/toollayer"
 )
 
 // Server wires the whole stack behind one http.Handler (SDD §3).
@@ -40,10 +39,6 @@ type Server struct {
 	debug        bool
 	sessionWait  time.Duration
 	forkPolicy   string
-
-	// toolLayer is the function-calling middleware (ADR 0012); nil disables it
-	// and leaves every request on the direct path.
-	toolLayer *toollayer.Client
 
 	// Web-surface audio + catalog (audio.go).
 	audioConvs     *mimo.ConversationCache
@@ -184,9 +179,6 @@ type Options struct {
 	ASRTimeout     time.Duration // transcription deadline (default 120s)
 	SpeechMaxChars int           // /v1/audio/speech input cap (default 10000)
 	DefaultVoice   string        // upstream voice id/name; empty = first in the catalog
-	// ToolLayer is the function-calling middleware; nil = disabled, and
-	// tool-bearing requests keep today's behaviour (tools reported as dropped).
-	ToolLayer *toollayer.Client
 }
 
 // New builds a Server. All collaborators must be wired (real or test
@@ -252,7 +244,6 @@ func New(opts Options) *Server {
 		keepalive:      opts.Keepalive,
 		logger:         logger,
 		debug:          opts.Debug,
-		toolLayer:      opts.ToolLayer,
 		audioConvs:     mimo.NewConversationCache(0),
 		audioPoll:      opts.AudioPoll,
 		catalogTTL:     opts.CatalogTTL,
@@ -272,9 +263,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.auth(s.handleModels))
 	mux.HandleFunc("GET /v1/models/{id}", s.auth(s.handleModelByID))
 	mux.HandleFunc("POST /v1/chat/completions", s.auth(s.handleChat))
-	// Internal: the path the tool layer calls back on. Authenticated like the
-	// public surface, and never forwarded onward (ADR 0012).
-	mux.HandleFunc("POST /v1/raw/chat/completions", s.auth(s.handleRawChat))
 	// Web-surface audio (M18) — OpenAI-compatible shapes.
 	mux.HandleFunc("POST /v1/audio/speech", s.auth(s.handleSpeech))
 	mux.HandleFunc("POST /v1/audio/transcriptions", s.auth(s.handleTranscriptions))

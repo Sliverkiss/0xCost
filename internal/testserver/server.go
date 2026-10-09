@@ -19,7 +19,6 @@ import (
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/session"
 	"github.com/yg/mimo2api/internal/testutil"
-	"github.com/yg/mimo2api/internal/toollayer"
 )
 
 // TestAccount describes one scripted account for NewTestServer.
@@ -57,13 +56,10 @@ type TestServerOptions struct {
 	Now          func() time.Time
 	Probe        pool.ProbeFunc
 	Renew        pool.RenewFunc
-	Debug        bool // MIMO2API_LOG_LEVEL=debug equivalent
-	// ToolLayer is the function-calling middleware client (ADR 0012); nil keeps
-	// every request on the direct path.
-	ToolLayer   *toollayer.Client
-	SessionWait time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
-	ForkPolicy  string        // "wait" (default) or "fork"
-	LogSink     io.Writer     // nil = discard-free default logger; set to capture trace lines
+	Debug        bool          // MIMO2API_LOG_LEVEL=debug equivalent
+	SessionWait  time.Duration // fork-policy bound (SDD §4.3.1, default 2s)
+	ForkPolicy   string        // "wait" (default) or "fork"
+	LogSink      io.Writer     // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
 	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
 	// httptest proxy and watch what leaves through it.
@@ -151,11 +147,11 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Accounts:     store,
 		Sessions:     sessions,
 		Client:       client,
-		DefaultModel: opts.DefaultModel, ToolLayer: opts.ToolLayer,
-		ReplayCap: opts.ReplayCap,
-		Keepalive: keepalive,
-		Logger:    logger,
-		Debug:     opts.Debug,
+		DefaultModel: opts.DefaultModel,
+		ReplayCap:    opts.ReplayCap,
+		Keepalive:    keepalive,
+		Logger:       logger,
+		Debug:        opts.Debug,
 
 		SessionWait: opts.SessionWait,
 		ForkPolicy:  opts.ForkPolicy,

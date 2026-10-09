@@ -1,16 +1,27 @@
 # ToolForge config for the mimo2api stack (mount at /app/config.yaml).
 #
-# Two hops, one credential, and each hop is authenticated:
+# This is the deployment's ONLY published port (`catch_all_proxy`), so one address
+# and one key serve the whole API:
 #
-#   client --(Authorization: Bearer $MIMO2API_TOOL_KEY)--> toolforge
-#   toolforge --(the same header, passed through)--> mimo2api /v1/raw/chat/completions
+#   client :8081 --(Authorization: Bearer $MIMO2API_TOOL_KEY)--> toolforge
+#                 ├── /v1/chat/completions, /v1/responses → answered here (tools,
+#                 │   XYML protocol, parse back), model call on the gateway
+#                 └── everything else (/v1/models, /v1/audio/*, /v1/admin/*) →
+#                     passed through verbatim, same headers, same bytes
 #
-# `key_passthrough` is what makes the second hop carry the caller's identity
-# instead of this file's key: the gateway scopes sessions per credential, so a
-# single shared key would let two callers collide into one session.
+# Why in front: MiMo Studio has no native function calling (no `tools` in the
+# request schema, no capability in the catalog). Something has to strip `tools`,
+# inject a prompt protocol and parse the call back out of the model's text, and
+# the model call itself has to stay on the gateway's path — that is where the
+# account pool, the session identity and the egress rules live. Putting the
+# middleware in front costs one hop; putting it behind the gateway costs two and
+# needs an internal surface that can never be forwarded again.
 #
-# The gateway enforces the same key set (MIMO2API_API_KEYS), so the value has to
-# appear there too. Give it the same value; there is no reason for a second one.
+# `key_passthrough` is what carries the caller's credential to the second hop:
+# sessions are scoped per credential, so the header has to arrive intact. One key
+# serves both hops (MIMO2API_TOOL_KEY) — with a single shared key, callers that
+# send the same first message with the same tools derive the same session; a
+# client that needs its own namespace sends X-Mimo-Session-Id.
 
 server:
   host: "0.0.0.0"
@@ -25,8 +36,9 @@ client_authentication:
 upstreams:
   - name: mimo2api
     type: openai_compat
-    # The internal raw surface: the same chat, minus this middleware (ADR 0012).
-    base_url: "${MIMO2API_RAW_URL:-http://mimo2api:8080/v1/raw}"
+    # The gateway's ordinary chat surface: no tools in the body by the time we
+    # send it, so nothing here can recurse.
+    base_url: "${MIMO2API_UPSTREAM_URL:-http://mimo2api:8080/v1}"
     # Only used when a caller arrives without a credential of its own.
     api_key: "${MIMO2API_TOOL_KEY}"
     models: ["*"]
@@ -36,10 +48,17 @@ upstreams:
     is_default: true
 
 features:
+  # Single entry point: paths this middleware does not implement are proxied to the
+  # gateway verbatim (method, query, body, headers, caller's own key), and /healthz
+  # reports the gateway's health too.
+  catch_all_proxy: true
   fc_mode: auto                 # no tools in the request → pure passthrough
   enable_streaming: true
+  # One re-ask when the model's answer is unparseable. Each attempt is a full
+  # model turn (tens of seconds), and a retry cannot fix a busy upstream — the
+  # gateway already retries that case itself.
   enable_fc_error_retry: true
-  fc_error_retry_max: 2
+  fc_error_retry_max: 1
   strip_think_tags: true
   inject_protocol: XYML
   convert_developer_to_system: true

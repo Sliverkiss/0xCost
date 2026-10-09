@@ -13,6 +13,7 @@ from .auth import require_client_auth
 from .config import AppConfig, default_config_path, load_config
 from .adapters.openai_chat import handle_chat_completions
 from .adapters.openai_responses import handle_responses
+from .upstream.proxy import proxy_request, upstream_health
 from .upstream.router import UpstreamRouter
 from .util.metrics import GLOBAL_METRICS
 
@@ -45,11 +46,17 @@ def create_app(config: Optional[AppConfig] = None, *, config_path: Optional[str]
     @app.get("/healthz")
     @app.get("/health")
     async def healthz() -> Dict[str, Any]:
-        return {
+        body: Dict[str, Any] = {
             "status": "ok",
             "version": __version__,
             "upstreams": [u.name for u in config.upstreams],
         }
+        if config.features.catch_all_proxy:
+            # This port answers for the deployment, so it reports on the gateway too.
+            body["upstream_health"] = await upstream_health(config)
+            if body["upstream_health"].get("status") != "ok":
+                body["status"] = "degraded"
+        return body
 
     @app.get("/metrics")
     async def metrics() -> Dict[str, Any]:
@@ -57,11 +64,16 @@ def create_app(config: Optional[AppConfig] = None, *, config_path: Optional[str]
             return {"enabled": False}
         return GLOBAL_METRICS.snapshot()
 
-    @app.get("/v1/models")
-    async def list_models(request: Request, _: str = Depends(require_client_auth)) -> Dict[str, Any]:
-        router = request.app.state.router_upstreams
-        data = await router.list_models()
-        return {"object": "list", "data": data}
+    # With catch_all_proxy the gateway owns the catalog: /v1/models is proxied like
+    # every other path it serves, so a client sees the real models, not this
+    # middleware's view of its upstreams.
+    if not config.features.catch_all_proxy:
+
+        @app.get("/v1/models")
+        async def list_models(request: Request, _: str = Depends(require_client_auth)) -> Dict[str, Any]:
+            router = request.app.state.router_upstreams
+            data = await router.list_models()
+            return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")
     @app.post("/chat/completions")
@@ -98,6 +110,15 @@ def create_app(config: Optional[AppConfig] = None, *, config_path: Optional[str]
             fc_header=x_toolforge_fc_mode,
             inbound_headers=dict(request.headers),
         )
+
+    if config.features.catch_all_proxy:
+
+        @app.api_route(
+            "/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+        )
+        async def catch_all(request: Request, _: str = Depends(require_client_auth)):
+            return await proxy_request(request, request.app.state.config)
 
     return app
 
