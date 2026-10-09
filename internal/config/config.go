@@ -66,7 +66,10 @@ const (
 	// fault than an upstream 5xx, so it cools for less and escalates less far.
 	DefaultCooldownTransport    = 15 * time.Second
 	DefaultCooldownTransportCap = 5 * time.Minute
-	DefaultProbeInterval        = 60 * time.Second
+	// DefaultPoolStatsWindow: the window inside which risk-control signals are
+	// correlated across accounts on one egress (SDD §4.5.2).
+	DefaultPoolStatsWindow = 5 * time.Minute
+	DefaultProbeInterval   = 60 * time.Second
 )
 
 // Config is the immutable runtime configuration (CONF-006: no mutation
@@ -102,6 +105,7 @@ type Config struct {
 	cooldown429          time.Duration
 	cooldownTransport    time.Duration
 	cooldownTransportCap time.Duration
+	poolStatsWindow      time.Duration
 	cooldown5xx          time.Duration
 	cooldownCap          time.Duration
 	probeInterval        time.Duration
@@ -214,6 +218,9 @@ func Load() (*Config, error) {
 	if c.cooldownTransportCap, err = getenvSeconds("MIMO2API_COOLDOWN_TRANSPORT_CAP_S", DefaultCooldownTransportCap); err != nil {
 		return nil, err
 	}
+	if c.poolStatsWindow, err = getenvSeconds("MIMO2API_POOL_STATS_WINDOW_S", DefaultPoolStatsWindow); err != nil {
+		return nil, err
+	}
 	if c.catalogTTL, err = getenvSeconds("MIMO2API_CATALOG_TTL_S", DefaultCatalogTTL); err != nil {
 		return nil, err
 	}
@@ -290,8 +297,11 @@ func (c *Config) CooldownTransport() time.Duration { return c.cooldownTransport 
 func (c *Config) CooldownTransportCap() time.Duration {
 	return c.cooldownTransportCap
 }
-func (c *Config) ProbeInterval() time.Duration { return c.probeInterval }
-func (c *Config) LogLevel() string             { return c.logLevel }
+
+// PoolStatsWindow is the risk-control correlation window (SDD §4.5.2).
+func (c *Config) PoolStatsWindow() time.Duration { return c.poolStatsWindow }
+func (c *Config) ProbeInterval() time.Duration   { return c.probeInterval }
+func (c *Config) LogLevel() string               { return c.logLevel }
 
 // Debug reports whether the operator asked for the verbose tracing level.
 // Anything other than "debug" (case-insensitive) keeps the default quiet

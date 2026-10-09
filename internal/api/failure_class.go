@@ -12,6 +12,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -34,6 +36,36 @@ func classifyPoolFailure(err error) (pool.FailureClass, int) {
 		return pool.ClassTransport, 0
 	}
 	return pool.ClassUpstream5xx, 0
+}
+
+// isRiskControl reports a 451/461 — the class whose form we have not verified
+// (SDD §4.5.2). Kept separate from isAccountDead so the risk-control path can
+// record evidence and stay recoverable.
+func isRiskControl(err error) bool {
+	var ue *mimo.UpstreamError
+	return errors.As(err, &ue) && (ue.StatusCode == 451 || ue.StatusCode == 461)
+}
+
+// upstreamStatus returns the upstream's HTTP status, or 0 when there was none.
+func upstreamStatus(err error) int {
+	var ue *mimo.UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode
+	}
+	return 0
+}
+
+// bodyDigest is the SHA-256 of the upstream's response body, hex-encoded. The
+// body itself is never stored: it can carry account-identifying material, and a
+// digest is enough to tell two events apart when reading the evidence later
+// (INV-4).
+func bodyDigest(err error) string {
+	var ue *mimo.UpstreamError
+	if !errors.As(err, &ue) || ue.Body == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(ue.Body))
+	return hex.EncodeToString(sum[:8])
 }
 
 // isUpstream5xx reports whether the upstream answered with a 5xx.

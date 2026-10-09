@@ -25,6 +25,9 @@ type TestAccount struct {
 	ID     string
 	PH     string
 	Cookie string
+	// Egress is the account's egress LABEL (SDD §4.8); empty means "direct". No
+	// dialling is involved in tests — the label is what correlation keys on.
+	Egress string
 	Script []testutil.ScriptStep // initial upstream script (nil = default sse_basic)
 }
 
@@ -84,6 +87,7 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		}
 		storeAccounts = append(storeAccounts, accounts.Account{
 			ID:      a.ID,
+			Egress:  a.Egress,
 			Enabled: true,
 			Session: &accounts.Session{Cookie: a.Cookie, PH: a.PH, FetchedAt: time.Now().Unix()},
 		})

@@ -20,6 +20,7 @@ func testEnv(t *testing.T, kv map[string]string) {
 		"MIMO2API_SESSION_WAIT_MS", "MIMO2API_SESSION_FORK_POLICY",
 		"MIMO2API_COOLDOWN_429_S", "MIMO2API_COOLDOWN_5XX_S", "MIMO2API_COOLDOWN_TRANSPORT_S",
 		"MIMO2API_COOLDOWN_CAP_S", "MIMO2API_COOLDOWN_TRANSPORT_CAP_S",
+		"MIMO2API_POOL_STATS_WINDOW_S",
 		"MIMO2API_CATALOG_TTL_S", "MIMO2API_AUDIO_TTS_TIMEOUT_S", "MIMO2API_SPEECH_MAX_CHARS",
 	}
 	for _, k := range vars {
@@ -338,6 +339,9 @@ func TestConfigCooldownLadders(t *testing.T) {
 	}
 	if got := cfg.CooldownTransportCap(); got != DefaultCooldownTransportCap {
 		t.Errorf("default transport cap = %v, want %v", got, DefaultCooldownTransportCap)
+	}
+	if got := cfg.PoolStatsWindow(); got != DefaultPoolStatsWindow {
+		t.Errorf("default risk window = %v, want %v", got, DefaultPoolStatsWindow)
 	}
 	testEnv(t, map[string]string{
 		"MIMO2API_COOLDOWN_TRANSPORT_S":     "5",

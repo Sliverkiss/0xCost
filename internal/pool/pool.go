@@ -108,6 +108,29 @@ func FailureClasses() []FailureClass {
 	return []FailureClass{ClassTransport, ClassUpstream5xx, ClassThrottle429}
 }
 
+// DefaultEgress is the label of the shared, unlabelled egress. Accounts without
+// an egress label are behind it (SDD §4.8).
+const DefaultEgress = "direct"
+
+// RiskEvent is one risk-control signal (451/461) recorded for classification
+// (SDD §4.5.2, spec §5). The response body itself is never stored — only a digest
+// — and no credential appears here (INV-4).
+type RiskEvent struct {
+	AccountID  string    `json:"account_id"`
+	Egress     string    `json:"egress"`
+	Model      string    `json:"model,omitempty"`
+	Channel    string    `json:"channel,omitempty"`
+	Status     int       `json:"status"`
+	BodyDigest string    `json:"body_digest,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	At         time.Time `json:"at"`
+}
+
+// riskEventCap bounds the recorded history. It is evidence, so it is never
+// erased by time (RISK-006) — only by this cap, which keeps a long-running
+// gateway's memory flat.
+const riskEventCap = 200
+
 // classLadder is one class's base and cap (SDD §4.5.1).
 type classLadder struct {
 	base time.Duration
@@ -125,12 +148,16 @@ type Options struct {
 	// CooldownTransportCap caps the transport ladder (default 5m). A transport
 	// failure is less likely to be the account's fault, so it escalates less far.
 	CooldownTransportCap time.Duration
-	WarmPenalty          float64 // selection penalty for accounts with inflight work
-	Now                  func() time.Time
+	// RiskWindow is the window inside which risk-control signals are correlated
+	// across accounts on one egress (default 5m, SDD §4.5.2).
+	RiskWindow  time.Duration
+	WarmPenalty float64 // selection penalty for accounts with inflight work
+	Now         func() time.Time
 }
 
 type account struct {
 	id            string
+	egress        string // egress label; DefaultEgress when unset (SDD §4.8)
 	state         State
 	cooldownUntil time.Time
 	disabled      bool
@@ -159,6 +186,8 @@ type Pool struct {
 	maxInflight int
 	queueWait   time.Duration
 	ladders     map[FailureClass]classLadder
+	riskWindow  time.Duration
+	riskEvents  []RiskEvent // bounded history, oldest first
 	warmPenalty float64
 	now         func() time.Time
 	probe       ProbeFunc
@@ -192,6 +221,9 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 	if opts.CooldownTransportCap <= 0 {
 		opts.CooldownTransportCap = 5 * time.Minute
 	}
+	if opts.RiskWindow <= 0 {
+		opts.RiskWindow = 5 * time.Minute
+	}
 	if opts.WarmPenalty <= 0 {
 		opts.WarmPenalty = 0.5
 	}
@@ -201,6 +233,7 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 	p := &Pool{
 		maxInflight: opts.MaxInflight,
 		queueWait:   opts.QueueWait,
+		riskWindow:  opts.RiskWindow,
 		ladders: map[FailureClass]classLadder{
 			ClassTransport:   {base: opts.CooldownTransport, cap: opts.CooldownTransportCap},
 			ClassUpstream5xx: {base: opts.Cooldown5xx, cap: opts.CooldownCap},
@@ -217,8 +250,13 @@ func New(accts []accounts.Account, opts Options, probe ProbeFunc, renew RenewFun
 		if !a.Enabled {
 			continue
 		}
+		egress := a.Egress
+		if egress == "" {
+			egress = DefaultEgress
+		}
 		acc := &account{
 			id:       a.ID,
+			egress:   egress,
 			sem:      make(chan struct{}, opts.MaxInflight),
 			failures: map[FailureClass]int{},
 		}
@@ -527,6 +565,104 @@ func (p *Pool) Report429(accountID string) {
 // call ReportTransport for those (SDD §4.5.1).
 func (p *Pool) Report5xx(accountID string) {
 	p.ReportFailure(accountID, ClassUpstream5xx, 0)
+}
+
+// ReportRiskControl records a risk-control signal (451/461) and disables the
+// account — fail closed, because we cannot yet tell an account-scoped block from
+// an egress- or model-scoped one (SDD §4.5.2, spec §5).
+//
+// It deliberately does NOT set the permanent flag: permanence is a claim about the
+// upstream's intent, and the form of 451/461 is unverified here. The account is
+// therefore recoverable through Enable (RISK-002/006).
+//
+// It returns how many distinct accounts on the same egress (this one included)
+// have recorded a risk-control signal inside the correlation window — the number
+// that eventually tells the three shapes apart: a signal that travels with the
+// account, one that follows the egress, or a transient challenge. Callers must not
+// deliberately induce a signal to produce this number (REQ-9).
+func (p *Pool) ReportRiskControl(accountID, reason string, ev RiskEvent) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a := p.byID[accountID]
+	if a == nil {
+		// An unknown account is still worth recording: the evidence is about the
+		// upstream's behaviour, not about our bookkeeping.
+		p.recordRiskLocked(RiskEvent{
+			AccountID: accountID, Egress: DefaultEgress,
+			Reason: reason, Status: ev.Status, Model: ev.Model,
+			Channel: ev.Channel, BodyDigest: ev.BodyDigest, At: p.now(),
+		})
+		return p.sameEgressCountLocked(DefaultEgress, p.now())
+	}
+	a.disabled = true
+	a.permanent = false
+	a.reason = reason
+	a.state = StateDisabled
+	a.cooldownUntil = time.Time{}
+	p.recordRiskLocked(RiskEvent{
+		AccountID:  a.id,
+		Egress:     a.egress,
+		Model:      ev.Model,
+		Channel:    ev.Channel,
+		Status:     ev.Status,
+		BodyDigest: ev.BodyDigest,
+		Reason:     reason,
+		At:         p.now(),
+	})
+	return p.sameEgressCountLocked(a.egress, p.now())
+}
+
+func (p *Pool) recordRiskLocked(ev RiskEvent) {
+	p.riskEvents = append(p.riskEvents, ev)
+	if len(p.riskEvents) > riskEventCap {
+		p.riskEvents = p.riskEvents[len(p.riskEvents)-riskEventCap:]
+	}
+}
+
+// sameEgressCountLocked counts distinct accounts behind one egress with a signal
+// inside the window ending at now.
+func (p *Pool) sameEgressCountLocked(egress string, now time.Time) int {
+	seen := map[string]bool{}
+	for _, ev := range p.riskEvents {
+		if ev.Egress != egress {
+			continue
+		}
+		if now.Sub(ev.At) > p.riskWindow {
+			continue
+		}
+		seen[ev.AccountID] = true
+	}
+	return len(seen)
+}
+
+// RiskEvents returns a copy of the recorded risk-control history, oldest first.
+func (p *Pool) RiskEvents() []RiskEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]RiskEvent, len(p.riskEvents))
+	copy(out, p.riskEvents)
+	return out
+}
+
+// PermanentOf reports whether an account's disable is permanent (a dead
+// passToken). Risk-control disables are never permanent (RISK-002).
+func (p *Pool) PermanentOf(accountID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if a := p.byID[accountID]; a != nil {
+		return a.permanent
+	}
+	return false
+}
+
+// EgressOf reports an account's egress label (DefaultEgress when unset).
+func (p *Pool) EgressOf(accountID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if a := p.byID[accountID]; a != nil {
+		return a.egress
+	}
+	return ""
 }
 
 // ReportDisabled disables an account with a reason. Disabled accounts are

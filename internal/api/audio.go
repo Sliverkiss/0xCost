@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yg/mimo2api/internal/mimo"
+	"github.com/yg/mimo2api/internal/pool"
 )
 
 const (
@@ -135,6 +136,14 @@ func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID 
 			s.pool.ReportSuccess(lease.ID)
 			return nil
 		}
+	case isRiskControl(err):
+		// 451/461 during an audio call: same fail-closed, non-permanent,
+		// recorded treatment as chat (SDD §4.5.2).
+		s.pool.ReportRiskControl(lease.ID, err.Error(), pool.RiskEvent{
+			Channel:    "audio",
+			Status:     upstreamStatus(err),
+			BodyDigest: bodyDigest(err),
+		})
 	case isAccountDead(err):
 		s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
 	case isUpstream429(err):

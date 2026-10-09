@@ -108,6 +108,9 @@ func run() error {
 		// Transport cools for less and escalates less far: it is the class least
 		// likely to be the account's fault (SDD §4.5.1).
 		CooldownTransportCap: cfg.CooldownTransportCap(),
+		// Risk-control signals are correlated across accounts on one egress
+		// inside this window (SDD §4.5.2).
+		RiskWindow: cfg.PoolStatsWindow(),
 	}, probe, renew)
 
 	sessions := session.New(session.Options{

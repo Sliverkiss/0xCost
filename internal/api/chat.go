@@ -340,8 +340,24 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			s.MapError(w, lastErr)
 			return
 
+		case isRiskControl(err):
+			// 451/461: disabled, no retry — fail closed — and recorded for
+			// classification (SDD §4.5.2). The disable is NOT permanent: the form
+			// of the signal is unverified, so permanence would be a claim we
+			// cannot support yet (REQ-10).
+			s.pool.ReportRiskControl(lease.ID, err.Error(), pool.RiskEvent{
+				Model:      p.model,
+				Channel:    channelName(p.fastchat),
+				Status:     upstreamStatus(err),
+				BodyDigest: bodyDigest(err),
+			})
+			lease.Release()
+			s.MapError(w, err)
+			return
+
 		case isAccountDead(err):
-			// 451/461/70016/captcha: disabled, no retry (SDD §7.1).
+			// 70016/captcha/OTP demand/dead passToken: disabled, no retry
+			// (SDD §7.1).
 			s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
 			lease.Release()
 			s.MapError(w, err)
@@ -789,12 +805,10 @@ func isAccountDead(err error) bool {
 	return errors.As(err, &otpPending)
 }
 
-// isPermanentDead: 461 and a dead passToken never auto-recover (SDD §4.6).
+// isPermanentDead: only a dead passToken never auto-recovers (SDD §4.5.2). The
+// credential itself is dead, which is account-scoped evidence — unlike 451/461,
+// whose form we have never observed and which therefore stay recoverable.
 func isPermanentDead(err error) bool {
-	var ue *mimo.UpstreamError
-	if errors.As(err, &ue) && ue.StatusCode == 461 {
-		return true
-	}
 	var dead *mimo.ErrPassTokenDead
 	return errors.As(err, &dead)
 }

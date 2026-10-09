@@ -23,11 +23,15 @@ type Session struct {
 // session, state, cooldown_until, disabled_reason) is persisted back so
 // restarts don't re-login the whole pool.
 type Account struct {
-	ID             string   `json:"id"`
-	Phone          string   `json:"phone,omitempty"`
-	Password       string   `json:"password,omitempty"`
-	Enabled        bool     `json:"enabled"`
-	Label          string   `json:"label,omitempty"`
+	ID       string `json:"id"`
+	Phone    string `json:"phone,omitempty"`
+	Password string `json:"password,omitempty"`
+	Enabled  bool   `json:"enabled"`
+	Label    string `json:"label,omitempty"`
+	// Egress is an egress LABEL only ("hk1"); the endpoint and its credentials
+	// come from the environment (MIMO2API_EGRESS_HK1). Empty means the default
+	// "direct" egress. Validated at startup (SDD §4.8).
+	Egress         string   `json:"egress,omitempty"`
 	UserID         string   `json:"user_id,omitempty"`
 	PassToken      string   `json:"pass_token,omitempty"`
 	Session        *Session `json:"session,omitempty"`
