@@ -19,10 +19,13 @@ that, and none of them were true of the gateway before images existed:
    the error text. The public API port is reachable from the internet, so this was a
    probe into the operator's own host with a legitimate key as the only requirement.
 2. **The decode was unbounded.** PNG headers declare dimensions, so a small payload
-   can describe a huge image: measured, a 198 KB PNG declaring 8000×8000 took the
-   container from 559 MiB to a 680 MiB peak (the full 64 MP RGBA buffer is 244 MB).
-   A 16 MiB request body can describe far more, and the container had **no memory
-   limit**, so the ceiling was the host's.
+   can describe a huge image. Measured on a **fresh** container, one request carrying a
+   198 KB PNG that declares 8000×8000 took its resident memory from **5.3 MiB to
+   498.9 MiB and it stayed there** — the 64 MP RGBA buffer is 244 MB and the heap it
+   forces is not returned promptly (a second run on that heap peaked at 680 MiB, which
+   is the number a sampler that polls every 0.3 s reports: the honest magnitude is the
+   retained one). A 16 MiB request body can describe far more, and the container had
+   **no memory limit**, so the ceiling was the host's.
 3. **The redirect cap was a comment.** `attachmentMaxRedirects = 5` existed with a
    comment explaining why it was not configurable, but nothing consulted it: the
    client used Go's default policy of 10 hops.
