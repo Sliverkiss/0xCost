@@ -317,11 +317,18 @@ func mockBotConfig() map[string]any {
 				"webSearchDefaultStatus": "auto", "cnIntro": "高性价比日常全模态模型",
 			},
 			{"name": "MiMo-V2.6-Pro", "model": "mimo-v2.6-pro", "temperature": 0.8, "topP": 0.95},
+			// Live shape (2026-10-09): ultraspeed carries a chat row but is NOT
+			// in modelConfigListNg, so an id source that reads the Ng list alone
+			// loses it and falls back to the static floor for its capabilities.
+			{
+				"name": "MiMo-V2.6-Pro UltraSpeed", "model": "mimo-v2.6-pro-ultraspeed-studio",
+				"temperature": 0.8, "topP": 0.95, "thinkingDefaultOn": true,
+				"webSearchDefaultStatus": "auto",
+			},
 		},
 		"modelConfigListNg": []map[string]any{
 			{"name": "MiMo-V2.6-Flash", "model": "mimo-v2.6-flash", "pageType": "chat"},
 			{"name": "MiMo-V2.6-Pro", "model": "mimo-v2.6-pro", "pageType": "chat"},
-			{"name": "MiMo-V2.6-Pro UltraSpeed", "model": "mimo-v2.6-pro-ultraspeed-studio", "pageType": "chat"},
 			{"name": "MiMo-TTS", "model": "mimo-v2-tts", "pageType": "tts"},
 			{"name": "MiMo-ASR", "model": "mimo-v2.5-asr", "pageType": "asr"},
 			{"name": "Claw-M", "model": "clawm-alpha", "pageType": "chat", "redirectTo": ""},

@@ -419,21 +419,54 @@ func (s *Server) accountCatalogs(ctx context.Context, ids []string) map[string]*
 // accountCatalogEntries maps one account's bot/config onto catalog entries:
 // modelConfigListNg carries the ids and page types, and the chat rows
 // (modelConfigList) carry the capability defaults. The two are joined by id.
+//
+// The id source is both lists, not just modelConfigListNg: the live payload
+// (2026-10-09) carries a chat row for mimo-v2.6-pro-ultraspeed-studio without a
+// matching Ng row, so an Ng-only walk loses the model and the response falls
+// back to the static floor for it — reporting the floor's capabilities
+// (no thinking, search merely enabled) over the account's own (thinking on,
+// search "auto"). A chat row is by definition a chat model, which supplies the
+// page type the row itself does not carry.
 func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 	rows := make(map[string]mimo.ChatModel, len(cfg.ChatModels))
 	for _, r := range cfg.ChatModels {
 		rows[r.Model] = r
 	}
-	out := make([]adapter.CatalogEntry, 0, len(cfg.Models))
+	ids := make([]string, 0, len(cfg.Models)+len(cfg.ChatModels))
+	pages := make(map[string]string, len(cfg.Models)+len(cfg.ChatModels))
+	names := make(map[string]string, len(cfg.Models))
 	for _, m := range cfg.Models {
 		if m.Model == "" {
 			continue
 		}
-		page := m.PageType
-		row, hasRow := rows[m.Model]
+		if _, seen := pages[m.Model]; !seen {
+			ids = append(ids, m.Model)
+		}
+		pages[m.Model] = m.PageType
+		if m.Name != "" {
+			names[m.Model] = m.Name
+		}
+	}
+	for _, r := range cfg.ChatModels {
+		if r.Model == "" {
+			continue
+		}
+		if _, seen := pages[r.Model]; !seen {
+			ids = append(ids, r.Model)
+			pages[r.Model] = adapter.PageChat
+		}
+		if _, ok := names[r.Model]; !ok && r.Name != "" {
+			names[r.Model] = r.Name
+		}
+	}
+
+	out := make([]adapter.CatalogEntry, 0, len(ids))
+	for _, id := range ids {
+		page := pages[id]
+		row := rows[id]
 		var think bool
 		var wsDefault string
-		if hasRow {
+		if row.Model != "" {
 			if row.ThinkingDefaultOn != nil {
 				think = *row.ThinkingDefaultOn
 			}
@@ -442,8 +475,8 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 			}
 		}
 		out = append(out, adapter.CatalogEntry{
-			ID:     m.Model,
-			Name:   m.Name,
+			ID:     id,
+			Name:   names[id],
 			Page:   page,
 			Web:    adapter.WebSearchLevel(page, wsDefault),
 			Think:  think,

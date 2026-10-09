@@ -190,17 +190,25 @@ func TestFetchBotConfigParsesRealShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchBotConfig: %v", err)
 	}
-	if len(cfg.Models) != 6 {
+	if len(cfg.Models) != 5 {
 		t.Errorf("models = %d, want the modelConfigListNg entries", len(cfg.Models))
 	}
-	var ultra bool
-	for _, m := range cfg.Models {
-		if m.Model == "mimo-v2.6-pro-ultraspeed-studio" {
-			ultra = true
+	// ultraspeed is a chat row without an Ng row in the live payload, so the two
+	// lists are parsed separately and the row keeps its own capability defaults.
+	var ultra *ChatModel
+	for i, r := range cfg.ChatModels {
+		if r.Model == "mimo-v2.6-pro-ultraspeed-studio" {
+			ultra = &cfg.ChatModels[i]
 		}
 	}
-	if !ultra {
-		t.Error("ultraspeed model missing from the parsed catalog")
+	if ultra == nil {
+		t.Fatal("ultraspeed chat row missing from the parsed config")
+	}
+	if ultra.ThinkingDefaultOn == nil || !*ultra.ThinkingDefaultOn {
+		t.Errorf("ultraspeed thinkingDefaultOn = %v, want true", ultra.ThinkingDefaultOn)
+	}
+	if ultra.WebSearchDefaultStatus == nil || *ultra.WebSearchDefaultStatus != "auto" {
+		t.Errorf("ultraspeed webSearchDefaultStatus = %v, want auto", ultra.WebSearchDefaultStatus)
 	}
 	if len(cfg.Voices) != 3 {
 		t.Errorf("voices = %d, want 3 (the id-less row is filtered)", len(cfg.Voices))

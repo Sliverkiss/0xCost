@@ -79,3 +79,46 @@ func TestModelsFallsBackWhenCatalogUnavailable(t *testing.T) {
 		t.Errorf("debug log = %q, want the failed read and the fallback recorded", log)
 	}
 }
+
+// MODELS-LIVE-003: a chat row that is absent from modelConfigListNg is still an
+// account model — the id comes from the row and its capability defaults come
+// from the same row, not from the static floor. Live shape (2026-10-09): only
+// ultraspeed is like this, and the floor's values (no thinking, web search
+// merely enabled) contradict the account's own row (thinking on by default,
+// web search "auto").
+func TestModelsKeepsChatRowMissingFromNgList(t *testing.T) {
+	ts := audioServer(t, oneAccount(), nil)
+	_, body := getPath(t, ts, "/v1/models")
+	var out struct {
+		Data []struct {
+			ID           string `json:"id"`
+			Source       string `json:"source"`
+			Capabilities struct {
+				WebSearch int  `json:"web_search"`
+				Thinking  bool `json:"thinking"`
+			} `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	var found bool
+	for _, m := range out.Data {
+		if m.ID != "mimo-v2.6-pro-ultraspeed-studio" {
+			continue
+		}
+		found = true
+		if m.Source != "account" {
+			t.Errorf("ultraspeed source = %q, want account (the account row carries it)", m.Source)
+		}
+		if !m.Capabilities.Thinking {
+			t.Error("ultraspeed thinking = false, want true (row sets thinkingDefaultOn)")
+		}
+		if m.Capabilities.WebSearch != 2 {
+			t.Errorf("ultraspeed web_search = %d, want 2 (row defaults it on)", m.Capabilities.WebSearch)
+		}
+	}
+	if !found {
+		t.Fatal("ultraspeed missing from the catalog entirely")
+	}
+}
