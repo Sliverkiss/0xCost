@@ -107,17 +107,19 @@ clean: ## Remove build and coverage artifacts.
 # commits predate the redaction of real account identifiers.
 MIRROR_URL ?= https://github.com/Sliverkiss/mimo2api
 MIRROR_DIR ?= $(CURDIR)/../.mimo2api-mirror
-MIRROR_MSG ?= mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
+MIRROR_MSG ?= docs/mirror-commit-message.txt
 
 mirror: ## Build the distribution mirror at $(MIRROR_DIR).
 	rm -rf $(MIRROR_DIR) && mkdir -p $(MIRROR_DIR)
 	git archive HEAD | tar -x -C $(MIRROR_DIR)
+	@# excluding a directory's contents can leave its empty shell behind
+	@find $(MIRROR_DIR) -type d -empty -delete
 	@echo "mirror built: $$(find $(MIRROR_DIR) -type f | wc -l) files"
 
 push-mirror: mirror ## Build it and push it to $(MIRROR_URL) as a single commit.
 	cd $(MIRROR_DIR) && git init -q && git add -A \
-		&& git -c user.name="$$(git -C $(CURDIR) config user.name || echo mimo2api)" \
-			-c user.email="$$(git -C $(CURDIR) config user.email || echo mimo2api@local)" \
-			commit -q -m "$$(printf '%s' '$(MIRROR_MSG)')" \
+		&& git -c user.name="$$(git -C $(CURDIR) config user.name)" \
+			-c user.email="$$(git -C $(CURDIR) config user.email)" \
+			commit -q -F "$$(git -C $(CURDIR) rev-parse --show-toplevel)/$(MIRROR_MSG)" \
 		&& git branch -M main \
 		&& git push --force $(MIRROR_URL) main

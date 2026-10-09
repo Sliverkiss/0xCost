@@ -1,0 +1,28 @@
+mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
+
+A Go gateway in front of Xiaomi MiMo Studio (aistudio.xiaomimimo.com) that speaks
+the OpenAI HTTP surface: chat (streaming and one-shot), TTS and ASR, model
+listing, and function calling for a model that has none.
+
+- Chat: SSE and non-streaming, streaming-only session chaining, per-credential
+  session identity, replay cap, keepalive, stall watchdog.
+- Audio: /v1/audio/speech (wav/mp3, the upstream's 1024-character limit enforced
+  before any upstream work) and /v1/audio/transcriptions (multipart).
+- Models: the account's real catalog from bot/config, cached, with ids the upstream
+  has retired resolved to their successors instead of advertised.
+- Accounts: a pool with per-class cooldowns (transport, 5xx, 429), risk-control
+  recording, per-account egress labels, OTP/consent handling, and renewal.
+- Function calling: MiMo has no native tools, so a vendored middleware
+  (deploy/toolforge) strips tools, injects an XYML prompt protocol and parses the
+  call back out. It is the deployment's single published port and relays every path
+  it does not implement to this gateway verbatim — one address, one key.
+- Admin: GET /v1/admin/pool (masked ids, cooldown causes, risk events, invariant),
+  OTP submission, consent.
+
+Deployment: docker compose (distroless image, /data volume for accounts.json,
+in-binary healthcheck). Real account identifiers are never written into the tree:
+they live in the git-ignored data/accounts.json, and `make hygiene` reads its values
+and fails if any of them appears in a tracked file.
+
+This mirror carries the code and the docs; the test suite is excluded from it
+(.gitattributes export-ignore). Design notes and decision records are in docs/.
