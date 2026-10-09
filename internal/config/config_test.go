@@ -224,16 +224,26 @@ func TestImmutableAfterParse(t *testing.T) {
 	}
 }
 
-// CONF (amendment): MIMO2API_OTP_AUTO — default true; explicit false and
-// garbage values disable auto-starting the new-device OTP challenge.
-func TestOTPAutoDefaultTrue(t *testing.T) {
+// CONF (amendment): MIMO2API_OTP_AUTO — default FALSE. Starting a challenge
+// sends a real SMS to the account owner and only a human can finish it, so the
+// dispatch is an explicit operator decision; the previous default of true meant
+// any login attempt (the startup catalog warm-up included) silently spent one.
+func TestOTPAutoDefaultFalse(t *testing.T) {
 	testEnv(t, map[string]string{})
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.OTPAuto() {
+		t.Error("OTPAuto default = true, want false — an SMS must never be spent implicitly")
+	}
+	testEnv(t, map[string]string{"MIMO2API_OTP_AUTO": "true"})
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !c.OTPAuto() {
-		t.Error("OTPAuto default = false, want true")
+		t.Error("OTPAuto = false for explicit true, want true")
 	}
 	testEnv(t, map[string]string{"MIMO2API_OTP_AUTO": "0"})
 	c, err = Load()

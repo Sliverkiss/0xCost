@@ -152,8 +152,13 @@ func Load() (*Config, error) {
 		cooldownCap:          DefaultCooldownCap,
 		cooldownTransportCap: DefaultCooldownTransportCap,
 		probeInterval:        DefaultProbeInterval,
-		otpAuto:              getenvBool("MIMO2API_OTP_AUTO", true),
-		crossRegionAgree:     getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
+		// Default OFF: starting a new-device challenge sends a real SMS to the
+		// account owner, and a human has to enter the code anyway, so the
+		// dispatch is an explicit operator decision (MIMO2API_OTP_AUTO=true).
+		// A default of true meant any login attempt — including the startup
+		// catalog warm-up — silently spent an SMS.
+		otpAuto:          getenvBool("MIMO2API_OTP_AUTO", false),
+		crossRegionAgree: getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
 	}
 
 	keys := ParseAPIKeys(os.Getenv("MIMO2API_API_KEYS"))

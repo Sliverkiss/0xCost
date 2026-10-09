@@ -94,6 +94,12 @@ Implemented in `mimo-web-api/src/xiaomi-login.js`; independently in
 `xm2api/lib/login.mjs:238-297` (unencrypted variant) and `xm2api/lib/login.mjs:341-437`
 (SMS/OTP new-device variant).
 
+0. **Device-anchor priming.** Navigate to the login URL like a browser (one free
+   GET, following the 302 from the legacy page to the account SPA) before posting
+   the form, presenting the stored device identity and keeping whatever the page
+   issues back: `deviceId=wb_<uuid>`, `pass_ua=web`, `uLocale`, `JSESSIONID`. This
+   is the anchor the new-device trust attaches to; without it every login looks
+   like new hardware (ADR 0013, `internal/mimo/passport.go`).
 1. **Login context probe.** `GET {aistudio}/open-apis/user/mi/get` with
    `redirect: manual` → 401 body carries `loginUrl`
    (`https://account.xiaomi.com/pass/serviceLogin?callback=...&sid=xiaomichatbot`).
@@ -101,7 +107,11 @@ Implemented in `mimo-web-api/src/xiaomi-login.js`; independently in
    (`xiaomi-login.js:123-152`).
 2. **Password auth.** `POST https://account.xiaomi.com/pass/serviceLoginAuth2` with
    form fields `sid, callback, qs, _sign, serviceParam, user, hash, _json=true, ...`
-   (`xiaomi-login.js:206-228`).
+   (`xiaomi-login.js:206-228`). The request carries Chrome's HTML-form header set
+   (`Accept: text/html…`, client hints, `sec-fetch-mode: navigate`, the page's
+   `Origin`/`Referer`, `Upgrade-Insecure-Requests`) — see `passport.go`; the
+   `identity/*` hops use the SPA's XHR set instead. Both were three lines short of
+   what a browser sends until ADR 0013.
    - `hash = MD5(password).hex().toUpperCase()` — no salt (`xiaomi-login.js:219`;
      same in `xm2api/lib/login.mjs:37`).
    - The web client additionally AES-128-CBC-encrypts writable fields (random 16-char

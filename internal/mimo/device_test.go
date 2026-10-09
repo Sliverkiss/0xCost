@@ -33,25 +33,34 @@ func TestDeviceIdentityPresentedOnAuth2(t *testing.T) {
 		t.Fatalf("auth2 calls = %d, want 1", len(passport.Auth2Headers))
 	}
 	ck := passport.Auth2Headers[0].Get("Cookie")
-	if ck == "" {
-		t.Fatal("Auth2 carried no Cookie header: the stored device identity was dropped")
-	}
-	for name, want := range dev {
-		if !strings.Contains(ck, name+"="+want) {
-			t.Errorf("Auth2 Cookie %q missing %s=%s", ck, name, want)
+	// The stored deviceId is the sticky half: the login page keeps it (it only
+	// mints an anchor for a client that brings none, like the live passport),
+	// which is what makes the device recognisable across logins.
+	for _, want := range []string{"deviceId=dev-stored-1", "cUserId=cu-stored-1"} {
+		if !strings.Contains(ck, want) {
+			t.Errorf("Auth2 Cookie %q missing the stored %s", ck, want)
 		}
+	}
+	// Names the page re-issues are adopted: a Set-Cookie overwrites what we
+	// sent, exactly like a browser's cookie store (live: pass_ua=web).
+	if !strings.Contains(ck, "pass_ua=web") {
+		t.Errorf("Auth2 Cookie %q did not adopt the page-issued pass_ua", ck)
 	}
 }
 
-// DEV-002: with nothing stored, no device cookie is invented (the pre-fix
-// behaviour stays available for tests and for accounts that never logged in).
+// DEV-002: with nothing stored the chain fabricates nothing of its own — it
+// adopts the anchor the login page issues instead (the whole mechanism).
 func TestDeviceIdentityAbsentWithoutStoredDevice(t *testing.T) {
 	client, passport := loginEnv(t)
 	if _, err := client.Login(context.Background(), "13800000001", "pw"); err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	if ck := passport.Auth2Headers[0].Get("Cookie"); strings.Contains(ck, "deviceId=") {
-		t.Errorf("Auth2 Cookie = %q, want no device cookie", ck)
+	ck := passport.Auth2Headers[0].Get("Cookie")
+	if strings.Contains(ck, "dev-stored") || strings.Contains(ck, "dev-abc") {
+		t.Errorf("Auth2 invented a device cookie of its own: %q", ck)
+	}
+	if !strings.Contains(ck, "deviceId=wb_mock-device-1") {
+		t.Errorf("Auth2 did not adopt the page-issued device anchor: %q", ck)
 	}
 }
 
@@ -72,8 +81,12 @@ func TestWithDeviceDoesNotMutateReceiver(t *testing.T) {
 	if _, err := client.Login(context.Background(), "13800000001", "pw"); err != nil {
 		t.Fatalf("base login: %v", err)
 	}
-	if ck := passport.Auth2Headers[1].Get("Cookie"); strings.Contains(ck, "deviceId=") {
-		t.Errorf("base client leaked device identity: %q", ck)
+	if len(passport.Auth2Headers) != 2 {
+		t.Fatalf("auth2 calls = %d, want 2 (scoped + base)", len(passport.Auth2Headers))
+	}
+	baseCK := passport.Auth2Headers[1].Get("Cookie")
+	if strings.Contains(baseCK, "dev-stored-1") {
+		t.Errorf("base client leaked the scoped device identity: %q", baseCK)
 	}
 }
 

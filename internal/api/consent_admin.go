@@ -67,6 +67,14 @@ func (s *Server) handleConsentAgree(w http.ResponseWriter, r *http.Request) {
 		// POST /v1/admin/otp/submit.
 		if pending, ok := errOTPPendingUnwrap(err); ok {
 			s.otp.add(&otpPending{AccountID: id, Challenge: pending.Challenge, CreatedAt: time.Now()})
+			// Same rule as the request-time login path: keep the harvested
+			// device identity so the code verifies against a device we still
+			// claim (session_apply.go persistDeviceFromError).
+			if persistDeviceFromError(&acct, err) {
+				if uerr := s.store.Update(acct); uerr != nil {
+					s.logger.Printf("accounts: persist device for %s: %v", id, uerr)
+				}
+			}
 			s.pool.ReportDisabled(id, "cross-region consent given; new-device OTP verification pending", false)
 			ch := pending.Challenge
 			w.Header().Set("Content-Type", "application/json")

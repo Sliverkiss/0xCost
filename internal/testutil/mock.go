@@ -405,7 +405,10 @@ type MockPassport struct {
 	Auth2Calls        []map[string]string // form values per call
 	Auth2Headers      []http.Header       // request headers per Auth2 call
 	ServiceLoginCalls []string            // Cookie header per call
-	StsCalls          []string            // locations followed
+	// LoginPageCalls records each login-page navigation (the browser priming a
+	// device anchor before it posts the form) with its full header set.
+	LoginPageCalls []http.Header
+	StsCalls       []string // locations followed
 
 	// StsPassToken is the passToken the STS hop plants (default rt-mock-1);
 	// set it to a different value to script a rotated credential.
@@ -651,6 +654,28 @@ func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {
 
 // serveServiceLogin answers the renewal step-2 GET (loginUrl&_json=true).
 func (p *MockPassport) serveServiceLogin(w http.ResponseWriter, r *http.Request) {
+	// A browser opens the login page before it posts the form: a bare GET
+	// (no `_json`, the flag the renewal path adds) that plants the device
+	// anchor — live: deviceId=wb_<uuid>, pass_ua=web, uLocale, JSESSIONID.
+	// It is not the landing call the renewal/consent chain counts, so it is
+	// answered and recorded separately (TDD DEV-008).
+	if r.URL.Query().Get("_json") == "" && r.Method == http.MethodGet {
+		p.mu.Lock()
+		p.LoginPageCalls = append(p.LoginPageCalls, r.Header.Clone())
+		p.mu.Unlock()
+		// Mint a deviceId only when the client brings none: that is what the
+		// live passport does (it issued one because the request was cookieless),
+		// and it is what makes the device identity sticky across logins.
+		if _, err := r.Cookie("deviceId"); err != nil {
+			http.SetCookie(w, &http.Cookie{Name: "deviceId", Value: "wb_mock-device-1", Path: "/"})
+		}
+		http.SetCookie(w, &http.Cookie{Name: "pass_ua", Value: "web", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "uLocale", Value: "zh_CN", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "mock-jsess-1", Path: "/"})
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><body>login</body></html>")
+		return
+	}
 	p.mu.Lock()
 	p.ServiceLoginCalls = append(p.ServiceLoginCalls, r.Header.Get("Cookie"))
 	body := p.ServiceLoginBody

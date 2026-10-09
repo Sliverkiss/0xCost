@@ -67,6 +67,11 @@ type ErrAccountAction struct {
 	Reason string
 	URL    string
 	Cause  error
+	// Device is the identity the login chain harvested before it stopped, so
+	// the caller can persist it even though the login did not finish: the next
+	// attempt then presents the same device instead of a brand-new one
+	// (device.go, docs/login-chain-reverse.md §5.1).
+	Device map[string]string
 }
 
 func (e *ErrAccountAction) Error() string { return e.Reason }
@@ -115,8 +120,7 @@ func (c *Client) fetchLoginContext(ctx context.Context) (*LoginContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept-Language", "zh-CN")
+	c.setPlatformXHRHeaders(req.Header)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("login context probe: %w", err)
@@ -190,18 +194,25 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 		return nil, err
 	}
 	authURL := pu.Scheme + "://" + pu.Host + "/pass/serviceLoginAuth2"
+	// A browser loads the login page before it posts the form, and that
+	// navigation is where the passport hands out the device anchor
+	// (deviceId=wb_<uuid>, pass_ua=web, uLocale, JSESSIONID) — live capture in
+	// docs/login-chain-reverse.md §5.1. Prime it, then put the stored device
+	// identity on top of whatever the page issued, so the POST carries the
+	// device the platform already knows instead of looking like new hardware.
+	// The navigation presents the stored device identity and adopts whatever
+	// the page issues back (cookie-store semantics: a Set-Cookie overwrites the
+	// value we sent — same rule as DEV-004 for the auth2 response).
+	jar := c.primeLoginPage(ctx, lctx.LoginURL, seedDeviceJar(c.device))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept-Language", "zh-CN")
-	// Present the stored device identity: without it the passport mints a new
-	// deviceId for every login and the device can never become "known"
-	// (docs/login-chain-reverse.md §5 item 1; device.go).
-	if dev := deviceCookieHeader(c.device); dev != "" {
-		req.Header.Set("Cookie", dev)
+	// Same headers Chrome sends submitting this form: HTML Accept, client
+	// hints, sec-fetch navigation triplet, Origin of the page, Referer = it.
+	c.setFormPostHeaders(req.Header, pu.Scheme+"://"+pu.Host, lctx.LoginURL)
+	if ck := cookieHeader(jar); ck != "" {
+		req.Header.Set("Cookie", ck)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -210,10 +221,7 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	jar := seedDeviceJar(c.device)
-	for k, v := range collectCookies(resp) {
-		jar[k] = v
-	}
+	jar = mergeJars(jar, collectCookies(resp))
 	m, err := parseXSSI(body)
 	if err != nil {
 		return nil, err
@@ -240,7 +248,7 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 			if !c.disableOTPAuto {
 				ch, cerr := c.startOTP(ctx, nu, lctx.SID, jar, agreeConsent)
 				if cerr == nil {
-					return nil, &ErrOTPPending{Challenge: ch}
+					return nil, &ErrOTPPending{Challenge: ch, Device: harvestDevice(jar)}
 				}
 				if errors.Is(cerr, ErrCrossRegionConsent) {
 					return nil, &ErrAccountAction{
@@ -249,9 +257,14 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 						Cause:  cerr,
 					}
 				}
-				return nil, &ErrAccountAction{Reason: "new-device OTP verification required (auto-start failed: " + cerr.Error() + ")", URL: nu, Cause: cerr}
+				return nil, &ErrAccountAction{
+					Reason: "new-device OTP verification required (auto-start failed: " + cerr.Error() + ")",
+					URL:    nu,
+					Cause:  cerr,
+					Device: harvestDevice(jar),
+				}
 			}
-			return nil, &ErrAccountAction{Reason: "new-device OTP verification required", URL: nu}
+			return nil, &ErrAccountAction{Reason: "new-device OTP verification required", URL: nu, Device: harvestDevice(jar)}
 		}
 		return nil, errors.New("login succeeded but no location for STS exchange")
 	}
@@ -393,8 +406,7 @@ func (c *Client) Renew(ctx context.Context, userID, passToken string) (*Session,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept-Language", "zh-CN")
+	c.setPlatformXHRHeaders(req.Header)
 	req.Header.Set("Cookie", "userId="+userID+";")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -430,7 +442,7 @@ func (c *Client) Renew(ctx context.Context, userID, passToken string) (*Session,
 	if err != nil {
 		return nil, err
 	}
-	req2.Header.Set("User-Agent", c.userAgent)
+	c.setNavigationHeaders(req2.Header, c.base+"/")
 	ck := "userId=" + userID + "; passToken=" + passToken
 	if dev := deviceCookieHeader(c.device); dev != "" {
 		ck += "; " + dev

@@ -251,8 +251,18 @@ func (w *idleWatchedReader) stop() {
 // X-Requested-With and the JSON Accept default. Dropping any of them is a
 // fingerprint tell, so all of them are set here.
 func (c *Client) setBrowserHeaders(h http.Header) {
+	c.setPlatformXHRHeaders(h)
 	h.Set("Content-Type", "application/json")
+}
+
+// setPlatformXHRHeaders is setBrowserHeaders without a Content-Type: a real
+// axios GET carries no entity header, so a GET that sets one is a tell. Every
+// aistudio-surface request uses this set (XHR from the SPA's own origin).
+func (c *Client) setPlatformXHRHeaders(h http.Header) {
 	h.Set("Accept", "application/json, text/plain, */*")
+	// The SPA sets Accept-Language itself ("zh-CN"); Chrome's raw navigation
+	// value ("zh-CN,zh;q=0.9") belongs to the passport surface only. Do not
+	// conflate the two — an earlier change did, and the fidelity cases caught it.
 	h.Set("Accept-Language", "zh-CN")
 	h.Set("X-Requested-With", "XMLHttpRequest")
 	h.Set("x-timeZone", c.timezone)

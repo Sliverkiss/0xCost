@@ -753,6 +753,14 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 		if pending, ok := errOTPPendingUnwrap(err); ok {
 			s.otp.add(&otpPending{AccountID: accountID, Challenge: pending.Challenge, CreatedAt: time.Now()})
 		}
+		// Keep the device identity the attempt harvested even though it did not
+		// finish: otherwise the next attempt looks like new hardware again and
+		// the operator's pending code no longer belongs to any device we claim.
+		if persistDeviceFromError(&acct, err) {
+			if uerr := s.store.Update(acct); uerr != nil {
+				s.logger.Printf("accounts: persist device for %s: %v", accountID, uerr)
+			}
+		}
 		return "", "", err
 	}
 	// Keep the stored identity when the flow could not harvest a fresh one

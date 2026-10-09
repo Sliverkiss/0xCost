@@ -211,7 +211,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_COOLDOWN_TRANSPORT_S` | `15` | Base cooldown for the transport class (connection error, timeout, SSE stall, EOF mid-body) |
 | `MIMO2API_COOLDOWN_TRANSPORT_CAP_S` | `300` | Cap for the transport ladder — a dead connection is less likely to be the account's fault, so it escalates less far than 5xx/429 |
 | `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window inside which risk-control signals are correlated across accounts behind one egress |
-| `MIMO2API_OTP_AUTO` | `true` | Auto-start the new-device OTP challenge on login demands (complete via `/v1/admin/otp/submit`) |
+| `MIMO2API_OTP_AUTO` | `false` | Allow a login to send a **real SMS** for the new-device OTP challenge (complete via `/v1/admin/otp/submit`). Off by default: the dispatch is an explicit operator decision (ADR 0013) |
 | `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` refuses automatically and leaves the account for an operator, who can still approve one login with `POST /v1/admin/consent/agree` (ADR 0001) |
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
 | `MIMO2API_USER_AGENT` | *(Chrome UA)* | Upstream User-Agent |

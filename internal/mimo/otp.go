@@ -42,6 +42,10 @@ type OTPChallenge struct {
 // login cannot complete until SubmitOTP is called with it.
 type ErrOTPPending struct {
 	Challenge *OTPChallenge
+	// Device is the identity the login chain harvested (deviceId/pass_ua/
+	// uLocale) — persisted by the caller so the code the operator enters is
+	// verified on the same device later attempts present.
+	Device map[string]string
 }
 
 func (e *ErrOTPPending) Error() string {
@@ -189,8 +193,11 @@ func (c *Client) ssoDo(ctx context.Context, jar map[string]string, method, targe
 	// Same User-Agent as every other login hop: the identity JSP endpoints
 	// answer fine for a browser UA (verified live 2026-10-09), and a
 	// mismatch here is a fingerprint tell.
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept-Language", "zh-CN")
+	// identity/* are same-origin XHRs from the account SPA: send what its axios
+	// instance sends (passport.go), then let `extra` override Referer etc.
+	if tu, perr := url.Parse(target); perr == nil {
+		c.setXHRHeaders(req.Header, tu.Scheme+"://"+tu.Host, tu.Scheme+"://"+tu.Host+"/")
+	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

@@ -330,3 +330,30 @@ explained: during round 2 the gateway logged an upstream `web_search` event with
 41 KB of results while `web_search_status` was left at its default (`disabled`).
 The direct path behaves the same way, so it is upstream-side; worth a look before
 anyone relies on the switch being a hard off.
+
+
+## DEVICE-002 — passport fingerprint alignment (2026-10-09)
+
+Reverse + free live probes only (no code spent while investigating):
+
+| Probe | Result |
+|---|---|
+| `GET {aistudio}/open-apis/user/mi/get` (cookieless) | 401, body carries the real `loginUrl` (`callback`, `sid=xiaomichatbot`, `_group`; no `qs`/`_sign`) |
+| `GET {loginUrl}` (browser navigation headers) | **302** to `https://account.xiaomi.com/fe/service/login?...&_sign=…&serviceParam={…}&bizDeviceType=`; plants `deviceId=wb_<uuid>` (390 d), `pass_ua=web`, `uLocale=zh_CN`, `theme`, `JSESSIONID` |
+| same URL, cookieless, repeated | mints a **new** `deviceId` each time — no cookie context means new hardware |
+| `/fe/service/login` page | the account SPA (`main.6a03bf94.js` + `axios` + `crypto-util`), same bundles already reversed for the OTP UI |
+| MiMo probe with the page's cookie jar | still 401 — the page navigation alone mints no session (no free-session shortcut exists) |
+
+Consequence for the chain: it never loaded that page, so `serviceLoginAuth2` went
+out cookieless and each attempt was new hardware; and the device cookies that
+the chain *did* receive were thrown away whenever the login ended in the demand.
+
+Lesson from the incident that followed (recorded because it cost a real SMS): a
+"free" dry run of a session-less account file is **not** free — starting the
+gateway runs the catalog warm-up, which falls back to a password login and, with
+`MIMO2API_OTP_AUTO=true`, sent a real code. The instance was then killed, taking
+the in-memory verification session with it, and the platform refused the next
+send with `code=20024` (SMS rate limit). Hence ADR 0013: the dispatch defaults to
+off, the harvested device identity is persisted even on an aborted login, and a
+code is only useful if the challenge survives to the operator's submit —
+upcoming, if the challenge should also survive a restart.
