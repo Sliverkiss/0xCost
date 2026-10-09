@@ -1,0 +1,403 @@
+package api_test
+
+import (
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/yg/mimo2api/internal/pool"
+	"github.com/yg/mimo2api/internal/testserver"
+	"github.com/yg/mimo2api/internal/testutil"
+)
+
+// ERRMAP-001..012: the full §7.4 error-mapping table, end-to-end through the
+// HTTP surface. Each row drives the real triggering path (pool state,
+// upstream script) rather than calling MapError directly, per TDD §6 wave 6
+// ("every triggering path exists; close the table last").
+
+// twoAccounts (from api_test.go): distinct scripted identities for
+// cooldown/exclusion rows.
+
+// readErr drains an error response and asserts the OpenAI error shape.
+func readErr(t *testing.T, resp *http.Response) (status int, msg, typ, code string) {
+	t.Helper()
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	msg, typ, code = testutil.ParseError(t, b)
+	return resp.StatusCode, msg, typ, code
+}
+
+// ERRMAP-001: bad API key → 401 invalid_request_error / invalid_api_key.
+func TestERRMAPBadKey(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{APIKeys: []string{"k1"}})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusUnauthorized || typ != "invalid_request_error" || code != "invalid_api_key" {
+		t.Errorf("got %d %q %q", status, typ, code)
+	}
+}
+
+// ERRMAP-002: malformed body / no user message → 400 invalid_request_error,
+// no code (SDD §7.4 rows 1-2).
+func TestERRMAPMalformedAndNoUser(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	for _, body := range []string{
+		`{"messages":[`,                           // broken JSON
+		`{"model":"mimo-v2.6-pro","messages":[]}`,  // empty messages
+		`{"model":"mimo-v2.6-pro","messages":[{"role":"system","content":"only system"}]}`, // no user turn
+	} {
+		resp, err := ts.Chat(body, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, _, typ, code := readErr(t, resp)
+		if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "" {
+			t.Errorf("body %q: got %d %q %q", body, status, typ, code)
+		}
+	}
+	if ts.Upstream.ChatHits() != 0 {
+		t.Errorf("malformed rows must not reach upstream, got %d hits", ts.Upstream.ChatHits())
+	}
+}
+
+// ERRMAP-003: all accounts cooling → 429 pool_parked + Retry-After = ceil
+// (nearest recovery − now).
+func TestERRMAPPoolParked(t *testing.T) {
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	// Park both: 429 ladder base is 60s, second hit doubles to 120s.
+	for _, ph := range []string{testutil.TestPH, testutil.TestPH2} {
+		ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+	}
+	for i := 0; i < 2; i++ {
+		resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		readErr(t, resp) // drain; the 429s park the accounts
+	}
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_parked" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	ra := resp.Header.Get("Retry-After")
+	if ra == "" {
+		t.Fatal("missing Retry-After header")
+	}
+	n, err := strconv.Atoi(ra)
+	if err != nil || n < 1 {
+		t.Errorf("Retry-After = %q", ra)
+	}
+}
+
+// ERRMAP-004: all slots busy, queue wait exceeded → 429 pool_busy +
+// Retry-After (SDD §7.4 row 4).
+func TestERRMAPPoolBusy(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
+		MaxInflight: 1,
+		QueueWait:   50 * time.Millisecond,
+	})
+	// Occupy the single slot: commit early, then stall mid-stream so the
+	// handler keeps the lease while the second request queues.
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{
+		Body:           testutil.FixtureSSEStall,
+		StallMidStream: 2 * time.Second,
+		MidStreamSplit: 134, // after dialogId + first message frame → commit
+	})
+	slow, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Body.Close()
+	// ensure the stall actually holds the slot
+	time.Sleep(20 * time.Millisecond)
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_busy" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra == "" {
+		t.Error("missing Retry-After header")
+	}
+}
+
+// ERRMAP-005: all disabled / empty pool → 503 api_error / no_accounts.
+func TestERRMAPNoAccounts(t *testing.T) {
+	// Zero accounts = empty pool.
+	ts := testserver.NewTestServer(t, nil, nil)
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusServiceUnavailable || typ != "api_error" || code != "no_accounts" {
+		t.Errorf("empty pool: got %d %q %q", status, typ, code)
+	}
+}
+
+// ERRMAP-006: upstream 429 surfaced → 429 rate_limit_error /
+// upstream_rate_limited, and the account parks (cooldown, no retry).
+func TestERRMAPUpstream429(t *testing.T) {
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	// Script BOTH identities: selection is round-robin, either may serve.
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "upstream_rate_limited" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	// No retry on 429 (SDD §7.1): exactly one upstream hit for the request.
+	if n := ts.Upstream.ChatHits(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1 (no 429 retry)", n)
+	}
+	// The serving account parked.
+	st1, st2 := ts.Pool.StateOf("acc1"), ts.Pool.StateOf("acc2")
+	if st1 != pool.StateCooldown && st2 != pool.StateCooldown {
+		t.Errorf("neither account cooled: %v/%v", st1, st2)
+	}
+}
+
+// ERRMAP-007: upstream 401 after the refresh retry → 401
+// invalid_request_error / upstream_auth_expired.
+func TestERRMAPUpstreamAuthExpired(t *testing.T) {
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	// Script BOTH identities (round-robin selection); renewal is impossible
+	// (no passToken stored) so the refresh retry fails → mapped 401.
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusUnauthorized})
+	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusUnauthorized})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusUnauthorized || typ != "invalid_request_error" || code != "upstream_auth_expired" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+}
+
+// ERRMAP-008: upstream 5xx pre-first-byte → 502 api_error / upstream_failure
+// on failure; the 1 allowed retry lands on a different account (SDD
+// §7.1/§7.2), so a healthy second account recovers the request.
+func TestERRMAPUpstream5xx(t *testing.T) {
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
+	// acc2 also fails → both sick → client sees the mapped 502.
+	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusBadGateway || typ != "api_error" || code != "upstream_failure" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	// Both accounts were tried exactly once (original + 1 retry, §7.2).
+	phs := map[string]int{}
+	for _, r := range ts.Upstream.Requests() {
+		phs[r.PH]++
+	}
+	if phs[testutil.TestPH] != 1 || phs[testutil.TestPH2] != 1 {
+		t.Errorf("per-account hits = %v, want 1 each (retry switch)", phs)
+	}
+	if ts.Pool.StateOf("acc1") != pool.StateCooldown {
+		t.Errorf("acc1 state = %v, want cooldown after 5xx", ts.Pool.StateOf("acc1"))
+	}
+}
+
+// ERRMAP-008 (recovery half): one sick account + one healthy → the retry
+// recovers; the client never sees the 502.
+func TestERRMAPUpstream5xxRetryRecovers(t *testing.T) {
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	// Round-robin serves acc2 first (cursor starts at band index 1), so the
+	// 502 script goes on the second identity; the retry lands on acc1.
+	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s, want 200 via retry switch", resp.StatusCode, b)
+	}
+	if ts.Pool.StateOf("acc2") != pool.StateCooldown {
+		t.Errorf("acc2 state = %v, want cooldown after 5xx", ts.Pool.StateOf("acc2"))
+	}
+}
+
+// ERRMAP-009: sensitive_query → 400 invalid_request_error / content_filter,
+// no pool penalty (SDD §7.1 content-level).
+func TestERRMAPContentFilter(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSESensitive})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "bad topic"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "content_filter" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	if ts.Pool.StateOf("acc1") != pool.StateAvailable {
+		t.Errorf("content filter must not penalize the account, state = %v", ts.Pool.StateOf("acc1"))
+	}
+}
+
+// ERRMAP-010: query over the channel char cap → 400 context_too_long, zero
+// upstream requests (cross-ref API-016). mimo-v2.6-pro-ultraspeed-studio caps
+// at 45000 chars.
+func TestERRMAPContextTooLong(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	long := strings.Repeat("a", 45001)
+	body := testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", long})
+	resp, err := ts.Chat(body, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "context_too_long" {
+		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	if ts.Upstream.ChatHits() != 0 {
+		t.Errorf("char-cap rejection must not reach upstream, hits = %d", ts.Upstream.ChatHits())
+	}
+}
+
+// ERRMAP-011: Retry-After privacy invariant — across all 429 rows the
+// Retry-After reflects only local recovery deadlines, and no response body
+// or header ever carries phone/userId/cookie/passToken.
+func TestERRMAPRetryAfterPrivacy(t *testing.T) {
+	// Parked row.
+	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	for _, ph := range []string{testutil.TestPH, testutil.TestPH2} {
+		ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+	}
+	for i := 0; i < 2; i++ {
+		resp, _ := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+		readErr(t, resp)
+	}
+	resp, _ := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	status, _, typ, code := readErr(t, resp)
+	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_parked" {
+		t.Fatalf("parked row: got %d %q %q", status, typ, code)
+	}
+	ra := resp.Header.Get("Retry-After")
+	n, err := strconv.Atoi(ra)
+	if err != nil {
+		t.Fatalf("Retry-After not numeric: %q", ra)
+	}
+	// Nearest recovery is within the 60s/120s ladder; header seconds are
+	// ceil(nearest recovery − now).
+	if n < 1 || n > 120 {
+		t.Errorf("Retry-After = %d, want 1..120", n)
+	}
+
+	// Busy row.
+	ts2 := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
+		MaxInflight: 1,
+		QueueWait:   50 * time.Millisecond,
+	})
+	ts2.Upstream.Script(testutil.TestPH, testutil.ScriptStep{
+		Body:           testutil.FixtureSSEStall,
+		StallMidStream: 2 * time.Second,
+		MidStreamSplit: 134,
+	})
+	slow, _ := ts2.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	defer slow.Body.Close()
+	time.Sleep(20 * time.Millisecond)
+	resp2, _ := ts2.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	status2, _, _, code2 := readErr(t, resp2)
+	if status2 != http.StatusTooManyRequests || code2 != "pool_busy" {
+		t.Fatalf("busy row: got %d %q", status2, code2)
+	}
+	if ra2 := resp2.Header.Get("Retry-After"); ra2 == "" {
+		t.Error("pool_busy row missing Retry-After")
+	}
+
+	// Upstream-429 row: surfaced mapping; nothing leaks in the body.
+	ts3 := testserver.NewTestServer(t, oneAccount(), nil)
+	ts3.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
+	resp3, _ := ts3.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	status3, msg3, typ3, code3 := readErr(t, resp3)
+	if status3 != http.StatusTooManyRequests || typ3 != "rate_limit_error" || code3 != "upstream_rate_limited" {
+		t.Fatalf("upstream 429 row: got %d %q %q", status3, typ3, code3)
+	}
+	// Privacy: no credential anywhere. The mock cookies carry "st-mock" and
+	// "userId=123456"; none may appear in any response.
+	if strings.Contains(msg3, "st-mock") || strings.Contains(msg3, "userId") ||
+		strings.Contains(msg3, "passToken") || strings.Contains(msg3, "serviceToken") {
+		t.Errorf("429 body leaks identity: %q", msg3)
+	}
+	for _, hdr := range []string{"Retry-After", "Content-Type", "X-Mimo-Warnings"} {
+		if v := resp.Header.Get(hdr); strings.Contains(v, "st-mock") || strings.Contains(v, "123456") {
+			t.Errorf("header %s leaks identity: %q", hdr, v)
+		}
+	}
+}
+
+// ERRMAP-012: streaming post-first-byte failure → error-text content delta →
+// delta:{} + finish_reason:"stop" → [DONE] (never a bare hang, never
+// restarted deltas).
+func TestERRMAPStreamErrorShape(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEError})
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _ := testutil.ReadSSE(t, resp)
+	if len(events) == 0 {
+		t.Fatal("no events streamed")
+	}
+	var content strings.Builder
+	sawFinish, sawDone := false, false
+	sawErrText := false
+	chatID := ""
+	for i, e := range events {
+		if e == "[DONE]" {
+			sawDone = true
+			continue
+		}
+		c := testutil.ParseChunk(t, e)
+		if i == 0 {
+			chatID = c.ID
+			continue
+		}
+		if c.ID != chatID {
+			t.Errorf("chunk id changed mid-error: %q vs %q", c.ID, chatID)
+		}
+		if len(c.Choices) == 0 {
+			continue
+		}
+		if c.Choices[0].FinishReason != nil && *c.Choices[0].FinishReason == "stop" {
+			sawFinish = true
+			continue
+		}
+		if strings.Contains(c.Choices[0].Delta.Content, "[upstream error]") {
+			sawErrText = true
+		}
+		content.WriteString(c.Choices[0].Delta.Content)
+	}
+	if !sawErrText {
+		t.Errorf("no error-text delta; streamed = %q", content.String())
+	}
+	if !sawFinish || !sawDone {
+		t.Errorf("finish/done = %v/%v — stream must terminate honestly", sawFinish, sawDone)
+	}
+}

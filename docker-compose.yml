@@ -1,0 +1,23 @@
+# mimo2api compose (SDD §6): port 8080, /data volume for accounts.json,
+# in-binary healthcheck (distroless has no curl/wget).
+services:
+  mimo2api:
+    build: .
+    image: mimo2api
+    container_name: mimo2api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data # accounts.json + runtime state (SDD §4.7)
+    environment:
+      - MIMO2API_ACCOUNTS_FILE=/data/accounts.json
+      - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
+      - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
+      - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
