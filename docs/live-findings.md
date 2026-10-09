@@ -198,6 +198,14 @@ rounds inside one minute:
 | `mimo-v2-flash` (superseded) | 503 busy | 503 busy | 503 busy |
 | `mimo-v2.5` (superseded) | client timeout | 200 | 200 |
 
+A second sweep on the same instance (before the fix) hit two superseded chat ids at
+once — `mimo-v2-flash` → 503 `upstream_busy`, `mimo-v2-pro` → 503 `upstream_busy` —
+while the current ids answered 200 in the same sweep. Both carry `redirectTo` in
+`bot/config`, so the refusal is a property of the id, not a random platform
+throttle: the busy frame is how chat says "this model is retired". (The list and
+the resolution map both follow the catalog, so the fix covers ids the sweep never
+named.)
+
 After ADR 0011 (list cleaned, requests resolved, refusals learned from), the same
 live instance on port 18240:
 
