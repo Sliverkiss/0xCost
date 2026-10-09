@@ -28,7 +28,7 @@ chown 65532:65532 data data/accounts.json && chmod 750 data && chmod 600 data/ac
 #    are the reverse proxy's job (Caddy terminates :443 and proxies to
 #    127.0.0.1:21223), so this port never needs to be reachable from outside —
 #    an exposed API port is an exposed key.
-docker compose --env-file data/deploy.env up -d --build
+make deploy   # = docker compose --env-file data/deploy.env up -d --build --force-recreate
 
 # 4. use — same key and same base_url for chat, audio and the admin surface
 curl http://localhost:21223/v1/chat/completions \
@@ -180,7 +180,11 @@ client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one key)
   published port (21223, loopback only) reaches the gateway directly, so models,
   audio and admin need no relay and no second credential.
 - **The middleware source stays in the repository** (`deploy/toolforge/`, with its
-  `PROVENANCE.md`), but nothing builds or runs it: `docker compose up -d --build`
+  `PROVENANCE.md`), but nothing builds or runs it: `make deploy` (i.e.
+`docker compose --env-file data/deploy.env up -d --build --force-recreate` — the
+force-recreate matters, see the Makefile: `up -d --build` compares the service
+definition, not the image contents, so a rebuilt image can leave the old container
+serving)
   starts one container. Reviving it is a compose service plus an env var, and
   `git log` holds the configuration that worked.
 - **It did work when it ran** (live, before removal): `get_weather(city)` came back

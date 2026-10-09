@@ -9,7 +9,10 @@ COVER_DIR  := .cover
 PKGS       := adapter pool mimo api accounts config
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-race cover cover-check vet fmt hygiene test-docker run clean
+# deploy/logs/down must be declared: a `deploy/` directory exists in this tree, and
+# without .PHONY make treats the directory as an up-to-date target and runs nothing.
+.PHONY: help build test test-race cover cover-check vet fmt hygiene test-docker run clean \
+	deploy logs down mirror push-mirror
 
 help: ## List available targets.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -99,6 +102,26 @@ test-docker: ## Run the DOCKER-001..006 harness (skips when docker is absent).
 
 run: ## Run the gateway locally with the ambient env config.
 	$(GO) run ./cmd/mimo2api
+
+# Local deployment (docker compose). The credentials live in the git-ignored
+# data/deploy.env and are passed with --env-file, so they are never in the compose
+# file or the image.
+DOCKER_ENV ?= data/deploy.env
+COMPOSE    ?= docker compose --env-file $(DOCKER_ENV)
+
+deploy: ## Build and (re)start the local container on 21223.
+	@# --force-recreate is not decoration: `up -d --build` compares the SERVICE
+	@# definition, not the image contents, so after a code change it can print
+	@# "Container mimo2api Running" and leave the previous binary serving. That is
+	@# the stale-deploy trap, and the only sign of it is the missing "Recreated".
+	$(COMPOSE) up -d --build --force-recreate
+	@$(COMPOSE) ps
+
+logs: ## Follow the container's log.
+	$(COMPOSE) logs -f --tail=50
+
+down: ## Stop the local container.
+	$(COMPOSE) down
 
 clean: ## Remove build and coverage artifacts.
 	@rm -rf $(COVER_DIR) cover.out mimo2api
