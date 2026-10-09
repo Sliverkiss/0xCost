@@ -37,7 +37,7 @@ performs `GET /healthz` for the container healthcheck.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/chat/completions` | Bearer | OpenAI chat completions (streaming + non-streaming) |
-| GET | `/v1/models` | Bearer | Model catalog |
+| GET | `/v1/models` | Bearer | Model catalog: the account's live Studio catalog (chat-capable rows) merged with the static floor; falls back to the static list if the upstream read fails |
 | GET | `/v1/models/{id}` | Bearer | One model entry |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
 | POST | `/v1/audio/transcriptions` | Bearer | Speech-to-text (multipart: `file`, `model?`, `language?`, `response_format?`) → `{text}` / plain text / `verbose_json` |
@@ -49,7 +49,11 @@ performs `GET /healthz` for the container healthcheck.
 
 Models: `mimo-v2.6-pro`, `mimo-v2.6-pro-ultraspeed-studio` (fastchat
 channel), plus alias resolution (`mimo`, `ultraspeed`, missing model →
-configured default). Reasoning streams when `enable_thinking: true` or
+configured default). `/v1/models` reports what this deployment can actually
+serve, read from the account's own Studio catalog (`bot/config`
+`modelConfigListNg`, `pageType: chat` rows) with the static list as the floor —
+on the live test account that is 15 ids, including `clawm-alpha`/`clawl-alpha`
+and the omni variants. Reasoning streams when `enable_thinking: true` or
 `reasoning: {"type": "enabled"}` (reasoning deltas carry
 `reasoning_content`).
 

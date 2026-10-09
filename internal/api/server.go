@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -222,17 +223,58 @@ type modelJSON struct {
 }
 
 // handleModels lists the catalog in OpenAI list shape (TDD API-005).
+//
+// The ids come from the account's own Studio catalog (bot/config
+// `modelConfigListNg`, chat-capable entries first) so a client sees what this
+// deployment can actually serve, with the static list as fallback when the
+// upstream read fails — a catalog read must never take the endpoint down.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(s.modelsList())
+	_ = json.NewEncoder(w).Encode(s.modelsList(r.Context()))
 }
 
-func (s *Server) modelsList() map[string]any {
-	data := make([]modelJSON, 0, len(adapter.DefaultModels))
-	for _, m := range adapter.DefaultModels {
+func (s *Server) modelsList(ctx context.Context) map[string]any {
+	ids := s.liveModelIDs(ctx)
+	data := make([]modelJSON, 0, len(ids))
+	for _, m := range ids {
 		data = append(data, modelJSON{ID: m, Object: "model", Created: 1700000000, OwnedBy: "xiaomi"})
 	}
 	return map[string]any{"object": "list", "data": data}
+}
+
+// liveModelIDs is the static catalog plus every chat-capable id the account
+// reports, in a stable order (static first, then upstream additions).
+func (s *Server) liveModelIDs(ctx context.Context) []string {
+	ids := make([]string, 0, len(adapter.DefaultModels)+8)
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for _, m := range adapter.DefaultModels {
+		add(m)
+	}
+	err := s.withAccount(ctx, func(cookie, ph, _ string) error {
+		cfg, cerr := s.botConfig(ctx, cookie, ph)
+		if cerr != nil {
+			return cerr
+		}
+		for _, m := range cfg.Models {
+			// pageType "chat" is what /v1/chat/completions serves; an empty
+			// pageType is treated as chat (older catalog rows omit it).
+			if m.PageType == "" || m.PageType == mimo.ConversationKindChat {
+				add(m.Model)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		s.debugf("models: live catalog unavailable (%v); serving the static list", err)
+	}
+	return ids
 }
 
 // handleModelByID returns one model or 404 listing available ids (TDD

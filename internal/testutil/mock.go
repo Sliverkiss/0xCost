@@ -65,13 +65,14 @@ type MockUpstream struct {
 	loginURL string // 401-probe loginUrl override (OTP login tests)
 
 	// Web-surface audio/catalog state (mock_audio.go).
-	audioReqs   []AudioRequest
-	ttsStatuses []string
-	asrStatuses []string
-	asrText     string
-	wav         []byte
-	uploaded    []byte
-	saveErrors  []string
+	audioReqs    []AudioRequest
+	ttsStatuses  []string
+	asrStatuses  []string
+	asrText      string
+	wav          []byte
+	uploaded     []byte
+	saveErrors   []string
+	botConfigErr string
 }
 
 // SetLoginURL overrides the loginUrl in the /open-apis/user/mi/get 401

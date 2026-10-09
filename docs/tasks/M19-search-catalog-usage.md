@@ -94,3 +94,20 @@ event:web_search data:[{"id":"...","text":"<网页正文>","metadata":"{}",
 
 与 M18 相同：真凭据只在 git-ignored `data/`；零新依赖；不改登录链；错误要可定位；轮询/缓存要响应 ctx；
 不得 `git add -A` 提交构建产物；提交信息英文。
+
+## Status so far (2026-10-09)
+
+- **`/v1/models` from the real catalog: DONE.** The endpoint merges the
+  account's live `bot/config` catalog (`modelConfigListNg`, chat rows) with the
+  static floor and falls back to the static list when the upstream read fails
+  (MODELS-LIVE-001/002). Live: 15 ids.
+- **`nativeUsage` passthrough (`cached_tokens` / `reasoning_tokens`): DONE**
+  (already emitted by the adapter; confirmed on live responses).
+- **Web-search citations (annotations/citations, stream + non-stream): NOT
+  STARTED.** Upstream really returns the events (`web_search` with ≤12 results,
+  fields `text/name/url/displayUrl/snippet/usedContent`), but the adapter still
+  drops them; this is parsing/policy work, deliberately after the endpoint
+  plumbing.
+- **`web_search_status` switch + `:online` suffix: NOT STARTED** (needs the same
+  plumbing; note the Studio only enables search when the request carries no
+  attachments — replicate that rule).

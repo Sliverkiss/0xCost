@@ -56,6 +56,14 @@ func (m *MockUpstream) SetAudioStatusScript(kind string, statuses ...string) {
 	m.asrStatuses = statuses
 }
 
+// SetBotConfigError makes bot/config fail with a business error (empty string
+// clears it), which is how the model-catalog fallback path is exercised.
+func (m *MockUpstream) SetBotConfigError(msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.botConfigErr = msg
+}
+
 // SetAudioText overrides the transcript the ASR status endpoint returns.
 func (m *MockUpstream) SetAudioText(text string) {
 	m.mu.Lock()
@@ -170,6 +178,13 @@ func (m *MockUpstream) serveAudio(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case r.URL.Path == "/open-apis/bot/config":
+		m.mu.Lock()
+		cfgErr := m.botConfigErr
+		m.mu.Unlock()
+		if cfgErr != "" {
+			writeJSONEnvelope(w, 400, cfgErr, nil)
+			return
+		}
 		writeJSONEnvelope(w, 0, "成功", mockBotConfig())
 
 	case r.URL.Path == "/open-apis/tts/v2/generate":
