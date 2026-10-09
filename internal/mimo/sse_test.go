@@ -147,6 +147,28 @@ func TestSSEUsageLastWins(t *testing.T) {
 	}
 }
 
+// SSE-012 (fastchat shape, TDD §2.1): the ultraspeed/fastchat channel sends
+// more than one `usage` event with *different* values — the last one must win,
+// and the dialog anchor + content must still come through.
+func TestSSEUsageLastWinsFastchat(t *testing.T) {
+	st, err := runFixture(t, testutil.FixtureSSEFastchat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.usage == nil {
+		t.Fatal("usage = nil")
+	}
+	if st.usage.PromptTokens != 5 || st.usage.CompletionTokens != 8 || st.usage.TotalTokens != 13 {
+		t.Errorf("usage = %+v, want the second (last) event 5/8/13, not the first 5/5/10", st.usage)
+	}
+	if got := st.content.String(); got != "fast reply" {
+		t.Errorf("content = %q, want %q", got, "fast reply")
+	}
+	if st.dialogID != "dlg-0009" {
+		t.Errorf("dialogId = %q, want dlg-0009", st.dialogID)
+	}
+}
+
 // Thinking-fixture coverage through the full streamer (splitter unit
 // behavior itself is pinned in adapter tests; these verify the SSE layer
 // feeds it correctly).

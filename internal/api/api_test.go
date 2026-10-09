@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -551,3 +552,39 @@ func TestAPISamplingPassthrough(t *testing.T) {
 		t.Errorf("sampling fields must be absent: %s", r2.RawBody)
 	}
 }
+
+// API-002 (golden, TDD §2.1 `openai_stream_expected.txt`): the byte-level
+// chunk sequence for the `sse_basic` upstream stream must match the committed
+// golden with only the id/timestamp normalized. The structural assertions
+// above pin parsed values; this pins frame order and shape, which is what a
+// client's SSE parser actually has to survive.
+func TestAPI002GoldenChunkSequence(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := normalizeStreamForGolden(string(raw))
+	want := testutil.LoadFixture(t, "openai_stream_expected.txt")
+	if got != want {
+		t.Errorf("stream does not match the golden\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// normalizeStreamForGolden rewrites the two per-request values (chunk id and
+// creation timestamp) so a golden can be compared across runs.
+func normalizeStreamForGolden(s string) string {
+	s = goldenChatID.ReplaceAllString(s, `"id":"chatcmpl-00000000000000000000000000000000"`)
+	s = goldenCreated.ReplaceAllString(s, `"created":0`)
+	return s
+}
+
+var (
+	goldenChatID  = regexp.MustCompile(`"id":"chatcmpl-[0-9a-fA-F]+"`)
+	goldenCreated = regexp.MustCompile(`"created":\d+`)
+)
