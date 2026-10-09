@@ -28,7 +28,10 @@ const (
 const (
 	DefaultRequestTimeout = 300 * time.Second
 	DefaultSSEIdleTimeout = 180 * time.Second
-	DefaultSessionRefresh = 6 * time.Hour
+	// DefaultSessionRefresh is the STS keepalive cadence (ADR 0014): 12 hours,
+	// because a renewal re-mints the session cookie and never the credential —
+	// the passToken's own 30-day clock is what a password login resets.
+	DefaultSessionRefresh = 12 * time.Hour
 	DefaultStickyTTL      = 30 * time.Minute
 	DefaultStickyMax      = 500
 	// DefaultSessionWait bounds how long a second streaming request waits for

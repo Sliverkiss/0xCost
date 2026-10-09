@@ -205,12 +205,22 @@ Implemented in `mimo-web-api/src/xiaomi-login.js`; independently in
 1. Probe `GET /open-apis/user/mi/get` with `Cookie: userId=<id>;` → 401 body gives
    `loginUrl` (fallback loginUrl with a hardcoded `sign` param exists at
    `session.js:149-153`).
-2. `GET {loginUrl}&_json=true` with `Cookie: userId=<id>; passToken=<rt>` →
+2. `GET {loginUrl}&_json=true` with `Cookie: userId=<id>; passToken=<rt>` (the request
+   carries the stored device identity and the browser's navigation headers, ADR 0013) →
    `&&&START&&&{code:0, location:"https://aistudio.xiaomimimo.com/sts?sign=..."}`.
-   `code 70016` = passToken dead → account needs full re-login or eviction.
+   `code 70016` = passToken dead → **asynchronous password re-login** (ADR 0014), not
+   eviction. Note the response echoes the passToken it was sent: a renewal refreshes the
+   session and never the credential, whose 30-day clock only a full login resets
+   (docs/live-findings.md DEVICE-004).
 3. `GET location` → Set-Cookie plants fresh `serviceToken` / `ph` / `userId`.
 4. Cache to disk (`data/session-cache.json` in the reference; we persist per-account in
    the accounts store, §4.7).
+
+Keepalive cadence: every `MIMO2API_SESSION_REFRESH_HOURS` (**12 h**, ADR 0014). A
+renewal failure is classified: a dead credential (70016, captcha, SMS rate limit)
+schedules the asynchronous recovery of ADR 0014 — single flight per account, 5-minute
+backoff after a failure, and the requesting call answers `account_action` with a retry
+hint instead of blocking on a login chain.
 
 Session validation: `GET /open-apis/user/mi/get` → `{"code":0,"data":{"userId":...}}`
 (`PROTOCOL.md:12`; `mimo-web-proxy/internal/mimo/web_client.go:305-328` also checks

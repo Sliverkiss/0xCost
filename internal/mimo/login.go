@@ -220,6 +220,13 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// The passport answers 200 with a JSON/XSSI body, including for its own
+	// error codes. A 5xx or 429 therefore means an intermediary, not a login
+	// result: parsing that body as a success would accept a proxy's error page.
+	// (Found by recovery_test.go REC-003, which scripted exactly that.)
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("serviceLoginAuth2: upstream status %d", resp.StatusCode)
+	}
 
 	jar = mergeJars(jar, collectCookies(resp))
 	m, err := parseXSSI(body)

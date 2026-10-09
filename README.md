@@ -197,7 +197,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_DEFAULT_MODEL` | `mimo-v2.6-pro` | Model for unknown/missing ids |
 | `MIMO2API_REQUEST_TIMEOUT_MS` | `300000` | Upstream request timeout |
 | `MIMO2API_SSE_IDLE_TIMEOUT_S` | `180` | No-SSE-event watchdog (stream stall abort) |
-| `MIMO2API_SESSION_REFRESH_HOURS` | `6` | Background STS renewal sweep |
+| `MIMO2API_SESSION_REFRESH_HOURS` | `12` | Background STS keepalive sweep (ADR 0014: it refreshes the session cookie, never the credential) |
 | `MIMO2API_STICKY_TTL_S` | `1800` | Session idle TTL |
 | `MIMO2API_STICKY_MAX` | `500` | Session LRU cap |
 | `MIMO2API_SESSION_WAIT_MS` | `2000` | How long a second streaming request waits for its own session before forking |
@@ -212,6 +212,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_COOLDOWN_TRANSPORT_CAP_S` | `300` | Cap for the transport ladder — a dead connection is less likely to be the account's fault, so it escalates less far than 5xx/429 |
 | `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window inside which risk-control signals are correlated across accounts behind one egress |
 | Cookie / credential lifetimes (measured 2026-10-09) | — | `passToken` 30 d, `cUserId`/`userId` 30 d, `deviceId` 390 d, `pass_ua` 89 d, `uLocale` 15 d; renewal **echoes** the passToken, only a full login rotates it (docs/live-findings.md DEVICE-004) |
+| Keepalive / self-healing (ADR 0014) | — | Every 12 h (`MIMO2API_SESSION_REFRESH_HOURS`) the session cookie is re-minted from `userID + passToken`; a **revoked credential** schedules an asynchronous single-flight password re-login that rotates the passToken and puts the account back in rotation. A request that discovers the revocation answers `account_action` ("retry in a few seconds") instead of blocking; a login that lands on a human gate persists the device identity, disables the account with the reason and dispatches nothing. `/v1/admin/pool` reports `recovery{in_flight,attempts,last_error}` |
 | `MIMO2API_OTP_AUTO` | `false` | Allow a login to send a **real SMS** for the new-device OTP challenge (complete via `/v1/admin/otp/submit`). Off by default: the dispatch is an explicit operator decision (ADR 0013) |
 | `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` refuses automatically and leaves the account for an operator, who can still approve one login with `POST /v1/admin/consent/agree` (ADR 0001) |
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |

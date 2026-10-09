@@ -74,8 +74,11 @@ func TestDefaults(t *testing.T) {
 	if c.SSEIdleTimeout() != 180*time.Second {
 		t.Errorf("sse idle = %v", c.SSEIdleTimeout())
 	}
-	if c.SessionRefresh() != 6*time.Hour {
-		t.Errorf("session refresh = %v", c.SessionRefresh())
+	// 12 h since ADR 0014: the keepalive re-mints the session cookie and never
+	// the credential, so its cadence is about keeping the cookie warm, not about
+	// the passToken's 30-day life (which only a password login resets).
+	if c.SessionRefresh() != 12*time.Hour {
+		t.Errorf("session refresh = %v, want 12h", c.SessionRefresh())
 	}
 	if c.DefaultModel() != "mimo-v2.6-pro" {
 		t.Errorf("default model = %q", c.DefaultModel())

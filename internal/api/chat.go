@@ -742,6 +742,18 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 			}
 			return sess.Cookie, sess.PH, nil
 		}
+		// The credential is dead (or the renewal was refused): recover in the
+		// background instead of blocking this request on a full login. ADR 0014
+		// — a password login on a known device needs no operator and no SMS, so
+		// the account heals within seconds and the caller simply retries.
+		if dead, reason := renewalFailureClass(rerr); dead {
+			s.logger.Printf("accounts: renewal for %s failed (%v) — %s; scheduling asynchronous credential recovery", accountID, rerr, reason)
+			s.RecoverCredentialAsync(accountID, reason)
+			return "", "", &mimo.ErrAccountAction{
+				Reason: "credential revoked; automated re-login in progress — retry in a few seconds (" + reason + ")",
+				Cause:  rerr,
+			}
+		}
 		s.logger.Printf("accounts: renewal for %s failed (%v), falling back to password login", accountID, rerr)
 	}
 	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).Login(ctx, acct.Phone, acct.Password)

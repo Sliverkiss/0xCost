@@ -368,10 +368,10 @@ the account file and merged back afterwards.
 |---|---|
 | Login attempt (session-less copy, `MIMO2API_OTP_AUTO=true`) | demand at 16:59:13, `code sent to +86 182******16`; challenge `otp-dbe010705a092a2fb9774bd4746c5ad3` registered (10-minute window) |
 | Device identity after that **aborted** attempt | persisted anyway: `deviceId=wb_63a194b2-…`, `pass_ua=web`, `uLocale=zh_CN` — the fix that makes the next attempt the same device |
-| Code submitted 16:59:43 (operator, via `/v1/admin/otp/submit`) | `{"account":"18278724616","status":"ok"}`; log: `otp: account 18278724616 logged in via OTP (Phone)` |
+| Code submitted 16:59:43 (operator, via `/v1/admin/otp/submit`) | `{"account":"<account id>","status":"ok"}`; log: `otp: account <id> logged in via OTP (Phone)` |
 | Credential | **passToken rotated** (`cea93425…` → `ad551ba2…`), session cookie replaced (886 → 923 chars), `cUserId` harvested |
 | `cmd/stsprobe` (probe → renew → validate) | `RENEW-OK in 2.389s` / `2.447s` / `2.488s`, `VALIDATE-OK` — renewal works again |
-| **Second password login, no SMS** (`cmd/loginprobe`, `DisableOTPAuto`) | `LOGIN-OK in 3.058s: userID=2652042633 session_cookies=6 ph=true` — **no new-device verification demanded**; device identity unchanged |
+| **Second password login, no SMS** (`cmd/loginprobe`, `DisableOTPAuto`) | `LOGIN-OK in 3.058s: userID=<account user id> session_cookies=6 ph=true` — **no new-device verification demanded**; device identity unchanged |
 | Deployment on the real account file | `/healthz` 1 available; `/v1/models` 7 models, `source=account` (live catalog read); `/v1/admin/pool` `invariant_ok: true` |
 
 Two semantics confirmed live, both previously only inferred: a **full login issues a new

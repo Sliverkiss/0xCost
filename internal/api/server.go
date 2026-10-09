@@ -29,7 +29,8 @@ type Server struct {
 	store    *accounts.Store
 	sessions *session.Store
 	client   *mimo.Client
-	otp      *otpStore // new-device OTP challenges (SDD §2.2 amendment)
+	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
+	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
 
 	apiKeys      [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
 	defaultModel string
@@ -238,6 +239,7 @@ func New(opts Options) *Server {
 		forkPolicy:     opts.ForkPolicy,
 		client:         opts.Client,
 		otp:            newOTPStore(),
+		recovery:       newRecoveryState(),
 		apiKeys:        keys,
 		defaultModel:   opts.DefaultModel,
 		replayCap:      opts.ReplayCap,

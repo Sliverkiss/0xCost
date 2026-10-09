@@ -198,7 +198,7 @@ func run() error {
 					log.Printf("session: swept %d expired entr%s", n, plural(n))
 				}
 			case <-refreshTick.C:
-				stsSweep(ctx, store, client)
+				stsSweep(ctx, store, client, srv)
 			}
 		}
 	}()
@@ -239,7 +239,7 @@ func run() error {
 // stsSweep renews cached sessions so pool accounts never ride a stale
 // serviceToken into a request (SDD §2.3 timer sweep, session.js:203-230
 // analogue).
-func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client) {
+func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client, srv *api.Server) {
 	for _, acct := range store.Accounts() {
 		if !acct.Enabled || acct.UserID == "" || acct.PassToken == "" {
 			continue
@@ -250,6 +250,12 @@ func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client) {
 		sess, err := client.For(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
 		if err != nil {
 			log.Printf("accounts: STS keepalive for %s: %v", acct.ID, err)
+			// A revoked credential does not heal itself and the next sweep is 12
+			// hours away: hand it to the asynchronous password re-login now
+			// (ADR 0014). Transient failures stay on the sweep cadence.
+			if srv != nil && api.IsDeadCredential(err) {
+				srv.RecoverCredentialAsync(acct.ID, "12-hour keepalive renewal reported a dead credential")
+			}
 			continue
 		}
 		acct.Device = mimo.MergeDevice(acct.Device, sess.Device)

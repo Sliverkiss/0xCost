@@ -155,6 +155,10 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 		// EgressSignals: distinct accounts per egress label with a recorded risk
 		// signal (SDD §4.5.2). One is inconclusive; several point at the egress.
 		EgressSignals map[string]int `json:"egress_signals"`
+		// Recovery: asynchronous credential re-logins in flight, how many
+		// attempts each account has had, and the last failure (ADR 0014) — this
+		// is how an operator sees a revocation healing itself.
+		Recovery map[string]any `json:"recovery"`
 	}{
 		Accounts: poolSummaryView{
 			Total:     sum.Total,
@@ -166,6 +170,7 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 		Pool:          views,
 		RiskEvents:    evViews,
 		EgressSignals: signalCounts,
+		Recovery:      s.recovery.Snapshot(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
