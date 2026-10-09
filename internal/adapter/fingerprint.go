@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -20,6 +21,32 @@ const (
 	fingerprintWindow = 5   // last N non-system messages counted (SDD §4.2)
 	fingerprintCut    = 200 // content truncated to this many chars (SDD §4.2)
 )
+
+// FrontierHash is the canonical hash of a message frontier: every non-system
+// message up to and including the last consumed turn, each length-prefixed.
+// Unlike Fingerprint it truncates nothing and covers the whole frontier, so
+// verification cannot be fooled by an edited early turn or a shared 200-rune
+// opening (SDD §4.3.1, INV-1). An empty history hashes to the empty string.
+func FrontierHash(msgs []Msg) string {
+	var parts []string
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+		parts = append(parts, m.Role, m.Content)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(strconv.Itoa(len(p))))
+		h.Write([]byte{':'})
+		h.Write([]byte(p))
+		h.Write([]byte{'|'})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
 
 // Fingerprint computes the conversation fingerprint: SHA-256 over the last
 // ≤5 non-system messages' (role, content) pairs, content truncated to 200
