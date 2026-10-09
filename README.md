@@ -214,10 +214,11 @@ cooldowns, disabled reasons survive restarts):
 | `docs/TDD.md` | Test design: §2 fixtures, §3 case-by-case IDs (API/RENEW/STICKY/ERRMAP/LOGIN/DOCKER), §6 gates |
 | `docs/login-chain-reverse.md` | The live-verified login chain, our code vs the real traffic, open questions |
 | `docs/usercross-reverse.md` | Cross-region consent page reverse engineering (with corrections) |
-| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010) |
+| `docs/live-findings.md` | Per-conclusion live evidence (LIVE-001..010, LIVE-SESS-001/002, LIVE-TTS-003) |
 | `docs/web-surface-reverse.md` | Live-verified web-surface protocol: TTS/ASR/search/claw + chat-vs-ultraspeed channels |
 | `docs/specs/session-identity.md` | Spec (accepted): how a request resolves to a session — identity ladder, isolation invariants, fork policy, one-shot non-streaming |
-| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split, session identity |
+| `docs/specs/account-pool.md` | Spec (proposed): pool failure attribution, the form of 451/461, per-account observability, per-account egress |
+| `docs/decisions/` | ADRs: consent policy, renew-before-login, landing-chain session, no auto-solving human gates, fixtures, acceptance gates, per-field search parsing, long-speech split (superseded by 0010: the cap is refused, not split), session identity |
 
 ## Development
 
