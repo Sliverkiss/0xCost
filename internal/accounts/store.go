@@ -180,6 +180,60 @@ func (s *Store) Update(a Account) error {
 	return s.backend.SaveAccount(context.Background(), a)
 }
 
+// Put upserts one account (add or replace) and writes it through. It is the
+// mutation the management CLI needs and the request path never uses: runtime
+// state changes go through Update, which refuses to invent an entry.
+func (s *Store) Put(a Account) error {
+	if a.ID == "" {
+		return fmt.Errorf("accounts: put: id is required")
+	}
+	if err := validate([]Account{a}); err != nil {
+		return fmt.Errorf("accounts: %w", err)
+	}
+	if err := s.backend.SaveAccount(context.Background(), a); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.accounts {
+		if s.accounts[i].ID == a.ID {
+			s.accounts[i] = a
+			return nil
+		}
+	}
+	s.accounts = append(s.accounts, a)
+	return nil
+}
+
+// Remove deletes one account from the backend and the in-memory set. Unknown
+// id removes nothing and returns ErrNotFound so a CLI can report it (ADR 0020).
+func (s *Store) Remove(id string) error {
+	s.mu.Lock()
+	idx := -1
+	for i := range s.accounts {
+		if s.accounts[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return &ErrNotFound{ID: id}
+	}
+	if err := s.backend.DeleteAccount(context.Background(), id); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.accounts = append(s.accounts[:idx], s.accounts[idx+1:]...)
+	s.mu.Unlock()
+	return nil
+}
+
+// ErrNotFound reports a management command that named an unknown account.
+type ErrNotFound struct{ ID string }
+
+func (e *ErrNotFound) Error() string { return fmt.Sprintf("no account with id %q in this store", e.ID) }
+
 // ReplaceAll swaps the whole set (import/seeding) and writes every account
 // through. Used by `-import-redis`, never on the request path.
 func (s *Store) ReplaceAll(ctx context.Context, accounts []Account) error {

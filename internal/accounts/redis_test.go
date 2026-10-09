@@ -401,6 +401,56 @@ func TestRedisBackendPlaintextRefusedOffLoopback(t *testing.T) {
 // configuration must fail loudly instead of falling back to the system roots.
 // ---------------------------------------------------------------------------
 
+// Upstash hands the host out as an https:// URL with a trailing slash, and that
+// exact shape has to compose into a Redis connection string (ADR 0018).
+func TestNormalizeRedisURLUpstashForms(t *testing.T) {
+	const token = "gQAAAAAA_token_like_value"
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"https with trailing slash", "https://known-mudfish-135209.upstash.io/",
+			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6379"},
+		{"bare host", "known-mudfish-135209.upstash.io",
+			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6379"},
+		{"host with port keeps it", "known-mudfish-135209.upstash.io:6380",
+			"rediss://default:" + token + "@known-mudfish-135209.upstash.io:6380"},
+		{"https with path and spaces", "  https://host.example.com/redis  ",
+			"rediss://default:" + token + "@host.example.com:6379"},
+		{"full url passes through", "rediss://default:" + token + "@h.example.com:6379",
+			"rediss://default:" + token + "@h.example.com:6379"},
+	}
+	for _, tc := range cases {
+		got, err := normalizeRedisURL(tc.host, token)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+		// The composed URL must parse back into the intended address.
+		addr, pass, user, useTLS, perr := parseRedisURL(got)
+		if perr != nil {
+			t.Errorf("%s: composed URL does not parse: %v", tc.name, perr)
+			continue
+		}
+		if !useTLS || pass != token || user != "default" {
+			t.Errorf("%s: parsed tls=%v user=%q (token withheld), want TLS + default user", tc.name, useTLS, user)
+		}
+		if strings.HasSuffix(addr, "/") || strings.Contains(addr, "/:") {
+			t.Errorf("%s: composed address %q carries path junk", tc.name, addr)
+		}
+	}
+
+	if _, err := normalizeRedisURL("https:///", token); err == nil {
+		t.Error("a host with nothing after the scheme must be an error, not an empty dial")
+	}
+	if _, err := normalizeRedisURL("https://host/", "  "); !errors.Is(err, ErrTokenRequired) {
+		t.Errorf("missing token: err = %v, want ErrTokenRequired", err)
+	}
+}
+
 func TestLoadRedisCAFile(t *testing.T) {
 	dir := t.TempDir()
 

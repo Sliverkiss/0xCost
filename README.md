@@ -210,15 +210,59 @@ MIMO2API_OTP_AUTO=false                    # never spend an SMS automatically (A
   else **3000** (ADR 0018) — nothing to configure on Belmo.
 - **Accounts live in Upstash** (one JSON key per account plus an index set, ADR
   0018): a redeploy keeps the pool, its device identities and its refresh tokens.
-  Seed it once from a local file with `mimo2api -import-redis data/accounts.json`
+  Seed it once from a local file with `mimo2api -accounts import data/accounts.json`
   (run locally against the same `DS_REDIS_HOST`; it verifies the write by reading
-  the store back).
+  the store back). Day-to-day changes — enable, disable, remove, re-pin an egress
+  label — are the same flag with a different subcommand; see
+  [Managing accounts](#managing-accounts-file-or-upstash).
 - **Or keep the file backend** by leaving `DS_REDIS_HOST` unset: the accounts file
   defaults to `data/accounts.json` (relative, directory created on demand), so an
   ephemeral filesystem costs a re-login per deploy rather than a crash. The
   container deployment on this host does exactly that with `./data` mounted.
 - **Health**: `GET /healthz` for the platform's HTTP check, or
   `mimo2api healthcheck` on a host without curl.
+
+## Managing accounts (file or Upstash)
+
+`mimo2api -accounts <command>` manages whichever store the environment selects —
+`DS_REDIS_HOST` set means Upstash, otherwise `MIMO2API_ACCOUNTS_FILE`. It is the
+same binary and the same environment as the server, so there is no file to edit
+and no Redis console to open (ADR 0020). Each command reports the backend it
+acted on.
+
+```
+mimo2api -accounts list                     # id, enabled, egress, credential/session/device state
+mimo2api -accounts show <id>                # full record; secrets shown as presence and length
+mimo2api -accounts enable <id>
+mimo2api -accounts disable <id> [reason]    # e.g. after a passport gate or a 461
+mimo2api -accounts set-egress <id> <label>  # pin/clear the network path label (ADR 0012)
+mimo2api -accounts rm <id>
+mimo2api -accounts import <accounts.json>   # upsert every row into the active store
+mimo2api -accounts export <file>            # whole store → file, mode 0600 (a backup that holds credentials)
+mimo2api -accounts verify                   # connect, count, report
+```
+
+```
+$ DS_REDIS_HOST=… DS_REDIS_TOKEN=… mimo2api -accounts list
+1 account(s) in redis (known-mudfish-135209.upstash.io:6379)
+  <id>  enabled  egress=direct credential=present(347 chars) | session=present(age 4h9m) | device=present
+```
+
+- **Where the credentials come from**: the same `DS_REDIS_HOST`/`DS_REDIS_TOKEN`
+  the server uses, or `MIMO2API_ACCOUNTS_FILE` for the file backend. With docker
+  compose, `--env-file data/deploy.env` plus the `DS_REDIS_*` passthrough in
+  `docker-compose.yml` is what reaches the container (a container does not
+  inherit your shell).
+- **What takes effect when**: reads are immediate. `disable`/`rm`/`import` change
+  what the next start loads — the store is read once at boot and the request path
+  never calls Redis (ADR 0018) — so restart the container to apply a membership
+  change. Runtime state that heals on its own (session renewal, credential
+  rotation, cooldowns) already writes through without a restart.
+- **Moving between stores**: `-accounts export` a file from one store, then
+  `-accounts import` it into the other.
+- **Never automated**: starting a re-login over SMS still needs the human gate
+  (`MIMO2API_OTP_AUTO=false`, ADR 0013) — including when the account is a row in
+  Upstash rather than a line in a file.
 
 ## Configuration (environment)
 

@@ -29,9 +29,17 @@ services:
       # on this host binds 127.0.0.1 too — an exposed API port is an exposed key.
       - "127.0.0.1:21223:3000"
     volumes:
-      - ./data:/data # accounts.json + runtime state (SDD §4.7)
+      - ./data:/data # accounts.json (import source) + runtime state (SDD §4.7)
     environment:
       - MIMO2API_ACCOUNTS_FILE=/data/accounts.json
+      # Upstash as the account store (ADR 0018/0020). `--env-file data/deploy.env`
+      # only substitutes variables INTO this file: a container does not inherit
+      # the operator's shell, so these two lines are what actually hand the
+      # credentials to the process. Unset (the default) keeps the file backend,
+      # so the same compose file serves both a local deploy and Belmo.
+      - DS_REDIS_HOST=${DS_REDIS_HOST:-}
+      - DS_REDIS_TOKEN=${DS_REDIS_TOKEN:-}
+      - DS_REDIS_CA_FILE=${DS_REDIS_CA_FILE:-}
       # The one key, shared by both hops: the middleware accepts it, then passes
       # the caller's own header through, and this line is what authorises it here.
       - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}

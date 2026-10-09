@@ -27,5 +27,6 @@ rather than at chat history.
 | [0015](0015-request-size-limits.md) | Request size limits are measured, never guessed (102,400 chars / 50,000 on fastchat) | accepted |
 | [0016](0016-no-tools-non-streaming.md) | No function calling, and chat is non-streaming | accepted (streaming part superseded by 0017) |
 | [0017](0017-no-streaming-no-session-store.md) | Chat has no streaming path and no session store (deleted, not switched off) | accepted (supersedes 0016 §2 and 0009) |
-| [0019](0019-lease-ttl-and-slot-hold.md) | A lease is per-request capacity with a TTL; real client budget, slot-hold policy, derived upstream timeout |
+| [0019](0019-lease-ttl-and-slot-hold.md) | A lease is per-request capacity with a TTL; real client budget, slot-hold policy, derived upstream timeout | accepted |
 | [0018](0018-account-store-backends-and-port.md) | The account store is pluggable (file or Upstash); port 3000, platform `PORT` honoured, nixpacks build | accepted |
+| [0020](0020-account-management-cli.md) | Account management is a CLI against the configured store: list/show/enable/disable/set-egress/rm/import/export/verify | accepted |

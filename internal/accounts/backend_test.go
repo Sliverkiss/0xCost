@@ -116,6 +116,7 @@ func TestReplaceAllRejectsDuplicates(t *testing.T) {
 type countingBackend struct {
 	loaded   []Account
 	saves    []Account
+	deletes  []string
 	saveErr  error
 	loadErr  error
 	closed   bool
@@ -135,6 +136,21 @@ func (c *countingBackend) SaveAccount(_ context.Context, a Account) error {
 		return c.saveErr
 	}
 	c.saves = append(c.saves, a)
+	return nil
+}
+
+func (c *countingBackend) DeleteAccount(_ context.Context, id string) error {
+	if c.saveErr != nil {
+		return c.saveErr
+	}
+	c.deletes = append(c.deletes, id)
+	kept := c.loaded[:0:0]
+	for _, a := range c.loaded {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	c.loaded = kept
 	return nil
 }
 

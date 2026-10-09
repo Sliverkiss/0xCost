@@ -40,10 +40,23 @@ func main() {
 	// this is how a local accounts file becomes the remote pool — the same
 	// flag the reference deployment uses (ADR 0018).
 	importRedis := flag.String("import-redis", "", "import an accounts.json file into the configured Redis store, then exit")
+	// Registered so flag.Parse accepts it; the command and its arguments are read
+	// from argv (see accountsFlagValue) because a subcommand's own arguments
+	// follow the flag as ordinary words.
+	flag.Bool("accounts", false, "manage the account store; use: -accounts <command> (help lists them)")
 	flag.Parse()
 	if *importRedis != "" {
 		if err := runImportRedis(*importRedis); err != nil {
 			log.Fatalf("mimo2api: import-redis: %v", err)
+		}
+		return
+	}
+
+	// -accounts <cmd> [args]: manage the configured account store (file or
+	// Upstash) without editing a file or opening a Redis console (ADR 0020).
+	if args, ok := accountsFlagValue(os.Args[1:]); ok {
+		if err := runAccountsCommand(args); err != nil {
+			log.Fatalf("mimo2api: -accounts: %v", err)
 		}
 		return
 	}

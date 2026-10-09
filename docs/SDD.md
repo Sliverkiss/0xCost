@@ -865,7 +865,31 @@ The Redis client is a ~200-line RESP2 implementation in
 plaintext `redis://` URL to a non-loopback host, because account passwords and
 session cookies live in that store (`DS_REDIS_INSECURE=1` accepts it for a local
 server). Seeding a hosted pool from a local file:
-`mimo2api -import-redis data/accounts.json`.
+`mimo2api -accounts import data/accounts.json`.
+
+#### Managing the store (ADR 0020)
+
+A pluggable store removed the file people used to edit, so the same binary grew a
+management surface: `mimo2api -accounts <command>`, resolved against whichever
+backend the environment selects (it calls the same `openStore` the server does,
+and prints the backend it acted on).
+
+| command | effect |
+|---|---|
+| `list` | one line per account: id, enabled, egress label, credential presence, session age, device anchor present |
+| `show <id>` | the full record with secrets replaced by presence and length |
+| `enable <id>` / `disable <id> [reason]` | flip the flag, recording why |
+| `set-egress <id> <label>` | pin or clear the network-path label (§4.8) |
+| `rm <id>` | delete the account from the store |
+| `import <file>` / `export <file>` | upsert a local file into the store / dump the store to a 0600 file |
+| `verify` | connect, count, report — non-zero when the store is empty |
+
+Store API: `Put` (upsert) and `Remove` (delete) alongside the read/`Update`/
+`ReplaceAll` pair; `Backend.DeleteAccount` on both backends. Redis deletes the
+index member before the record key, so an interrupted delete leaves an invisible
+key instead of an index entry that `Load` would trip over. Membership and flag
+changes take effect on the next start — the store is read once at boot — while
+runtime state (renewal, rotation, cooldown) writes through immediately.
 
 #### File format
 

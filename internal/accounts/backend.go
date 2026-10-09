@@ -25,6 +25,10 @@ type Backend interface {
 	Load(ctx context.Context) ([]Account, error)
 	// SaveAccount upserts one account's full record.
 	SaveAccount(ctx context.Context, a Account) error
+	// DeleteAccount removes one account. Removing an id that is not there is
+	// not an error: the operator asked for the end state, not for a specific
+	// number of writes (ADR 0020).
+	DeleteAccount(ctx context.Context, id string) error
 	// Close releases resources (a no-op for the file backend).
 	Close() error
 }
@@ -86,6 +90,22 @@ func (f *FileBackend) SaveAccount(_ context.Context, a Account) error {
 	if !replaced {
 		f.set = append(f.set, a)
 	}
+	return f.saveLocked()
+}
+
+// DeleteAccount removes one entry from the mirrored set and rewrites the
+// document. A missing id still rewrites (cheap, and it keeps the file and the
+// mirror in step).
+func (f *FileBackend) DeleteAccount(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := f.set[:0:0]
+	for _, a := range f.set {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	f.set = kept
 	return f.saveLocked()
 }
 

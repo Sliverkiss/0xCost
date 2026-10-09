@@ -373,6 +373,7 @@ func OpenUpstash(host, token string, logger Logger) (*RedisBackend, error) {
 // normalizeRedisURL composes DS_REDIS_HOST + DS_REDIS_TOKEN into a
 // connection string.
 func normalizeRedisURL(host, token string) (string, error) {
+	raw := host
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return "", nil
@@ -386,6 +387,18 @@ func normalizeRedisURL(host, token string) (string, error) {
 	}
 	if i := strings.Index(host, "://"); i >= 0 {
 		host = host[i+3:]
+	}
+	// Upstash hands out the host as an https:// URL, often with a trailing
+	// slash. Anything after the authority is not part of a Redis address, and
+	// leaving it in would compose "host/:6379" — a URL whose port parses as a
+	// path. Take only host[:port].
+	host = strings.TrimSuffix(host, "/")
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", fmt.Errorf("DS_REDIS_HOST=%q has no host after the scheme", raw)
 	}
 	// A host that already carries a port keeps it; only a bare host gets the
 	// Redis default (blind appending would produce "host:6380:6379").
@@ -444,6 +457,17 @@ func (b *RedisBackend) SaveAccount(ctx context.Context, a Account) error {
 		return err
 	}
 	_, err = b.conn.do("SADD", redisIndexKey, a.ID)
+	return err
+}
+
+// DeleteAccount drops one account: the index member and the record key. The
+// index is what Load iterates, so removing the member first is what makes a
+// half-finished delete harmless — a leftover key is invisible (ADR 0020).
+func (b *RedisBackend) DeleteAccount(_ context.Context, id string) error {
+	if _, err := b.conn.do("SREM", redisIndexKey, id); err != nil {
+		return err
+	}
+	_, err := b.conn.do("DEL", redisKeyPrefix+id)
 	return err
 }
 

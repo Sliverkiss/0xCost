@@ -173,7 +173,7 @@ thinking splitter, the usage merge and the fixture parser are load-bearing.
 
 Exact-byte fixtures, committed. The MiMo format uses colon **without** space
 (`event:message`, SDD §2.5); fixture files preserve that byte-exactly. The thinking
-markers are `<think>` + NUL (`<think> `) and `</think>` + NUL (`</think> `)
+markers are `<think>` + NUL (`<think>\x00`) and `</think>` + NUL (`</think>\x00`)
 — marker followed by a NUL byte (SDD §2.5, PROTOCOL.md:79-84).
 
 | Fixture | Content | Used by |
@@ -181,9 +181,9 @@ markers are `<think>` + NUL (`<think> `) and `</think>` + NUL (`</think> `)
 | `sse_basic.txt` | dialogId → 3 `message` text deltas → `usage` → `finish [DONE]` | API-001/002, SSE-001 |
 | `sse_crlf.txt` | `sse_basic` with `\r\n` line endings | SSE-002 |
 | `sse_nospace.txt` | `event:x` (no space after colon) variants | SSE-003 |
-| `sse_thinking.txt` | message deltas embedding `<think>  … </think> ` then plain text | SSE-006, API-010 |
-| `sse_thinking_split.txt` | same, but marker bytes straddling chunk boundaries (`<thi` + `nk> `) | SSE-007 |
-| `sse_thinking_unterminated.txt` | `<think> ` never closed; stream ends | SSE-009 |
+| `sse_thinking.txt` | message deltas embedding `<think>\x00 … </think>\x00` then plain text | SSE-006, API-010 |
+| `sse_thinking_split.txt` | same, but marker bytes straddling chunk boundaries (`<thi` + `nk>\x00`) | SSE-007 |
+| `sse_thinking_unterminated.txt` | `<think>\x00` never closed; stream ends | SSE-009 |
 | `sse_multi_think.txt` | two separate think blocks interleaved with text | SSE-011 |
 | `sse_multi_usage.txt` | `usage` emitted 3×, last one has the largest counts | SSE-012, API-004 |
 | `sse_error.txt` | `event:error` mid-stream after 2 deltas | API-021, SSE-005 |
@@ -223,10 +223,10 @@ order).
 
 | ID | Description | Precondition | Stimulus | Expected result | SDD § |
 |---|---|---|---|---|---|
-| SSE-006 | Basic think-block split | splitter initialized | feed deltas `<think> Let me…</think> Answer` in one chunk | reasoning events carry `Let me…` as `reasoning_content`; `Answer` as `content`; NUL bytes never emitted | §2.5 |
-| SSE-007 | Markers split across chunk boundaries | splitter initialized | feed byte splits: `…text<thi` \| `nk> th…` and `…</th` \| `ink> ans…` | marker recognized; no literal `<think>`/NUL leaks into output; state machine survives arbitrary 1-byte splits (property-tested over all split points of a fixture) | §2.5 |
-| SSE-008 | NUL stripping outside markers | splitter initialized | content containing stray ` ` not part of a marker | NUL stripped from emitted content | §2.5 |
-| SSE-009 | Unterminated think block | splitter initialized | stream with `<think> …` and no closer, then EOF | all remaining text counts as `reasoning_content` | §2.5 |
+| SSE-006 | Basic think-block split | splitter initialized | feed deltas `<think>\x00Let me…</think>\x00Answer` in one chunk | reasoning events carry `Let me…` as `reasoning_content`; `Answer` as `content`; NUL bytes never emitted | §2.5 |
+| SSE-007 | Markers split across chunk boundaries | splitter initialized | feed byte splits: `…text<thi` \| `nk>\x00th…` and `…</th` \| `ink>\x00ans…` | marker recognized; no literal `<think>`/NUL leaks into output; state machine survives arbitrary 1-byte splits (property-tested over all split points of a fixture) | §2.5 |
+| SSE-008 | NUL stripping outside markers | splitter initialized | content containing stray `\x00` not part of a marker | NUL stripped from emitted content | §2.5 |
+| SSE-009 | Unterminated think block | splitter initialized | stream with `<think>\x00…` and no closer, then EOF | all remaining text counts as `reasoning_content` | §2.5 |
 | SSE-010 | No markers | splitter initialized | plain text deltas | all `content`, zero `reasoning_content` events | §2.5 |
 | SSE-011 | Multiple think blocks | splitter initialized | two `<think>`/`</think>` pairs interleaved with text | output alternates reasoning/content correctly; order preserved | §2.5 |
 | ~~STICKY-001~~ | ~~Fingerprint computation~~ **RETIRED** (ADR 0009): the 5-message / 200-rune window is exactly the lossiness the milestone removes. Replaced by `SESS-012` (an edited early turn must force a replay) and by `adapter.FrontierHash`'s own cases. | — | — | — | §4.3.1 |
@@ -868,3 +868,26 @@ deadline at all — that was the dead-knob bug, now covered by TIMEOUT-001/002.
 router) cuts a long non-streaming request at its own ~100s. That is external
 behaviour; the deployment check for it is a live long request through the public URL
 (`docs/SDD.md` §7.6), and the mitigation is the default budget being below it.
+
+## 9. ADR 0020 — account management CLI (MGMT)
+
+The store may be a database with no file to edit, so management is a CLI resolved
+against whichever backend the environment selects. Cases live in
+`internal/accounts/manage_test.go` (store/backend semantics) and
+`cmd/mimo2api/accounts_cli_test.go` (the commands themselves, stdout captured,
+fake accounts only).
+
+| Case | Precondition | Stimulus | Observable expectation |
+| --- | --- | --- | --- |
+| MGMT-001 | Empty file store | `Put` a new id, then `Put` the same id again with different fields | Two rows max; the second put replaces the first (no duplicate key); reopening the file shows both records; an id-less put is refused |
+| MGMT-002 | Two accounts | `Remove` one, then `Remove` it again | First delete drops the row in memory and on disk; the second returns `ErrNotFound` (a CLI must be able to report it) |
+| MGMT-003 | Backend whose writes fail | `Remove` an existing id | The error surfaces and the in-memory row survives — a failed delete never pretends success |
+| MGMT-004 | File backend with ids `18`, `180`, `1800` | `DeleteAccount("180")` | Exactly one row goes (no substring matching); deleting a missing id is a no-op; the rewritten file stays mode 0600 |
+| MGMT-005 | Store with a device anchor, session and secrets | `-accounts list` / `show <id>` | Output names the id and prints presence/ages; the password, pass token and cookie values are **not** in stdout; `list` totals and enable state match the store |
+| MGMT-006 | One enabled account | `disable <id> passport locked`, then `enable <id>` | The file shows `enabled:false` + the recorded reason, then `enabled:true` and the reason cleared; an unknown id fails loudly |
+| MGMT-007 | Account with no egress label | `set-egress <id> sg`, then `set-egress <id>` | Label set, then cleared; the label is the only thing written (endpoint/credentials stay in the environment) |
+| MGMT-008 | Store with 2 rows, an import file with a changed row plus a new one | `rm <id>`, then `import <file>` | The row is gone; the import upserts (changed row replaced, new row added) and re-reads the store before reporting success |
+| MGMT-009 | Any store | `export <file>` | The dump parses as an accounts file, holds every row, and lands mode 0600 (it is a credential file) |
+| MGMT-010 | Empty store | `verify` | Non-zero exit with a message: an empty pool cannot serve a single request |
+| MGMT-011 | — | `-accounts` with no command, with an unknown command, or `rm` with no id | Each fails with a message instead of doing something arbitrary |
+| MGMT-012 | argv containing `-accounts list`, `-accounts=show <id>`, or no `-accounts` at all | `accountsFlagValue` | The command and its trailing arguments are extracted for both spellings; a server start without the flag is untouched |
