@@ -58,6 +58,12 @@ type TestServerOptions struct {
 	// (IMG-*). Zero means the api.New defaults (10 images, 20 MiB each).
 	MaxImages     int
 	MaxImageBytes int
+	// MaxImagePixels mirrors MIMO2API_MAX_IMAGE_PIXELS (the "low" decode bound).
+	MaxImagePixels int
+	// ImageAllowPrivate mirrors MIMO2API_IMAGE_ALLOW_PRIVATE. A test that fetches
+	// an image from its own loopback listener sets it; the default is off, which is
+	// what IMG-014 asserts.
+	ImageAllowPrivate bool
 	// RequestTimeout/LeaseTTL/SlotHold mirror the ADR 0019 knobs. Zero means the
 	// api.New defaults (no total budget, 120s per turn, last-byte).
 	RequestTimeout time.Duration
@@ -152,15 +158,17 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		logger = log.New(opts.LogSink, "", 0)
 	}
 	apiSrv := api.New(api.Options{
-		APIKeys:       opts.APIKeys,
-		Pool:          p,
-		Accounts:      store,
-		Client:        client,
-		DefaultModel:  opts.DefaultModel,
-		ReplayCap:     opts.ReplayCap,
-		MaxQueryChars: opts.MaxQueryChars,
-		MaxImages:     opts.MaxImages,
-		MaxImageBytes: opts.MaxImageBytes,
+		APIKeys:           opts.APIKeys,
+		Pool:              p,
+		Accounts:          store,
+		Client:            client,
+		DefaultModel:      opts.DefaultModel,
+		ReplayCap:         opts.ReplayCap,
+		MaxQueryChars:     opts.MaxQueryChars,
+		MaxImages:         opts.MaxImages,
+		MaxImageBytes:     opts.MaxImageBytes,
+		MaxImagePixels:    opts.MaxImagePixels,
+		ImageAllowPrivate: opts.ImageAllowPrivate,
 		// ADR 0019 knobs.
 		RequestTimeout: opts.RequestTimeout,
 		LeaseTTL:       opts.LeaseTTL,

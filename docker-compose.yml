@@ -75,4 +75,16 @@ services:
       # probe window, and a short start_period makes a first `up` report an
       # unhealthy container while the gateway is in fact still coming up.
       start_period: 30s
+    # Resource and privilege limits (ADR 0029). The gateway decodes client-supplied
+    # images and buffers client-supplied bodies, so the blast radius of a hostile
+    # request is bounded here, at the container, and not only in the code: a memory
+    # ceiling turns "this request wants gigabytes" into an OOM kill of THIS container
+    # instead of pressure on the whole host, and a pid ceiling bounds what a runaway
+    # can spawn.
+    mem_limit: 1g
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped

@@ -33,3 +33,4 @@ rather than at chat history.
 | [0021](0021-hosted-port-requires-a-key.md) | A platform-supplied `PORT` with no API key refuses to start (no silent unreachable loopback) | accepted |
 | [0027](0027-openai-standard-surface.md) | The external surface leads with OpenAI-standard fields (`reasoning_effort`, `web_search_options`); our spellings are aliases, and the model id is never an option carrier | accepted |
 | [0028](0028-images-travel-the-attachment-path.md) | An `image_url` part is an attachment: per-turn `multiMedias`, parse retried, named 400s that never cool an account down, guards documented as guards | accepted |
+| [0029](0029-client-supplied-urls-are-hostile.md) | A client-supplied URL is hostile: the connection (every hop) refuses loopback/private/link-local, nothing is decoded past a pixel bound, the redirect cap is enforced, and the container is memory- and privilege-limited | accepted |

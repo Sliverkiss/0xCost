@@ -120,9 +120,13 @@ const (
 	// 100 MB per file and 50 files per message; raise these to use that.
 	DefaultMaxImages     = 10
 	DefaultMaxImageBytes = 20 << 20
-	DefaultCooldown429   = 60 * time.Second
-	DefaultCooldown5xx   = 30 * time.Second
-	DefaultCooldownCap   = 10 * time.Minute
+	// DefaultMaxImagePixels bounds what one image may ask the process to decode
+	// (only the "low" level decodes at all): 40 MP ≈ 160 MB of RGBA, far above any
+	// real chat image and far below what a 16 MiB request can describe.
+	DefaultMaxImagePixels = 40_000_000
+	DefaultCooldown429    = 60 * time.Second
+	DefaultCooldown5xx    = 30 * time.Second
+	DefaultCooldownCap    = 10 * time.Minute
 	// DefaultCooldownTransport: the transport class has its own ladder (SDD
 	// §4.5.1) — a dead connection or a stall is less likely to be the account's
 	// fault than an upstream 5xx, so it cools for less and escalates less far.
@@ -164,6 +168,8 @@ type Config struct {
 	replayCap            int
 	maxImages            int
 	maxImageBytes        int
+	maxImagePixels       int
+	imageAllowPrivate    bool
 	cooldown429          time.Duration
 	cooldownTransport    time.Duration
 	cooldownTransportCap time.Duration
@@ -272,6 +278,13 @@ func Load() (*Config, error) {
 	if c.maxImages, err = getenvInt("MIMO2API_MAX_IMAGES", DefaultMaxImages); err != nil {
 		return nil, err
 	}
+	if c.maxImagePixels, err = getenvInt("MIMO2API_MAX_IMAGE_PIXELS", DefaultMaxImagePixels); err != nil {
+		return nil, err
+	}
+	// Off by default and deliberately explicit: a client-supplied image URL is
+	// assumed hostile, and a public gateway answering "fetch this URL for me" must
+	// not be usable to probe the host's own network.
+	c.imageAllowPrivate = getenvBool("MIMO2API_IMAGE_ALLOW_PRIVATE", false)
 	if c.maxImageBytes, err = getenvInt("MIMO2API_MAX_IMAGE_BYTES", DefaultMaxImageBytes); err != nil {
 		return nil, err
 	}
@@ -396,6 +409,8 @@ func (c *Config) SecChUA() string                  { return c.secChUA }
 func (c *Config) ReplayCap() int                   { return c.replayCap }
 func (c *Config) MaxImages() int                   { return c.maxImages }
 func (c *Config) MaxImageBytes() int               { return c.maxImageBytes }
+func (c *Config) MaxImagePixels() int              { return c.maxImagePixels }
+func (c *Config) ImageAllowPrivate() bool          { return c.imageAllowPrivate }
 func (c *Config) Cooldown429() time.Duration       { return c.cooldown429 }
 func (c *Config) Cooldown5xx() time.Duration       { return c.cooldown5xx }
 func (c *Config) CooldownCap() time.Duration       { return c.cooldownCap }

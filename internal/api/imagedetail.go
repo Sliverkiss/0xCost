@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -17,6 +18,15 @@ import (
 // option. That contract is reproducible here even though the channel has no level
 // knob — the level lives in the bytes we upload, so that is where we apply it.
 const imageDetailLowSide = 512
+
+// defaultMaxImagePixels bounds what one client image may ask this process to
+// decode. A 16 MiB request body can carry a PNG whose header declares hundreds of
+// millions of pixels, and a decoded image costs 4 bytes per pixel: measured before
+// this bound existed, a 198 KB PNG decoded to 64 MP and took the container from
+// 559 MiB to a 680 MiB peak, with no memory limit on the container to stop it. 40 MP
+// (≈160 MB RGBA) is far above any real chat image and far below a bomb; a larger one
+// is uploaded as it arrived, and the reason is logged.
+const defaultMaxImagePixels = 40_000_000
 
 // applyImageDetail converts image_url.detail — a field of the external OpenAI
 // surface — into something the channel can actually be asked to do. The channel's
@@ -34,30 +44,43 @@ const imageDetailLowSide = 512
 // image off as scaled.
 //
 // It returns the bytes to upload, the name to give them (the platform keys on the
-// extension) and whether the level took effect.
-func applyImageDetail(data []byte, name, detail string) ([]byte, string, bool) {
+// extension), and why the level was not applied when it was not — the caller logs
+// that reason. An empty note means the level took effect (or had nothing to do),
+// which is the case a client can rely on.
+//
+// The header is read before anything is decoded: dimensions come from the image
+// header, and an image past maxPixels is never turned into pixels here at all.
+func applyImageDetail(data []byte, name, detail string, maxPixels int) ([]byte, string, string) {
 	if !strings.EqualFold(strings.TrimSpace(detail), "low") {
-		return data, name, true
+		return data, name, ""
 	}
-	img, format, err := image.Decode(bytes.NewReader(data))
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return data, name, false
+		return data, name, "format not decodable here"
 	}
-	if b := img.Bounds(); b.Dx() <= imageDetailLowSide && b.Dy() <= imageDetailLowSide {
-		return data, name, true // already within low's budget: re-encoding would only lose
+	if maxPixels > 0 && int64(cfg.Width)*int64(cfg.Height) > int64(maxPixels) {
+		return data, name, fmt.Sprintf("%dx%d is %.0f megapixels, over the %d MP decode bound",
+			cfg.Width, cfg.Height, float64(cfg.Width)*float64(cfg.Height)/1e6, maxPixels/1_000_000)
+	}
+	if cfg.Width <= imageDetailLowSide && cfg.Height <= imageDetailLowSide {
+		return data, name, "" // already within low's budget: re-encoding would only lose
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data, name, "format not decodable here"
 	}
 	scaled := boxScale(img, imageDetailLowSide)
 	var buf bytes.Buffer
 	if format == "jpeg" {
 		if err := jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: 85}); err != nil {
-			return data, name, false
+			return data, name, "re-encode failed"
 		}
-		return buf.Bytes(), withExt(name, ".jpg"), true
+		return buf.Bytes(), withExt(name, ".jpg"), ""
 	}
 	if err := png.Encode(&buf, scaled); err != nil {
-		return data, name, false
+		return data, name, "re-encode failed"
 	}
-	return buf.Bytes(), withExt(name, ".png"), true
+	return buf.Bytes(), withExt(name, ".png"), ""
 }
 
 // boxScale downscales by averaging each destination pixel's source box. No

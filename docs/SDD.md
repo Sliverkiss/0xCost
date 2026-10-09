@@ -1078,6 +1078,15 @@ behavior (`openai.js:52-64`) and is the accepted trade-off; the sticky path (A) 
 where multi-turn fidelity lives, which is why streaming requests carry the
 conversation store and non-streaming requests don't.
 
+`image_url` fetching is bounded in three places, not one (ADR 0029): the URL's shape
+(data/http(s)), the **address it actually dials** (loopback, private, link-local,
+CGNAT, unspecified and multicast are refused; the check runs at connect time, so it
+covers every redirect hop and a name that resolves into a blocked range), and the
+**pixels it may decode** (`MIMO2API_MAX_IMAGE_PIXELS`, read from the header before any
+decode). A refused address answers 400 `image_url_blocked` with `param` naming the
+image URL and is classified as content-level: no account is cooled down. The redirect
+cap is `attachmentMaxRedirects` (5) and is enforced by the client that fetches.
+
 ### 5.4 Response mapping (MiMo → OpenAI)
 
 The body is OpenAI's `chat.completion`, key for key (OSTD-008): `id` is

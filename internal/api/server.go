@@ -29,11 +29,16 @@ type Server struct {
 	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
 	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
 
-	apiKeys       [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
-	defaultModel  string
-	replayCap     int
-	maxImages     int
-	maxImageBytes int
+	apiKeys        [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
+	defaultModel   string
+	replayCap      int
+	maxImages      int
+	maxImageBytes  int
+	maxImagePixels int
+	// imageClient fetches client-supplied image URLs. Its transport refuses
+	// loopback/private/link-local destinations on every hop (imageinput.go), so a
+	// caller cannot use the gateway as a probe into the host's own network.
+	imageClient *http.Client
 	// requestTimeout/leaseTTL/slotHold implement ADR 0019: a real client-facing
 	// deadline, a per-turn upstream deadline, and when the in-flight slot goes
 	// back to the pool.
@@ -180,6 +185,16 @@ type Options struct {
 	// client-facing guards — every image costs three upstream calls.
 	MaxImages     int
 	MaxImageBytes int
+	// MaxImagePixels bounds what one image may ask this process to decode
+	// (MIMO2API_MAX_IMAGE_PIXELS, default 40 MP). Only the "low" level decodes, so
+	// this is the bound that keeps a 200 KB PNG header from turning into gigabytes
+	// of pixel buffer.
+	MaxImagePixels int
+	// ImageAllowPrivate lets the fetch reach loopback/private/link-local
+	// destinations (MIMO2API_IMAGE_ALLOW_PRIVATE). Off by default: a
+	// client-supplied URL is assumed hostile, and a public gateway must not double
+	// as a probe into the host's own network.
+	ImageAllowPrivate bool
 	// RequestTimeout is the whole client-facing budget for one chat request
 	// (ADR 0019, default 120s). 0 = no total budget (the per-turn lease TTL
 	// still applies).
@@ -225,6 +240,9 @@ func New(opts Options) *Server {
 	if opts.MaxImageBytes <= 0 {
 		opts.MaxImageBytes = 20 << 20
 	}
+	if opts.MaxImagePixels <= 0 {
+		opts.MaxImagePixels = defaultMaxImagePixels
+	}
 	if opts.RequestTimeout < 0 {
 		opts.RequestTimeout = 0
 	}
@@ -267,6 +285,8 @@ func New(opts Options) *Server {
 	}
 	return &Server{
 		pool:           opts.Pool,
+		imageClient:    newImageHTTPClient(opts.ImageAllowPrivate),
+		maxImagePixels: opts.MaxImagePixels,
 		store:          opts.Accounts,
 		client:         opts.Client,
 		otp:            newOTPStore(),

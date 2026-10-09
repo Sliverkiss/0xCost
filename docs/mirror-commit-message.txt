@@ -23,6 +23,14 @@ the OpenAI HTTP surface: chat (one-shot), TTS and ASR, web search, model listing
   channel's native resolution. A bad URL, a non-image body or an oversized file is a
   named 400 (`image_fetch_failed`, `unsupported_image_type`, `image_too_large`,
   `too_many_images`, `unsupported_image_detail`) and never cools an account down.
+- Hardening: a client-supplied `image_url` is fetched only after the address it
+  dials passes an outbound gate — loopback, private, link-local (cloud metadata),
+  CGNAT, unspecified and multicast are refused at connect time, so every redirect hop
+  is covered too — and a refused target is a named 400 `image_url_blocked`.
+  `MIMO2API_IMAGE_ALLOW_PRIVATE=true` is the operator's opt-out. Decoding is bounded
+  at `MIMO2API_MAX_IMAGE_PIXELS` (40 MP default), read from the header before any
+  decode, and the container runs with `mem_limit: 1g`, `pids_limit: 256`,
+  `no-new-privileges` and `cap_drop: ALL` (ADR 0029).
 - Audio: /v1/audio/speech (wav/mp3, the upstream's 1024-character limit enforced
   before any upstream work) and /v1/audio/transcriptions (multipart).
 - Models: the account's real catalog from bot/config, cached, with ids the upstream

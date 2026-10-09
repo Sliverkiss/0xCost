@@ -247,8 +247,10 @@ func run() error {
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
 		// Image input guards (IMG-*): 10 images / 20 MiB each by default.
-		MaxImages:     cfg.MaxImages(),
-		MaxImageBytes: cfg.MaxImageBytes(),
+		MaxImages:         cfg.MaxImages(),
+		MaxImageBytes:     cfg.MaxImageBytes(),
+		MaxImagePixels:    cfg.MaxImagePixels(),
+		ImageAllowPrivate: cfg.ImageAllowPrivate(),
 		// 0 = per-channel caps; a positive value is the operator override
 		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
 		MaxQueryChars: cfg.MaxQueryChars(),

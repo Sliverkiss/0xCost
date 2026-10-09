@@ -734,6 +734,7 @@ func isContentErr(err error) bool {
 	// bytes that are not an image, a file over the cap. Cooling the account down
 	// over a bad URL would punish the one party that did nothing wrong.
 	return errors.Is(err, errUnsupportedImageURL) ||
+		errors.Is(err, errImageURLBlocked) ||
 		errors.Is(err, errImageFetch) ||
 		errors.Is(err, errUnsupportedImageType) ||
 		errors.Is(err, errImageTooLarge) ||

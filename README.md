@@ -138,6 +138,18 @@ logged. Nothing about this reaches the client, because the client only ever aske
 OpenAI's terms. A message with images and no text is sent with a neutral query
 (`请描述这张图片。`).
 
+**Client-supplied URLs are treated as hostile** (ADR 0029). An `image_url` fetch
+dials through a guard that refuses loopback, private, link-local (cloud metadata),
+CGNAT, unspecified and multicast destinations — at connect time, so it also covers
+every redirect hop and any name that resolves into a blocked range — and a refused
+target is a named 400 `image_url_blocked` that never cools an account down. A
+deployment that serves its own images on purpose sets
+`MIMO2API_IMAGE_ALLOW_PRIVATE=true`. Nothing is decoded past
+`MIMO2API_MAX_IMAGE_PIXELS` (default 40 MP): a larger image is uploaded as it arrived
+and the reason is logged, because the header of a small payload can describe a very
+large image. Redirect chains are capped at 5. Behind all of that, the container runs
+with `mem_limit: 1g`, `pids_limit: 256`, `no-new-privileges` and `cap_drop: ALL`.
+
 **Web search**: with `web_search_options` present, `web_search_status: enabled`
 (or the `:online` suffix) the upstream searches and returns results inline. The gateway surfaces them as
 OpenAI `annotations` on the message plus a top-level `citations` array, in the one

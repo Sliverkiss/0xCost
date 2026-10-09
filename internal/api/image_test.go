@@ -17,9 +17,11 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yg/mimo2api/internal/adapter"
@@ -120,6 +122,8 @@ func TestIMG001DataURLImageBecomesMediaItem(t *testing.T) {
 }
 
 // IMG-002: an http(s) image URL is downloaded with the gateway's browser identity.
+// It fetches from its own loopback listener, so it opts into the private-address
+// escape hatch; the default refusal of exactly that URL is IMG-014's job.
 func TestIMG002URLImageDownloadedAndUploaded(t *testing.T) {
 	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("User-Agent"), "Mozilla/") {
@@ -131,7 +135,7 @@ func TestIMG002URLImageDownloadedAndUploaded(t *testing.T) {
 	defer imgSrv.Close()
 
 	acct := oneAccount()
-	ts := testserver.NewTestServer(t, acct, nil)
+	ts := testserver.NewTestServer(t, acct, &testserver.TestServerOptions{ImageAllowPrivate: true})
 	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
 	status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
@@ -181,7 +185,7 @@ func TestIMG004NonImageURLRejected(t *testing.T) {
 	defer textSrv.Close()
 
 	acct := oneAccount()
-	ts := testserver.NewTestServer(t, acct, nil)
+	ts := testserver.NewTestServer(t, acct, &testserver.TestServerOptions{ImageAllowPrivate: true})
 	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
 	status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-pro",
@@ -392,6 +396,60 @@ func bigPNGDataURL(t *testing.T, w, h int) string {
 		t.Fatal(err)
 	}
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// IMG-014: a client-supplied URL must not reach the operator's own network. The
+// gateway answers 400 image_url_blocked and — the part that matters — never opens
+// the connection at all: the listener that would have answered records no request.
+// This is the guard that was missing when a live request could read the host's
+// services back through the docker bridge gateway (172.17.0.1:443 answered).
+func TestIMG014PrivateAndLoopbackImageURLsRefused(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(tinyPNG)
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+
+	for _, rawURL := range []string{
+		srv.URL + "/photo.png",                     // 127.0.0.1 as served
+		"http://localhost:" + port + "/photo.png",  // the same via name
+		"http://[::1]:" + port + "/photo.png",      // IPv6 loopback
+		"http://169.254.169.254/latest/meta-data/", // cloud metadata
+		"http://10.0.0.7/photo.png",                // private
+		"http://172.17.0.1:443/photo.png",          // docker bridge gateway
+		"http://192.168.1.1/photo.png",             // private
+		"http://0.0.0.0:" + port + "/photo.png",    // unspecified address
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			acct := oneAccount()
+			ts := testserver.NewTestServer(t, acct, nil) // default: private addresses refused
+			ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+			status, raw := chatOnce(t, ts, imageBody("mimo-v2.6-flash",
+				map[string]any{"text": "看"}, map[string]any{"image_url": rawURL}))
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want 400", status, raw)
+			}
+			if !strings.Contains(raw, "image_url_blocked") {
+				t.Errorf("body = %s, want image_url_blocked", raw)
+			}
+			if !strings.Contains(raw, `"param":"messages[].content[].image_url.url"`) {
+				t.Errorf("body = %s, want param naming the image URL", raw)
+			}
+			if n := len(ts.Upstream.Requests()); n != 0 {
+				t.Errorf("upstream chat calls = %d, want 0", n)
+			}
+			if n := len(ts.Upstream.LastUpload()); n != 0 {
+				t.Errorf("uploads = %d, want 0", n)
+			}
+		})
+	}
+	// The refusal is decided before any connection: the listener saw nothing.
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the blocked targets received %d requests, want 0 (the guard must fire before dialing)", n)
+	}
 }
 
 // IMG-013: OpenAI's detail level is the client's word; what the channel receives is

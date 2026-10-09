@@ -42,6 +42,7 @@ var errorParams = map[string]string{
 	"unsupported_image_url":           "messages[].content[].image_url.url",
 	"unsupported_image_type":          "messages[].content[].image_url.url",
 	"image_fetch_failed":              "messages[].content[].image_url.url",
+	"image_url_blocked":               "messages[].content[].image_url.url",
 	"image_too_large":                 "messages[].content[].image_url.url",
 	"too_many_images":                 "messages",
 	"context_too_long":                "messages",
@@ -85,6 +86,11 @@ var (
 	// errUnsupportedSearchContextSize: web_search_options.search_context_size
 	// outside low|medium|high.
 	errUnsupportedSearchContextSize = errors.New("unsupported search_context_size")
+	// errImageURLBlocked: a client-supplied image URL pointing at loopback,
+	// private or link-local space. A named 400 rather than a generic fetch
+	// failure: "I refused to go there" and "I went there and it broke" are
+	// different answers, and only one of them is the client's to fix.
+	errImageURLBlocked = errors.New("image URL points at a blocked address")
 	// errUnsupportedSearchStatus: a search switch outside disabled|auto|
 	// enabled would be silently coerced upstream, hiding a client typo
 	// (M19).
@@ -281,6 +287,8 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errUnsupportedImageURL):
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_image_url",
 			"image_url must be a data:image/... URL or an http(s) URL", 0)
+	case errors.Is(err, errImageURLBlocked):
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "image_url_blocked", err.Error(), 0)
 	case errors.Is(err, errImageFetch):
 		// The client pointed at an image we could not retrieve; the message
 		// carries the reason (status, network, timeout) via the wrapped error.
