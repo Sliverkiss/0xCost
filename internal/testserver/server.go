@@ -69,11 +69,14 @@ type TestServerOptions struct {
 	RequestTimeout time.Duration
 	LeaseTTL       time.Duration
 	SlotHold       string
-	Now            func() time.Time
-	Probe          pool.ProbeFunc
-	Renew          pool.RenewFunc
-	Debug          bool      // MIMO2API_LOG_LEVEL=debug equivalent
-	LogSink        io.Writer // nil = discard-free default logger; set to capture trace lines
+	// KeepaliveInterval mirrors the ADR 0034 SSE comment cadence: a streaming
+	// test that wants to observe keepalives shortens it instead of waiting 15s.
+	KeepaliveInterval time.Duration
+	Now               func() time.Time
+	Probe             pool.ProbeFunc
+	Renew             pool.RenewFunc
+	Debug             bool      // MIMO2API_LOG_LEVEL=debug equivalent
+	LogSink           io.Writer // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
 	// after reading MIMO2API_EGRESS_* (SDD §4.8). Tests point a label at an
 	// httptest proxy and watch what leaves through it.
@@ -173,8 +176,10 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		RequestTimeout: opts.RequestTimeout,
 		LeaseTTL:       opts.LeaseTTL,
 		SlotHold:       opts.SlotHold,
-		Logger:         logger,
-		Debug:          opts.Debug,
+
+		KeepaliveInterval: opts.KeepaliveInterval,
+		Logger:            logger,
+		Debug:             opts.Debug,
 
 		AudioPoll:      opts.AudioPoll,
 		TTSTimeout:     opts.TTSTimeout,

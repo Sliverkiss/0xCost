@@ -1,7 +1,10 @@
 # 0017. Chat has no streaming path and no session store
 
 Date: 2026-10-09
-Status: accepted
+Status: accepted (superseded in part 2026-10-10 by
+[0034](0034-streaming-chat-is-served-again.md): the client-facing SSE path is
+served again. Everything below about the conversation store, the session header and
+the fork policy still stands.)
 Supersedes: ADR 0016 §2 (the `MIMO2API_ALLOW_STREAM` switch), ADR 0009 (sessions for
 chaining). Closes the "kept, tested, documented" caveat ADR 0016 left open.
 

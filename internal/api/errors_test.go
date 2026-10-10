@@ -24,10 +24,10 @@ import (
 // holdSlot starts a stalled chat turn in the background so the pool's single
 // in-flight slot stays taken while the caller probes the busy mapping.
 //
-// Why a goroutine: the gateway is non-streaming (ADR 0017), so ts.Chat only
-// returns once the whole body has arrived — a stalled turn cannot be awaited
-// inline the way it could when the first SSE byte released the caller. The
-// returned function waits for the stalled turn to finish.
+// Why a goroutine: this case sends `stream:false`, so ts.Chat only returns once
+// the whole JSON body has arrived — a stalled turn cannot be awaited inline the
+// way an SSE caller could (a streaming request returns at the first delta, ADR
+// 0034). The returned function waits for the stalled turn to finish.
 func holdSlot(t *testing.T, ts *testserver.TestServer) func() {
 	t.Helper()
 	done := make(chan struct{})

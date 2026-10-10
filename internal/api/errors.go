@@ -60,7 +60,6 @@ var errorParams = map[string]string{
 	"image_too_large":                 "messages[].content[].image_url.url",
 	"too_many_images":                 "messages",
 	"context_too_long":                "messages",
-	"stream_unsupported":              "stream",
 }
 
 // paramForCode returns the field name to report for a code, or nil.
@@ -182,17 +181,6 @@ func (e *queryTooLongError) Error() string {
 		e.Actual, e.Limit, e.Model, suffix)
 }
 
-// streamUnsupportedError says exactly what to change: this deployment serves
-// non-streaming chat only (ADR 0016), and a client that asks for streaming gets
-// a named failure rather than a silently different response shape. The tool
-// layer that needed SSE is gone, and a non-streaming turn is one upstream request
-// whose whole answer arrives at once.
-type streamUnsupportedError struct{}
-
-func (e *streamUnsupportedError) Error() string {
-	return "streaming is disabled on this deployment; send \"stream\": false (the answer arrives as a single JSON response)"
-}
-
 // upstreamTooLong reports whether an upstream refusal is about the request
 // being too long, across the wordings the platform uses: the chat channel
 // answers `Sorry, the text you sent is too long!`, the fastchat channel
@@ -256,7 +244,6 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		filter  *mimo.ErrContentFilter
 		upErr   *mimo.UpstreamError
 		tooLong *queryTooLongError
-		noSSE   *streamUnsupportedError
 	)
 	switch {
 	case errors.As(err, &deadline):
@@ -293,11 +280,6 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// a moderation judgement from a broken request.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
 			filter.Error(), 0)
-	case errors.As(err, &noSSE):
-		// A streaming request on a non-streaming deployment (ADR 0016). Named,
-		// with the fix, because the client can act on it.
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "stream_unsupported",
-			noSSE.Error(), 0)
 	case errors.As(err, &tooLong):
 		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016). The message names
 		// the measured size and the limit, so a caller can act on it.

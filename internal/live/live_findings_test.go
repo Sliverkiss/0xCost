@@ -195,7 +195,7 @@ func TestLive009FastchatUsageMerge(t *testing.T) {
 	chat := decodeChat(t, r)
 	var lines []string
 	lines = append(lines, fmt.Sprintf("model=%s usage=%+v", ultra, chat.Usage))
-	lines = append(lines, "note: the upstream emits several usage events per turn; merging them into this one total is the client's job (TDD SSE-012, unit-covered) now that the API is non-streaming")
+	lines = append(lines, "note: the upstream emits several usage events per turn; merging them into one total is the client's job (TDD SSE-012, unit-covered) — this live case reads the collected JSON body, while a streaming client sees the same merge in the final usage chunk (ADR 0034)")
 	if chat.Usage.TotalTokens <= 0 {
 		lines = append(lines, "VERDICT: no usage in the fastchat response — the fastchat channel reports nothing usable")
 	} else {

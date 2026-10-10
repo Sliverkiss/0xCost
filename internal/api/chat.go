@@ -28,16 +28,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	am := msgs
 
-	// This gateway has no streaming path at all (ADR 0017): refuse stream:true
-	// up front, before any pool interaction, and name the fix. Converting it
-	// silently to a one-shot JSON body would hand an SSE client a response it
-	// cannot parse, and the upstream answer is a single collected turn either
-	// way.
-	if req.Stream {
-		s.logger.Printf("chat: refused streaming request from %s (this gateway serves non-streaming chat only)", r.RemoteAddr)
-		s.MapError(w, &streamUnsupportedError{})
-		return
-	}
+	// Streaming is served again (ADR 0034, reversing the client-side half of ADR
+	// 0017): `stream: true` selects SSE delivery in p.run. The choice is the
+	// client's own field — never a deployment knob — and both upstream channels
+	// answer SSE either way (internal/mimo/sse.go), so the two transports carry
+	// the same answer from the same pipeline.
 
 	// The two OpenAI-standard knobs are validated before any pool interaction:
 	// a typo must not cost an upstream turn, and it must be named (OSTD-003/005).
@@ -134,6 +129,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		thinking:  req.thinkingEnabled(s.thinkingDefaultFor(model)),
 		search:    search,
 		citations: req.citationsWanted(),
+		stream:    req.Stream,
 		temp:      req.Temperature,
 		topP:      req.TopP,
 		requested: req.Model,
@@ -142,13 +138,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatPipeline carries one client request through pool → upstream → response
-// mapping (SDD §3 data flow). There is no streaming state here because there is
-// no streaming path: one request is one collected answer (ADR 0017).
+// mapping (SDD §3 data flow). `stream` is the client's own `stream` field and
+// `sw` is the SSE writer that carries the same answer when it is set (ADR 0034).
+// The id/created/model echoed to the client are decided once per request, so a
+// retry before the first byte cannot change what the client is told.
 type chatPipeline struct {
-	srv       *Server
-	msgs      []adapter.Msg
-	model     string
-	fastchat  bool
+	srv      *Server
+	msgs     []adapter.Msg
+	model    string
+	fastchat bool
+	stream   bool
+	sw       *streamWriter
+	id       string
+	created  int64
+	// modelEcho is the model name returned to the client: the id the client
+	// named when it named one, else the resolved one.
+	modelEcho string
 	thinking  bool
 	temp      *float64
 	topP      *float64
@@ -174,6 +179,39 @@ type attemptPlan struct {
 // replay below is always a full replay into a fresh upstream conversation.
 func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	s := p.srv
+	// One identity per request: a retried attempt must not change the id the
+	// client could already have seen (it never sees two — nothing is written
+	// before the first upstream delta).
+	p.id, p.created = adapter.NewChatID(), adapter.NowUnix()
+	p.modelEcho = p.requested
+	if p.modelEcho == "" {
+		p.modelEcho = p.model
+	}
+	if p.stream {
+		p.sw = newStreamWriter(w, p.id, p.modelEcho, p.created)
+		// Keepalives run only while this handler is alive, and the handler waits
+		// for the ticker to stop before returning, so no write can land on a
+		// ResponseWriter that is already finished.
+		interval := s.keepaliveInterval
+		if interval <= 0 {
+			interval = streamKeepaliveInterval
+		}
+		stop, halted := make(chan struct{}), make(chan struct{})
+		defer func() { close(stop); <-halted }()
+		go func() {
+			defer close(halted)
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					p.sw.keepalive()
+				}
+			}
+		}()
+	}
 	// clientCtx ends when the client hangs up; ctx additionally carries our own
 	// request budget (ADR 0019). The two outcomes are different — a client that
 	// left gets nothing, a budget that expired gets a 504 with numbers — so both
@@ -207,7 +245,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 		fp, ferr := adapter.PlanFullReplay(p.msgs, s.replayCap)
 		if ferr != nil {
 			lease.Release()
-			s.MapError(w, ferr)
+			p.fail(w, ferr)
 			return
 		}
 		plan = &attemptPlan{
@@ -228,6 +266,13 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 		}
 		lastErr = err
 
+		// A committed stream cannot be replaced by a status code: once the first
+		// delta is out, every retry below is off the table and the failure
+		// travels in-band instead (ADR 0034). Account-health reporting still
+		// happens — a dead account is a fact about the account, not about this
+		// request.
+		committed := p.sw != nil && p.sw.committed()
+
 		// Client disconnect pre-first-byte (SDD §7.3, TDD STICKY-010):
 		// neither success nor failure — release and drop. The client is
 		// gone; writing an error frame would only hit a dead pipe. Tested on
@@ -240,6 +285,13 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 
 		switch {
 		case isAuthErr(err):
+			// Defensive: an HTTP-level auth failure arrives before the body, so
+			// a committed stream should not see one. The guard keeps a future
+			// in-band variant from silently restarting a turn mid-answer.
+			if committed {
+				p.fail(w, err)
+				return
+			}
 			// 1 transparent refresh-retry, same account (SDD §7.1, TDD
 			// RENEW-005).
 			if rerr := s.refreshSession(ctx, lease.ID); rerr == nil {
@@ -265,7 +317,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 				lastErr = err
 			}
 			lease.Release()
-			s.MapError(w, lastErr)
+			p.fail(w, lastErr)
 			return
 
 		case isRiskControl(err):
@@ -280,7 +332,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 				BodyDigest: bodyDigest(err),
 			})
 			lease.Release()
-			s.MapError(w, err)
+			p.fail(w, err)
 			return
 
 		case isAccountDead(err):
@@ -288,7 +340,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// (SDD §7.1).
 			s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
 			lease.Release()
-			s.MapError(w, err)
+			p.fail(w, err)
 			return
 
 		case isUpstream429(err):
@@ -296,7 +348,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// ERRMAP-006).
 			s.pool.Report429(lease.ID)
 			lease.Release()
-			s.MapError(w, err)
+			p.fail(w, err)
 			return
 
 		case errors.Is(err, mimo.ErrUpstreamModelRejected):
@@ -308,10 +360,14 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			lease.Release()
 			s.logger.Printf("chat: upstream rejected model %q on the %s channel: %v",
 				p.model, channelName(p.fastchat), err)
-			s.MapError(w, err)
+			p.fail(w, err)
 			return
 
 		case errors.Is(err, mimo.ErrUpstreamBusy):
+			if committed {
+				p.fail(w, err)
+				return
+			}
 			// Transient throttle ("服务器繁忙，请稍后再试"): live-observed to
 			// clear within seconds, so retry once after a short pause
 			// rather than failing a request that would succeed a moment
@@ -319,7 +375,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// not a dead account.
 			lease.Release()
 			if attempts > 0 {
-				s.MapError(w, err)
+				p.fail(w, err)
 				return
 			}
 			// A retired model id is answered with this same busy frame (live
@@ -337,7 +393,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-time.After(busyRetryBackoff):
 			case <-ctx.Done():
-				s.MapError(w, s.budgetError(clientCtx, ctx, "waiting to retry a busy upstream"))
+				p.fail(w, s.budgetError(clientCtx, ctx, "waiting to retry a busy upstream"))
 				return
 			}
 			continue
@@ -348,22 +404,35 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// gets a 504 naming the knob instead of a silent hang.
 			s.logger.Printf("chat: gateway deadline while account %s was serving: %v", lease.ID, err)
 			lease.Release()
-			s.MapError(w, s.budgetError(clientCtx, ctx, "waiting for the upstream"))
+			p.fail(w, s.budgetError(clientCtx, ctx, "waiting for the upstream"))
 			return
 
 		case isContentErr(err):
 			// Content-level: fail the request, no pool action (SDD §7.1).
 			lease.Release()
-			s.MapError(w, err)
+			p.fail(w, err)
 			return
 
 		case p.isEmptyResponse(err):
+			if committed {
+				p.fail(w, err)
+				return
+			}
 			// 1 retry, fresh ids, full replay (SDD §7.1, TDD EMPTY-001).
 			lease.Release()
 			attempts++
 			continue
 
 		default:
+			// A break after the first delta cannot be retried: the client
+			// already has part of an answer. The attribution still runs — a
+			// transport failure is evidence about the account.
+			if committed {
+				s.reportFailure(lease.ID, err)
+				lease.Release()
+				p.fail(w, err)
+				return
+			}
 			// Upstream sick: 1 retry on another account, cooled down on the
 			// ladder of its own class — a transport failure no longer advances
 			// the 5xx ladder (SDD §4.5.1, TDD POOLATTR-001).
@@ -377,7 +446,7 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 
 	// Retries exhausted or pool-level failure — pre-first-byte, so a plain
 	// HTTP error JSON is correct (TDD API-020).
-	s.MapError(w, lastErr)
+	p.fail(w, lastErr)
 }
 
 // execute runs the turn plan on the leased account and delivers the response.
@@ -392,12 +461,7 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 		return err
 	}
 
-	id := adapter.NewChatID()
-	created := adapter.NowUnix()
-	modelEcho := p.requested
-	if modelEcho == "" {
-		modelEcho = p.model
-	}
+	id, created, modelEcho := p.id, p.created, p.modelEcho
 
 	var usageSum adapter.Usage
 	var lastDialogID string
@@ -458,6 +522,12 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			},
 		}
 		isFinal := qi == len(plan.queries)-1
+		// Only the last turn of a replay is the answer: earlier turns exist to
+		// rebuild the upstream conversation, so their pieces are collected and
+		// dropped (one delivery point, in either transport — SDD §5.4).
+		if isFinal && p.sw != nil {
+			chatReq.OnPiece = p.onPiece
+		}
 
 		// Per-turn deadline (ADR 0019): one upstream turn may not outlive the
 		// lease TTL. The cancel is armed on the lease so that a slot the reaper
@@ -509,6 +579,15 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			reasoning := res.Reasoning
 			if !p.thinking {
 				reasoning = ""
+			}
+			if p.sw != nil {
+				// Streaming: the answer already reached the client delta by
+				// delta, so this is only the tail. The slot goes back before the
+				// tail frames for the same reason as the JSON path — the slot is
+				// upstream capacity, not patience with a slow client (ADR 0019).
+				usage := usageSum
+				p.finishTurn(lease, lastDialogID)
+				return p.sw.finish(cits, usage)
 			}
 			comp := adapter.ShapeCompletion(id, modelEcho, created, res.Content, reasoning, usageSum, cits...)
 			// Encode before releasing so a marshal failure is still a clean
@@ -567,6 +646,30 @@ func (s *Server) budgetError(clientCtx, ctx context.Context, where string) error
 		budget = s.leaseTTL
 	}
 	return &requestTimeoutError{Budget: budget, Where: where}
+}
+
+// onPiece forwards one upstream delta to the client's stream (ADR 0034).
+// Thinking off suppresses reasoning chunks for the same reason the non-streaming
+// path drops the field: the client asked for an answer, not the model's working.
+func (p *chatPipeline) onPiece(piece adapter.Piece) error {
+	if piece.Type == "reasoning" && !p.thinking {
+		return nil
+	}
+	return p.sw.piece(piece)
+}
+
+// fail reports a failure in whatever shape the response already has: a JSON
+// error body before the stream is committed, an in-band SSE error frame after —
+// the status line is gone by then, so a status code cannot be revised, and the
+// error contract still holds inside the frame (all four keys, ADR 0032/0033).
+func (p *chatPipeline) fail(w http.ResponseWriter, err error) {
+	if p.sw == nil || !p.sw.committed() {
+		p.srv.MapError(w, err)
+		return
+	}
+	rec := newErrorCapturingWriter()
+	p.srv.MapError(rec, err)
+	p.sw.failJSON(rec.bytes())
 }
 
 // finishTurn records success and releases the lease. There is no conversation

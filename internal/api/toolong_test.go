@@ -215,44 +215,7 @@ func TestComposedQueryUnderCapIsServed(t *testing.T) {
 	}
 }
 
-// STREAM-001: the gateway has no streaming path at all (ADR 0017), so a request
-// that asks for SSE is refused by name with the fix, before any account work — an
-// OpenAI client that got a one-shot JSON body instead would fail on the parse.
-func TestStreamingRefused(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
-
-	body := `{"model":"mimo-v2.6-pro","stream":true,"messages":[{"role":"user","content":"hello"}]}`
-	resp, err := ts.Chat(body, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: the gateway has no streaming path", resp.StatusCode)
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	got := string(raw)
-	if !strings.Contains(got, `"code":"stream_unsupported"`) {
-		t.Errorf("body = %s, want code stream_unsupported", body)
-	}
-	if !strings.Contains(got, "stream") || !strings.Contains(got, "false") {
-		t.Errorf("body = %s, want the fix named", got)
-	}
-	if ts.Upstream.ChatHits() != 0 {
-		t.Errorf("upstream hits = %d, want 0 (refused before any account work)", ts.Upstream.ChatHits())
-	}
-
-	// The non-streaming request on the same stack is served normally.
-	resp2, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("non-streaming status = %d, want 200", resp2.StatusCode)
-	}
-	if ts.Upstream.ChatHits() != 1 {
-		t.Errorf("upstream hits = %d, want 1 after the non-streaming request", ts.Upstream.ChatHits())
-	}
-}
+// STREAM-001 (retired with ADR 0034): the gateway used to refuse `stream:true`
+// with `400 stream_unsupported`. Streaming is served again, so the case lives on
+// in internal/api/stream_test.go as the STREAM-011..021 family — frame shape,
+// commit boundary, in-band errors, failover, and both upstream channels.

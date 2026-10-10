@@ -25,8 +25,8 @@ rather than at chat history.
 | [0013](0013-device-identity-and-sms-dispatch.md) | The device identity is state (from the login page); an SMS code is a single-use operator budget | accepted |
 | [0014](0014-self-healing-credentials.md) | Credentials self-heal: 12 h keepalive, async password re-login, no SMS without consent | accepted |
 | [0015](0015-request-size-limits.md) | Request size limits are measured, never guessed (102,400 chars / 50,000 on fastchat) | accepted |
-| [0016](0016-no-tools-non-streaming.md) | No function calling, and chat is non-streaming | accepted (streaming part superseded by 0017) |
-| [0017](0017-no-streaming-no-session-store.md) | Chat has no streaming path and no session store (deleted, not switched off) | accepted (supersedes 0016 §2 and 0009) |
+| [0016](0016-no-tools-non-streaming.md) | No function calling, and chat is non-streaming | accepted (streaming part superseded by 0017, restored by 0034) |
+| [0017](0017-no-streaming-no-session-store.md) | Chat has no streaming path and no session store (deleted, not switched off) | superseded in part by 0034: the client-facing SSE path is served again, the session half stands |
 | [0019](0019-lease-ttl-and-slot-hold.md) | A lease is per-request capacity with a TTL; real client budget, slot-hold policy, derived upstream timeout | accepted |
 | [0018](0018-account-store-backends-and-port.md) | The account store is pluggable (file or Upstash); port 3000, platform `PORT` honoured, nixpacks build | accepted |
 | [0020](0020-account-management-cli.md) | Account management is a CLI against the configured store: list/show/enable/disable/set-egress/rm/import/export/verify | accepted |
@@ -38,3 +38,5 @@ rather than at chat history.
 | [0031](0031-thinking-follows-the-models-own-default.md) | The thinking default is the model's own (`thinkingDefaultOn`), not a switch of ours: the request's standard field, else the declared default, else the platform's behaviour — no deployment knob | accepted |
 | [0032](0032-every-error-carries-a-code.md) | Every error carries a code — the key is always present and never empty, one name per meaning across the chat/audio/admin surfaces | accepted |
 | [0033](0033-a-refusal-keeps-the-platforms-own-words.md) | A refusal keeps the platform's own words — the upstream's text travels verbatim, our status and code stay ours | accepted |
+| [0034](0034-streaming-chat-is-served-again.md) | Streaming chat is served again: `stream:true` selects SSE on the same pipeline, the commit boundary is the first upstream delta, errors after it travel in-band | accepted (supersedes the client-facing half of 0017) |
+| [0035](0035-aistudio-headers-match-the-spa.md) | The aistudio surface sends exactly the SPA's headers: no `X-Requested-With`, no `Authorization`, `Accept: */*` — verified against the whole bundle (0 hits) | accepted |

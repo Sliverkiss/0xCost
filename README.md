@@ -3,9 +3,10 @@
 OpenAI-compatible API gateway for Xiaomi MiMo AI Studio. Go + stdlib only,
 single static binary, Docker delivery. Point any OpenAI SDK / client at it
 and it translates requests into MiMo chat turns across an account pool with
-transparent session renewal and rate-limit-aware routing. Chat is one
-non-streaming answer per request: every client message is replayed into a fresh
-upstream conversation, and nothing about a conversation is stored (ADR 0017).
+transparent session renewal and rate-limit-aware routing. Chat is served either
+as one JSON body or as an OpenAI SSE stream (`stream: true`); either way every
+client message is replayed into a fresh upstream conversation, and nothing about a
+conversation is stored (ADR 0017, ADR 0034).
 
 ## Quick start (Docker)
 
@@ -41,11 +42,12 @@ curl http://localhost:21223/v1/chat/completions \
   }'
 ```
 
-Chat is **non-streaming** and there is no switch: `stream: true` is refused with
-`400 stream_unsupported` rather than answered in a shape an SSE client cannot
-parse (ADR 0017 — the SSE emission path and the conversation store it existed for
-are deleted, not disabled). Set `stream: false`, or use a client that can read one
-JSON body.
+Chat has **two transports** and no switch: `stream: false` (or no field) gives one
+JSON body, `stream: true` gives OpenAI SSE chunks on the same pipeline (ADR 0034).
+The upstream is SSE either way, so nothing about the answer differs — only when you
+see it. Nothing is written before the upstream's first delta, which is what keeps
+account failover working; after that point a failure arrives in-band as an
+`error` frame rather than as a status code.
 
 If the very first `up` prints `dependency failed to start: container mimo2api
 is unhealthy`, run `up -d` once more: the health window (30 s `start_period`)
@@ -63,7 +65,7 @@ performs `GET /healthz` for the container healthcheck.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **always one JSON body** (ADR 0017: no streaming path; `stream: true` → `400 stream_unsupported`, unconditionally, before any account work). `tools` is reported as dropped in `X-Mimo-Warnings`. OpenAI-standard knobs: `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`) turns the model's thinking on, `web_search_options` turns search on. Extensions on top of the standard: `web_search_status` (`disabled`\|`auto`\|`enabled` — the only way to ask for `auto`, and it wins over the standard field when both are given), `include_citations: false`, and the `:online` model suffix (= `web_search_status: enabled`). Model ids are never renamed to carry an option. **Images**: `content` may carry `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` or an http(s) URL — uploaded through the platform's own attachment path, so an image does not spend the query budget |
+| POST | `/v1/chat/completions` | Bearer | OpenAI chat completions — **one JSON body, or an SSE chunk stream with `stream: true`** (ADR 0034; the commit point is the first upstream delta, so an early failure is still a status code). `tools` is reported as dropped in `X-Mimo-Warnings`. OpenAI-standard knobs: `reasoning_effort` (`none`\|`minimal`\|`low`\|`medium`\|`high`) turns the model's thinking on, `web_search_options` turns search on. Extensions on top of the standard: `web_search_status` (`disabled`\|`auto`\|`enabled` — the only way to ask for `auto`, and it wins over the standard field when both are given), `include_citations: false`, and the `:online` model suffix (= `web_search_status: enabled`). Model ids are never renamed to carry an option. **Images**: `content` may carry `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` or an http(s) URL — uploaded through the platform's own attachment path, so an image does not spend the query budget |
 | GET | `/v1/models` | Bearer | Model catalog: every account's live Studio catalog (`bot/config`) unioned per id with the static floor as fallback, **minus the ids the upstream has superseded** (`redirectTo`) — those it refuses outright on the audio surface and answers with the busy frame on chat. Rows carry `capabilities{web_search,thinking,audio}`, `page_type`, `tasks`, `context_size` and `source` (`account`/`static`). Dynamic: no model name is hardcoded, so a retirement needs no deploy (ADR 0011) |
 | GET | `/v1/models/{id}` | Bearer | One model entry. A superseded id returns its successor's entry under the id you asked for, with `redirect_to` naming the model that will actually serve it (ADR 0011) |
 | POST | `/v1/audio/speech` | Bearer | Text-to-speech: `{input, voice?, response_format?, model?, instructions?, speed?}` → audio bytes (`audio/wav` or `audio/mpeg`) |
@@ -158,7 +160,8 @@ with `mem_limit: 1g`, `pids_limit: 256`, `no-new-privileges` and `cap_drop: ALL`
 **Web search**: with `web_search_options` present, `web_search_status: enabled`
 (or the `:online` suffix) the upstream searches and returns results inline. The gateway surfaces them as
 OpenAI `annotations` on the message plus a top-level `citations` array, in the one
-JSON body (search was never affected by the streaming change). The page bodies the
+JSON body, or as a `choices:[]` citations chunk in the stream (search was never
+affected by the transport). The page bodies the
 upstream sends (tens of KB each) are deliberately not forwarded. `include_citations: false` keeps the search but drops the payload.
 Citations are best-effort: the upstream also answers with `(citation:N)` markers
 when it returns no result set at all.
@@ -434,12 +437,13 @@ cooldowns, disabled reasons survive restarts):
 ## Behavior notes
 
 - **Streaming** responses follow the OpenAI SSE shape: role chunk →
-  content/reasoning deltas → finish chunk → usage chunk (`choices: []`) →
-  `data: [DONE]`, with `: keepalive` comments during long generation gaps.
-- **Sticky sessions** (streaming only): a follow-up request whose history
-  extends a recent conversation reuses the same account + upstream
-  conversation and sends only the new messages. Non-streaming requests
-  always start fresh conversations.
+  content/reasoning deltas → finish chunk → citations chunk (`choices: []`, search
+  only) → usage chunk (`choices: []`) → `data: [DONE]`, with `: keepalive` comments
+  during generation gaps **after** the first delta (never before it — that would
+  commit the response and disable failover).
+- **No server-side state, in either transport**: there is no session header and no
+  conversation store, so every request replays the history you send into a fresh
+  upstream conversation (ADR 0017 stands; streaming did not revive it).
 - **Two chat channels.** `mimo-v2.6-pro-ultraspeed-studio` (the ultraspeed /
   "极速" model) is routed to `/fastchat/open-apis/bot/chat`; every other model
   goes to `/open-apis/bot/chat`. Sending the ultraspeed model to the normal

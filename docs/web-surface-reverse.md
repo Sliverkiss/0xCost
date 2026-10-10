@@ -274,3 +274,79 @@
 
 回归：`internal/mimo/sse_test.go` SSE-014（分类）、`internal/api/upstream_errors_test.go`
 BUSY-001/BUSY-002/MODEL-001（重试与映射，含"账号不被降温"）。
+
+## 11.7 SPA 侧流式消费（bundle 提取，ADR 0034 据此实现）
+
+`main.911869f9.chunk.js`（内容 chunk，753 KB）里的读取循环 `async function* E(e)` 就是 SPA 的
+全部流式逻辑。逐条事实（对 `references/mimo-web-api/src/openai.js` 的形似实现做了交叉对照）：
+
+- **帧白名单**（不在表内的事件被 `continue` 直接丢弃）：`finish, usage, message, dialogId,
+  web_search, error, sensitive_query, sensitive_title, doc, tip_ratio, tip_truncate`。
+- **每帧语义**：
+  - `dialogId` → `data.content` 即会话 id；
+  - `doc` → `data.content ∈ {webSearch, docParse}`，是"开始处理"的相位标记，不是正文；
+  - `message` → `data.content` 是**增量**（SPA 里 `n += s` 累加、按动画帧 flush），不是累计文本；
+  - `usage` → 整个 data 对象即 usage（一次回答可能来多帧）；
+  - `web_search` → data 是结果数组；
+  - `error` → `data.content` 是平台原话；
+  - `sensitive_query` / `sensitive_title` → 拒答标记；
+  - `tip_ratio` → `parseFloat(content)`，上下文压力比例；
+  - `tip_truncate` → 截断提示；
+  - `finish` → 流结束（SPA 直接 break，不等 `[DONE]`）。
+- **思考段**：正文里内嵌 `<think>\0` … `</think>\0`（**NUL 结尾**常量 `O`/`U`），切片器保留
+  `max(len(O),len(U))-1` 个字符的回退缓冲，防止标记跨 chunk 断裂 —— 就是本仓
+  `adapter.ThinkSplitter` 的输入格式。
+- **传输形态**：`fetch` + `ReadableStream`（`pipeThrough(new TextDecoderStream)`），不是
+  `EventSource`；SPA **没有**给 chat POST 加任何"我要流式"的字段，`completions(e,t,a)` 的 body
+  与非流式完全相同，只有 `viaFastchat` 决定前缀。即：流式与否是客户端的消费方式，上游无开关。
+- **风控**：SPA 的 `handleError` 在 `/open-apis/bot/chat`（含 `/open-apis/chat*` 与
+  `/open-apis/tts`）路径上把 `461` 判为永久封禁、`451` 判为临时 —— 与本项目 `isRiskControl`
+  的分类一致；但我们不写"永久"（形态未证实，ADR 0010 / REQ-10）。
+- 同一 bundle 里 SPA 自己算 TPS（模块 9421：`outputTps`/`thinkingTps`/`thinkingDurationSec`/
+  `thinkingEndIdx`，`metricsVersion 3/4`），也说明它把 `message` 帧当增量事件消费。
+
+### 11.7.1 流式请求头：**不存在**独立的一套（全站 JS 逐字核验）
+
+把 `runtime.js` 的 chunkmap 全量拉下来（452 个 chunk，17.8 MB，另加 `main.js` 753 KB）逐字 grep
+的结论：
+
+| 关键字 | 命中 |
+|---|---|
+| `X-Requested-With` / `Requested-With` | **0** |
+| `Authorization` | 0（唯一命中是 Wolfram 关键字表） |
+| `sessionId` / `session_id` | 0（唯一命中是 WebRTC SDP 解析器 / SQL 语法表） |
+| `axios`、`application/json, text/plain, */*` | 0（SPA **不用 axios**，SDD §5.2 把这两个值当"axios 默认"的假设自此证伪） |
+| `x-timeZone` | 1（就是 HTTP 客户端基类） |
+
+客户端真身（`main.js`）：基类 `async fetch({url,method,queryParams,payload,headers,signal,isStreaming,onUploadProgress,schema})`，
+`get/post/...` 都走它；chat 是 `completions(e,t,a){return this.post(e,t,{signal:a,isStreaming:!0})}`。
+关键分支只有两处：
+
+1. **`isStreaming` 不发任何头、不改 URL、不改 body** —— 只把响应处理从"`res.text()` + `JSON.parse` +
+   code 校验"换成"直接返回 `Response` 对象"（调用方再 `res.body.pipeThrough(new TextDecoderStream())`）。
+   即：上游本来就一直是 SSE，`isStreaming` 是**纯客户端读法开关**。
+2. 头集合 = `{...this.headers, ...getHeaders(), ...调用点 headers}`，其中子实例一律只传
+   `{prefix, handleError}`（`this.headers` 为空），`getHeaders()` 返回
+   `{"Accept-Language": locale||"zh-CN", "x-timeZone": Intl.DateTimeFormat().resolvedOptions().timeZone}`；
+   POST 且 payload 非 FormData/Blob/File 时补 `Content-Type: application/json`；
+   `credentials:"same-origin"`（**Cookie 即身份**）；`ph` 由覆写的 `post()` 以 **query 参数**加上；
+   其余头（`Accept: */*`、`Origin`、`Referer`、`sec-fetch-*`、`sec-ch-ua*`、UA）由浏览器加。
+
+**我们当前的差异（`internal/mimo/client.go` `setPlatformXHRHeaders`）**：
+
+| 头 | SPA | 我们 | 结论 |
+|---|---|---|---|
+| `Content-Type: application/json` | ✓（POST 时加） | ✓ | 一致 |
+| `Accept-Language: zh-CN` | ✓ | ✓ | 一致 |
+| `x-timeZone` | ✓（IANA 时区） | ✓ | 一致 |
+| `Origin`/`Referer`/`sec-fetch-*`/`sec-ch-ua*`/UA | ✓（浏览器加） | ✓ | 一致 |
+| `Cookie` | ✓（same-origin） | ✓（按账号） | 一致 |
+| `Accept: application/json, text/plain, */*` | ✗（fetch 默认是 `*/*`） | ✓ 我们发这个 | **差异**：应改 `*/*` |
+| `X-Requested-With: XMLHttpRequest` | ✗ **全站 0 命中** | ✓ 我们发 | **差异**：白送一个 tell，应删 |
+
+（`X-Requested-With` 在 **usercross/passport 面**是硬要求：`66108 = missing X-Requested-With`，
+见 `docs/usercross-reverse.md`。两个面的头集合不同，不能混用。）
+
+**对本项目的意义**：`internal/mimo/sse.go` 一直在消费同一套帧；"`message` 是增量"正是
+"直接透传、无需与累计文本 diff"的依据；`<think>\0` 标记即 splitter 输入；`tip_ratio`/
+`tip_truncate` 暂不外传（OpenAI 流式无对应字段，已记入 ADR 0034 的"未建模"一行）。

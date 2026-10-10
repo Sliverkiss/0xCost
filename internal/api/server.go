@@ -45,9 +45,13 @@ type Server struct {
 	requestTimeout time.Duration
 	leaseTTL       time.Duration
 	slotHold       string
+	// keepaliveInterval is how often a committed chat stream writes an SSE
+	// comment while the upstream is still generating (ADR 0034). It is a timing
+	// constant, not a deployment knob: the client's `stream` field decides
+	// whether there is a stream at all, and nothing here changes the answer.
+	keepaliveInterval time.Duration
 	// maxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
-	allowStream   bool
 	maxQueryChars int
 
 	logger *log.Logger
@@ -220,8 +224,11 @@ type Options struct {
 	// MaxQueryChars overrides the per-channel chat char cap when > 0
 	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
 	MaxQueryChars int
-	Logger        *log.Logger
-	Debug         bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
+	// KeepaliveInterval is the SSE comment cadence on a committed chat stream
+	// (ADR 0034, default 15s). Tests shorten it; production never needs to.
+	KeepaliveInterval time.Duration
+	Logger            *log.Logger
+	Debug             bool // MIMO2API_LOG_LEVEL=debug: per-request routing trace
 
 	// Audio surface (M18): poll cadence and per-flow deadlines.
 	AudioPoll time.Duration // TTS/ASR status poll interval (default 1s)
@@ -296,32 +303,33 @@ func New(opts Options) *Server {
 		}
 	}
 	return &Server{
-		pool:           opts.Pool,
-		imageClient:    newImageHTTPClient(opts.ImageAllowPrivate),
-		maxImagePixels: opts.MaxImagePixels,
-		store:          opts.Accounts,
-		client:         opts.Client,
-		otp:            newOTPStore(),
-		recovery:       newRecoveryState(),
-		apiKeys:        keys,
-		defaultModel:   opts.DefaultModel,
-		replayCap:      opts.ReplayCap,
-		maxImages:      opts.MaxImages,
-		maxImageBytes:  opts.MaxImageBytes,
-		requestTimeout: opts.RequestTimeout,
-		leaseTTL:       opts.LeaseTTL,
-		slotHold:       opts.SlotHold,
-		maxQueryChars:  opts.MaxQueryChars,
-		logger:         logger,
-		debug:          opts.Debug,
-		audioConvs:     mimo.NewConversationCache(0),
-		audioPoll:      opts.AudioPoll,
-		catalogTTL:     opts.CatalogTTL,
-		ttsTimeout:     opts.TTSTimeout,
-		ttsMaxTimeout:  opts.TTSMaxTimeout,
-		asrTimeout:     opts.ASRTimeout,
-		speechMaxChars: opts.SpeechMaxChars,
-		defaultVoice:   opts.DefaultVoice,
+		pool:              opts.Pool,
+		imageClient:       newImageHTTPClient(opts.ImageAllowPrivate),
+		maxImagePixels:    opts.MaxImagePixels,
+		store:             opts.Accounts,
+		client:            opts.Client,
+		otp:               newOTPStore(),
+		recovery:          newRecoveryState(),
+		apiKeys:           keys,
+		defaultModel:      opts.DefaultModel,
+		replayCap:         opts.ReplayCap,
+		maxImages:         opts.MaxImages,
+		maxImageBytes:     opts.MaxImageBytes,
+		requestTimeout:    opts.RequestTimeout,
+		leaseTTL:          opts.LeaseTTL,
+		slotHold:          opts.SlotHold,
+		maxQueryChars:     opts.MaxQueryChars,
+		keepaliveInterval: opts.KeepaliveInterval,
+		logger:            logger,
+		debug:             opts.Debug,
+		audioConvs:        mimo.NewConversationCache(0),
+		audioPoll:         opts.AudioPoll,
+		catalogTTL:        opts.CatalogTTL,
+		ttsTimeout:        opts.TTSTimeout,
+		ttsMaxTimeout:     opts.TTSMaxTimeout,
+		asrTimeout:        opts.ASRTimeout,
+		speechMaxChars:    opts.SpeechMaxChars,
+		defaultVoice:      opts.DefaultVoice,
 	}
 }
 

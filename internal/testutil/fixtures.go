@@ -101,6 +101,11 @@ var (
 // its first message frame, kept for callers that build variants.
 var FixtureSSEDialogPrefix, FixtureSSEBodyHello = cutBasic(FixtureSSEBasic)
 
+// FixtureOpenAIStreamExpected is the recorded OpenAI chunk sequence that the
+// client-facing stream must reproduce byte-for-byte once the per-request id and
+// timestamp are normalized (TDD API-002, ADR 0034).
+var FixtureOpenAIStreamExpected = mustFixture("openai_stream_expected.txt")
+
 func cutBasic(s string) (prefix, body string) {
 	i := strings.Index(s, "event:message")
 	if i < 0 {

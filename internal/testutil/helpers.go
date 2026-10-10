@@ -11,8 +11,9 @@ import (
 	"github.com/yg/mimo2api/internal/adapter"
 )
 
-// ReadJSON drains a non-streaming response body and closes it. The gateway has
-// one response shape (ADR 0017), so this is what most cases want.
+// ReadJSON drains a `stream:false` response body and closes it. Cases that ask
+// for the SSE transport (ADR 0034) read the body themselves, because there the
+// shape under test is the frame sequence.
 func ReadJSON(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
 	defer resp.Body.Close()

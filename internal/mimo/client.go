@@ -246,25 +246,33 @@ func (w *idleWatchedReader) stop() {
 // setBrowserHeaders injects the full browser header set shared by chat /
 // validate calls (SDD §2.4; web_client.go setBrowserHeaders).
 //
-// Fidelity notes (docs/login-chain-reverse.md §3): the Studio's own HTTP layer
-// adds Accept-Language and x-timeZone explicitly, and its axios instance adds
-// X-Requested-With and the JSON Accept default. Dropping any of them is a
-// fingerprint tell, so all of them are set here.
+// Fidelity notes, corrected 2026-10-10 against the whole Studio bundle
+// (main.js + all 452 chunks, docs/web-surface-reverse.md §11.7.1): the SPA is
+// **fetch-based, not axios** — its client sets only Accept-Language and
+// x-timeZone itself, adds Content-Type on a JSON body, and lets the browser
+// supply Accept (`*/*`), Origin, Referer and the sec-* set. It sends no
+// X-Requested-With and no Authorization; identity is the Cookie plus the
+// xiaomichatbot_ph query parameter. Sending a header the SPA never sends is a
+// tell in itself, so the two headers an earlier axios assumption added
+// (X-Requested-With, the JSON Accept default) are gone.
 func (c *Client) setBrowserHeaders(h http.Header) {
-	c.setPlatformXHRHeaders(h)
+	c.setAistudioHeaders(h)
 	h.Set("Content-Type", "application/json")
 }
 
-// setPlatformXHRHeaders is setBrowserHeaders without a Content-Type: a real
-// axios GET carries no entity header, so a GET that sets one is a tell. Every
-// aistudio-surface request uses this set (XHR from the SPA's own origin).
-func (c *Client) setPlatformXHRHeaders(h http.Header) {
-	h.Set("Accept", "application/json, text/plain, */*")
+// setAistudioHeaders is setBrowserHeaders without a Content-Type: this client is
+// a GET most of the time (/open-apis/user/mi/get), and a fetch GET carries no
+// entity header, so one appearing would be a tell. Every aistudio-surface
+// request uses this set. The identity surface has its own set (passport.go) —
+// there X-Requested-With is mandatory (66108 without it), which is exactly why
+// the two surfaces must not share a function.
+func (c *Client) setAistudioHeaders(h http.Header) {
+	// fetch's own default, not axios's "application/json, text/plain, */*".
+	h.Set("Accept", "*/*")
 	// The SPA sets Accept-Language itself ("zh-CN"); Chrome's raw navigation
 	// value ("zh-CN,zh;q=0.9") belongs to the passport surface only. Do not
 	// conflate the two — an earlier change did, and the fidelity cases caught it.
 	h.Set("Accept-Language", "zh-CN")
-	h.Set("X-Requested-With", "XMLHttpRequest")
 	h.Set("x-timeZone", c.timezone)
 	h.Set("Origin", c.base)
 	h.Set("Referer", c.base+"/")

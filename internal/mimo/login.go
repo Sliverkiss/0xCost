@@ -120,7 +120,7 @@ func (c *Client) fetchLoginContext(ctx context.Context) (*LoginContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.setPlatformXHRHeaders(req.Header)
+	c.setAistudioHeaders(req.Header)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("login context probe: %w", err)
@@ -413,7 +413,7 @@ func (c *Client) Renew(ctx context.Context, userID, passToken string) (*Session,
 	if err != nil {
 		return nil, err
 	}
-	c.setPlatformXHRHeaders(req.Header)
+	c.setAistudioHeaders(req.Header)
 	req.Header.Set("Cookie", "userId="+userID+";")
 	resp, err := c.http.Do(req)
 	if err != nil {

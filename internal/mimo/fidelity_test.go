@@ -16,14 +16,17 @@ import (
 	"testing"
 )
 
-// requiredBrowserHeaders maps each header the SPA's axios instance + HTTP
-// layer sends on API calls to its exact expected value.
+// requiredBrowserHeaders maps each header the Studio SPA's fetch-based client
+// plus the browser send on an `/open-apis/*` call to its exact expected value.
+// Verified against the whole bundle (main.js + 452 chunks, 17.8 MB) in
+// docs/web-surface-reverse.md §11.7.1: the SPA's client contributes
+// Content-Type (POST with a JSON body), Accept-Language and x-timeZone; the
+// browser contributes Accept: */*, Origin, Referer and the sec-* set.
 func requiredBrowserHeaders(base string) map[string]string {
 	return map[string]string{
 		"Content-Type":       "application/json",
-		"Accept":             "application/json, text/plain, */*",
+		"Accept":             "*/*",
 		"Accept-Language":    "zh-CN",
-		"X-Requested-With":   "XMLHttpRequest",
 		"Origin":             base,
 		"Referer":            base + "/",
 		"sec-ch-ua-mobile":   "?0",
@@ -37,6 +40,13 @@ func requiredBrowserHeaders(base string) map[string]string {
 // nonEmptyBrowserHeaders are present but host/UA-dependent, so only presence
 // is asserted (they come from config: MIMO2API_USER_AGENT / SEC_CH_UA).
 var nonEmptyBrowserHeaders = []string{"User-Agent", "sec-ch-ua", "x-timeZone"}
+
+// forbiddenBrowserHeaders are headers this surface must NOT send: the SPA never
+// sends them (bundle-verified), and an extra header is a fingerprint tell in
+// itself — exactly the mistake the old axios assumption produced.
+// X-Requested-With *is* mandatory on the identity surface (passport.go, 66108
+// without it), which is why the two surfaces have separate header sets.
+var forbiddenBrowserHeaders = []string{"X-Requested-With", "Authorization"}
 
 // FIDELITY-001: every header the Studio SPA sends must be on our chat call.
 func TestChatSendsFullBrowserHeaderSet(t *testing.T) {
@@ -59,6 +69,11 @@ func TestChatSendsFullBrowserHeaderSet(t *testing.T) {
 	for _, name := range nonEmptyBrowserHeaders {
 		if h.Get(name) == "" {
 			t.Errorf("header %s is missing", name)
+		}
+	}
+	for _, name := range forbiddenBrowserHeaders {
+		if got := h.Get(name); got != "" {
+			t.Errorf("chat call sends %s = %q, which the Studio SPA never sends on this surface: an extra header is a tell", name, got)
 		}
 	}
 	if h.Get("Cookie") == "" {
@@ -94,6 +109,11 @@ func TestValidateSendsFullBrowserHeaderSet(t *testing.T) {
 	for _, name := range nonEmptyBrowserHeaders {
 		if got.Get(name) == "" {
 			t.Errorf("validate header %s is missing", name)
+		}
+	}
+	for _, name := range forbiddenBrowserHeaders {
+		if v := got.Get(name); v != "" {
+			t.Errorf("validate probe sends %s = %q, which the Studio SPA never sends on this surface", name, v)
 		}
 	}
 	if got.Get("Cookie") != testCookie {

@@ -8,7 +8,7 @@ import (
 // TurnPlan is the sequence of user queries to send upstream for one client
 // request, per SDD §5.3:
 //   - Sticky hit: only the delta messages after the stored frontier.
-//   - Miss / non-streaming: full chain replay, one upstream call per user
+//   - No session (the only mode now): full chain replay, one upstream call per user
 //     message, chained via previousDialogueId. System messages splice into the
 //     first user query as a preamble (API-017); they are never dropped.
 //     Assistant history is not re-sent (accepted trade-off, SDD §5.3B).

@@ -277,14 +277,17 @@ Payload (`mimo-web-api/src/upstream.js:140-164`; confirmed
 - `previousDialogueId`: null on first turn; afterwards the `dialogId` SSE event value
   from the previous turn (`PROTOCOL.md:29,69`). MiMo keeps conversation context
   server-side keyed by `conversationId`.
-- Headers: `Content-Type: application/json`, `Accept: application/json,
-  text/plain, */*`, `X-Requested-With: XMLHttpRequest` (**both are axios
-  defaults in the Studio SPA — `docs/login-chain-reverse.md` §3**),
-  `Accept-Language: zh-CN`,
+- Headers (corrected 2026-10-10 against the whole Studio bundle:
+  `docs/web-surface-reverse.md` §11.7.1): `Content-Type: application/json` (set on
+  a JSON body only), `Accept: */*` (fetch's own default), `Accept-Language: zh-CN`,
   `x-timeZone: Asia/Shanghai`, `Origin`/`Referer` = aistudio base, Chrome UA,
-  full `Cookie` (`mimo-web-api/src/upstream.js:28-38`;
-  `mimo-web-proxy/internal/mimo/web_client.go:37-49` adds `sec-ch-ua`/`sec-fetch-*` —
-  UA version should match `sec-ch-ua` for risk-control consistency, `web_client.go:30-33`).
+  `sec-ch-ua`/`sec-fetch-*` (UA version must match `sec-ch-ua` for risk-control
+  consistency, `web_client.go:30-33`), full `Cookie`. The SPA is **fetch-based,
+  not axios**: it sends no `X-Requested-With` and no `Authorization` anywhere
+  (0 hits across `main.js` + 452 chunks), and identity is the Cookie plus the
+  `xiaomichatbot_ph` query parameter. `X-Requested-With` is mandatory only on the
+  identity surface (`docs/usercross-reverse.md`, error `66108`), which has its own
+  header set (`passport.go`) — the two surfaces must not share one.
 
 #### 2.4.1 Session extensions (retired with the streaming path and the store, ADR 0017)
 
@@ -987,7 +990,7 @@ passive classification depends on (REQ-15).
 
 | Route | Behavior |
 |---|---|
-| `POST /v1/chat/completions` | Chat, always one JSON body: there is no streaming path (ADR 0017). `stream:true` → `400 stream_unsupported`, unconditionally, before any account work. |
+| `POST /v1/chat/completions` | Chat, two transports on one pipeline: `stream:false`/absent → a single JSON body; `stream:true` → OpenAI SSE chunks (§5.7, ADR 0034). Nothing reaches the client before the first upstream delta, so a failure before it is still a status code. |
 | `GET /v1/models` | Model list (§2.6), OpenAI `list` shape. |
 | `GET /v1/models/{id}` | Single model or 404 with available ids (`xm2api/server.mjs:751-776`). |
 | `GET /healthz` | Liveness + pool summary (states only, no credentials — xm2api `summaryOf` precedent, `lib/accounts.mjs:92-107`). |
@@ -1527,22 +1530,49 @@ client :21223 --(Bearer KEY)--> mimo2api:8080     (one container, one published 
   `finish_reason: tool_calls` with `{"city":"上海"}` and the result fed back
   produced the final answer (docs/live-findings.md, LIVE-TOOLS-001).
 
-## §5.7 Chat transport: no streaming at all (ADR 0017, superseding ADR 0016 §2)
+## §5.7 Chat transport: two shapes, one pipeline (ADR 0034, reversing the client-facing half of ADR 0017)
 
-A request carrying `stream: true` is refused with `400 stream_unsupported` before
-any pool or account work, with the fix in the message. The refusal is now
-**structural**: `MIMO2API_ALLOW_STREAM`, the SSE emission path, the keepalive
-ticker, the pre-first-byte commit boundary and the whole conversation store
-(`internal/session/`, the `X-Mimo-Session-Id` contract, the fork policy and their
-environment variables) are deleted, not disabled. Every request is one collected
-answer delivered as a single JSON body, and every request is a **full replay**
-(`adapter.PlanFullReplay`) into a fresh upstream conversation — the behaviour that
-was already the non-streaming path's contract under ADR 0009.
+The upstream answers every chat POST with SSE (§2.5), on both channels, so the
+gateway has always collected a stream — the question is only what it hands the
+client. `stream: true` selects SSE delivery; `stream: false` or an absent field gets
+the single collected JSON body of §5.4. There is no deployment switch: the client's
+own field is the decision, and `MIMO2API_ALLOW_STREAM` stays deleted.
 
-Two things did **not** change and must not be read as collateral: the upstream is
-still SSE (§2.5 describes the format the client parses), and web search, TTS and
-ASR are untouched — citations ride in the JSON body and the audio surface never
-consulted the switch.
+**The commit boundary is the first upstream delta.** Nothing is written — no
+headers, no comment — until a content or reasoning piece arrives, so every failure
+before that point is still pre-response and the §7.2 ladder applies unchanged
+(refresh-retry on the same account, one retry on another account, cooldown
+attribution). Once the first delta is out the response is committed: no retry branch
+runs, and a failure travels in-band as `data: {"error":{message,type,param,code}}`
+followed by `[DONE]` — all four keys (ADR 0032), the platform's own wording where
+there was any (ADR 0033). The accepted cost is that a client waits for the upstream's
+own time-to-first-byte (~0.5 s ultraspeed, 0.8–2.9 s pro, §2.7); a keepalive before
+the first delta would commit the response and take account failover off the table.
+
+The frames, in order:
+
+| # | frame | notes |
+|---|---|---|
+| 1 | `delta:{"role":"assistant"}`, `finish_reason:null` | the whole stream shares one `chatcmpl-` id, one `created`, one model echo |
+| 2..n | `delta:{"content":…}` / `delta:{"reasoning_content":…}` | upstream `message` frames are **deltas**, so they pass through one for one; the splitter strips the `<think>\0 … </think>\0` markers and the marker bytes never reach the client; thinking off suppresses reasoning frames entirely |
+| n+1 | `delta:{}`, `finish_reason:"stop"` | terminal choice chunk |
+| n+2 | `choices:[]`, `citations:[…]` | extension chunk (M19), only when search returned results and `include_citations` is not false |
+| n+3 | `choices:[]`, `usage:{…}` | `choices:[]` so it cannot clobber the `finish_reason` above |
+| n+4 | `data: [DONE]` | |
+
+Keepalives (`: keepalive`, 15 s, shortened via `Options.KeepaliveInterval` in tests)
+are written **only after** the commit, while the upstream is silent — before it they
+would disable failover. Usage is always reported (a documented deviation from
+OpenAI's opt-in `stream_options.include_usage`). Only the last turn of a replay
+streams: earlier turns rebuild the upstream conversation and their pieces are
+collected and dropped, the single delivery point both transports share.
+
+Still deleted with ADR 0017, and **not** revived here: the conversation store,
+`internal/session/`, the `X-Mimo-Session-Id` contract, the fork policy and their
+environment variables. Every request remains a full replay
+(`adapter.PlanFullReplay`) into a fresh upstream conversation. Web search, TTS and
+ASR are untouched — they never consulted the switch, and citations still ride in the
+JSON body for non-streaming callers.
 
 What this buys and what it costs is in ADR 0017. The retired test material and its
 replacements are listed in `docs/TDD.md` §2.1.3.
