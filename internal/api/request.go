@@ -159,7 +159,10 @@ func decodeChatBody(raw []byte) (*chatRequest, error) {
 //     switch, every other accepted value means on;
 //   - otherwise the older spellings decide, and an explicit false in either is off
 //     (`enable_thinking:false`, `reasoning":{"type":"disabled"}`);
-//   - with none of them sent, `defaultOn` applies (MIMO2API_DEFAULT_THINKING, on).
+//   - with none of them sent, `defaultOn` applies: the model's own declared
+//     default, or the platform's behaviour (on) for an id the catalog does not
+//     describe. There is no deployment-level knob — the standard field is the only
+//     way to disagree with the provider (ADR 0027/0031).
 //
 // The consequence a caller sees is the point of the change: a plain chat request
 // now gets the model's working in `reasoning_content`, instead of a switch only an

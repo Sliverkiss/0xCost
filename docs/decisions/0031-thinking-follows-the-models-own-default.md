@@ -31,21 +31,29 @@ the request layer.
 
 ## Decision
 
-The switch is resolved in three layers, and the middle one is the upstream's own
-declaration:
+The switch is resolved in two layers, both of them the protocol's own:
 
 1. **The request**, when it says anything: `reasoning_effort` decides whenever
    present (`none` = explicit off, every other accepted value = on), then the older
    `enable_thinking` (now a pointer, so "false" and "not sent" are different
-   requests), then `reasoning.type`.
+   requests), then `reasoning.type`. This is the only way to disagree with the
+   provider, and it is the standard field (ADR 0027).
 2. **The model's declared default** from the account catalog (`thinkingDefaultOn`),
    read from the cached snapshot the request path already holds — a chat request
-   still never triggers a catalog read (ADR 0011).
-3. **The deployment default** `MIMO2API_DEFAULT_THINKING` (**on**), for an id the
-   catalog does not describe.
+   still never triggers a catalog read (ADR 0011). An id the catalog does not
+   describe gets the same answer, on: that is what the platform declares for its chat
+   models, and OpenAI's own reasoning models think by default, so an unknown id
+   follows the provider's behaviour rather than a local opinion.
 
 The built-in floor carries no declaration, and `ThinkKnown` keeps that distinct from
 "declared off": a failed catalog read must not silently change how the models behave.
+
+**No deployment-level switch.** An earlier cut of this change added
+`MIMO2API_DEFAULT_THINKING`, and it was removed the same day: a gateway-level knob is
+a second, non-standard way to say what `reasoning_effort` already says, and the rule
+for this surface is that OpenAI's vocabulary leads and our own inventions are aliases
+(ADR 0027). A deployment that wants less thinking sets it in the client, and the
+default simply follows the platform's declaration.
 
 ## Consequences
 
@@ -55,9 +63,8 @@ The built-in floor carries no declaration, and `ThinkKnown` keeps that distinct 
 - Cost moves to the client's side, and it is measured rather than asserted: thinking
   on is roughly 2.5–4× the wall time on the flash/ultraspeed channels (7.6 s → 19.2 s
   on a short prompt; 17.9 s → 94.5 s on a derivation task) but ~neutral on `pro`
-  (13.4 s → 12.4 s), and ~40 % more completion tokens (540 → 751). Escape hatches:
-  `reasoning_effort:"none"` per request, `MIMO2API_DEFAULT_THINKING=off` per
-  deployment.
+  (13.4 s → 12.4 s), and ~40 % more completion tokens (540 → 751). The escape hatch
+  is the standard one: `reasoning_effort:"none"` on the request.
 - The platform's own preamble — ~2,235 prompt tokens on every request, measured by
   intercept and identical across models, channels and both switch positions — is
   untouched by this and untouchable by us: we never send it, and an independent

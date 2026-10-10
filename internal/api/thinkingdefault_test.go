@@ -6,44 +6,43 @@ import (
 	"github.com/yg/mimo2api/internal/adapter"
 )
 
-// THK-001: the thinking default is decided in three layers, and the middle one is
-// the point of the change — the platform's own per-model declaration
-// (`thinkingDefaultOn`) beats the operator's deployment default, because the
-// upstream catalog is the authority on how its models behave (ADR 0031).
+// THK-001: the thinking default is the platform's answer, not a knob of ours
+// (ADR 0031). Two layers: the request's own field decides when it is present, and
+// otherwise the model's declared default applies — an id the catalog does not
+// describe gets the same answer, because that is what the platform declares for its
+// chat models and what OpenAI's reasoning models do. There is deliberately no
+// deployment-level switch: a second, non-standard way to disagree with the provider
+// is exactly what the external surface must not grow (ADR 0027).
 func TestTHK001ThinkingDefaultLayers(t *testing.T) {
-	off := false
-
-	// Nothing declared, nothing configured: on. The catalog declares thinking on
-	// for every chat model this account serves, and OpenAI's reasoning models think
-	// unless told not to, so an unconfigured gateway must not be the odd one out.
-	if got := New(Options{}).thinkingDefaultFor("mimo-v2.6-flash"); !got {
-		t.Errorf("unconfigured default = false, want true")
-	}
-	// The knob is the fallback for an id the cached snapshot does not carry.
-	if got := New(Options{DefaultThinking: &off}).thinkingDefaultFor("mimo-v2.6-flash"); got {
-		t.Errorf("MIMO2API_DEFAULT_THINKING=off never reached the request path")
-	}
-
-	// A declared value wins over the knob, in both directions.
-	s := New(Options{DefaultThinking: &off})
+	s := New(Options{})
 	s.redirects.mu.Lock()
 	s.redirects.thinks = map[string]bool{"mimo-v2.6-flash": true, "mimo-v2.6-pro": false}
 	s.redirects.mu.Unlock()
+
+	// A model the catalog describes: its word is the default, in both directions.
 	if got := s.thinkingDefaultFor("mimo-v2.6-flash"); !got {
-		t.Errorf("declared true was overridden by the deployment knob")
+		t.Errorf("declared true was not honoured")
 	}
 	if got := s.thinkingDefaultFor("mimo-v2.6-pro"); got {
 		t.Errorf("declared false was not honoured")
 	}
-	if got := s.thinkingDefaultFor("mimo-v2.5-pro"); got {
-		t.Errorf("an id with no declaration should fall back to the deployment default (off)")
+
+	// An id the catalog does not describe follows the platform's behaviour: its
+	// chat models declare thinking on, so this gateway answers on too.
+	if got := New(Options{}).thinkingDefaultFor("mimo-v2.5-pro"); !got {
+		t.Errorf("an undescribed id did not follow the platform's own default (on)")
+	}
+	// A cold snapshot is the state of a fresh start (the request path never reads
+	// the catalog, ADR 0011) and must not answer off either.
+	if got := New(Options{}).thinkingDefaultFor("mimo-v2.6-flash"); !got {
+		t.Errorf("a cold snapshot fell back to off")
 	}
 }
 
 // THK-002: only a declaration counts. The built-in floor's zero value means "the
 // catalog said nothing", not "thinking is off" — conflating the two would turn a
-// failed catalog read into a silent behaviour change, and the floor is exactly
-// what a deployment falls back to when the catalog is unreadable.
+// failed catalog read into a silent behaviour change, and the floor is exactly what
+// a deployment falls back to when the catalog is unreadable.
 func TestTHK002OnlyDeclaredDefaultsCount(t *testing.T) {
 	entries := []adapter.CatalogEntry{
 		{ID: "static-only", Think: false, ThinkKnown: false, Static: true},

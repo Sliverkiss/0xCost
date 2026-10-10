@@ -347,10 +347,10 @@ func TestOSTD007ModelIDUnchangedByStandardFields(t *testing.T) {
 // body therefore gets the model's working in `reasoning_content`; before this it
 // got nothing, because the switch was off unless a client opted in.
 func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
-	thinkingServer := func(t *testing.T, opts *testserver.TestServerOptions) *testserver.TestServer {
+	thinkingServer := func(t *testing.T) *testserver.TestServer {
 		t.Helper()
 		acct := oneAccount()
-		ts := testserver.NewTestServer(t, acct, opts)
+		ts := testserver.NewTestServer(t, acct, nil)
 		ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEThinking})
 		// Warm the catalog snapshot the way main.go does at startup: the declared
 		// defaults reach the request path through that snapshot, and a cold one
@@ -361,7 +361,7 @@ func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
 
 	// (1) No thinking field at all: the catalog declares thinking on for flash, so
 	// the upstream call carries the switch and the response carries the working.
-	ts := thinkingServer(t, nil)
+	ts := thinkingServer(t)
 	resp, err := ts.Chat(ostdBody("mimo-v2.6-flash", nil), "")
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
 	}
 
 	// (2) The standard field still turns it off, and then no reasoning comes back.
-	ts2 := thinkingServer(t, nil)
+	ts2 := thinkingServer(t)
 	resp2, err := ts2.Chat(ostdBody("mimo-v2.6-flash", map[string]any{"reasoning_effort": "none"}), "")
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
 
 	// (3) The older spelling's explicit false is honoured too. It is a pointer
 	// precisely so "not sent" (follow the model) and "false" (off) differ.
-	ts3 := thinkingServer(t, nil)
+	ts3 := thinkingServer(t)
 	if _, err := ts3.Chat(ostdBody("mimo-v2.6-flash", map[string]any{"enable_thinking": false}), ""); err != nil {
 		t.Fatal(err)
 	}
@@ -401,25 +401,16 @@ func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
 		t.Errorf("enable_thinking:false did not turn the upstream switch off")
 	}
 
-	// (4) The deployment knob does not override a model's own declaration: the
-	// catalog is the authority, the knob only covers ids it does not describe.
-	off := false
-	ts4 := thinkingServer(t, &testserver.TestServerOptions{DefaultThinking: &off})
-	if _, err := ts4.Chat(ostdBody("mimo-v2.6-flash", nil), ""); err != nil {
+	// (4) An id this account's catalog does not describe (mimo-v2.6-pro carries no
+	// thinkingDefaultOn in this fixture — and no row at all on the live account for
+	// some ids) still goes out with the switch on: the gateway follows the
+	// platform's own behaviour for its chat models instead of an operator knob, so
+	// the only way to disagree with the provider is the standard request field.
+	ts4 := thinkingServer(t)
+	if _, err := ts4.Chat(ostdBody("mimo-v2.6-pro", nil), ""); err != nil {
 		t.Fatal(err)
 	}
 	if !ts4.Upstream.Requests()[0].EnableThinking {
-		t.Errorf("MIMO2API_DEFAULT_THINKING=off overrode the model's declared default")
-	}
-
-	// (5) ...which is the case the knob exists for: an id this account's catalog
-	// does not describe (here mimo-v2.6-pro, whose row carries no
-	// thinkingDefaultOn) follows the deployment default.
-	ts5 := thinkingServer(t, &testserver.TestServerOptions{DefaultThinking: &off})
-	if _, err := ts5.Chat(ostdBody("mimo-v2.6-pro", nil), ""); err != nil {
-		t.Fatal(err)
-	}
-	if ts5.Upstream.Requests()[0].EnableThinking {
-		t.Errorf("an undeclared model ignored MIMO2API_DEFAULT_THINKING=off")
+		t.Errorf("an undescribed model did not follow the platform's declared default (on)")
 	}
 }

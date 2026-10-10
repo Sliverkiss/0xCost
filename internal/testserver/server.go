@@ -50,9 +50,7 @@ type TestServerOptions struct {
 	QueueWait    time.Duration
 	IdleTimeout  time.Duration
 	DefaultModel string
-	// DefaultThinking mirrors MIMO2API_DEFAULT_THINKING (ADR 0031); nil = on.
-	DefaultThinking *bool
-	ReplayCap       int
+	ReplayCap    int
 	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
 	// per-channel chat caps (ADR 0015).
 	MaxQueryChars int
@@ -165,7 +163,6 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Accounts:          store,
 		Client:            client,
 		DefaultModel:      opts.DefaultModel,
-		DefaultThinking:   opts.DefaultThinking,
 		ReplayCap:         opts.ReplayCap,
 		MaxQueryChars:     opts.MaxQueryChars,
 		MaxImages:         opts.MaxImages,
