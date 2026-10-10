@@ -48,11 +48,10 @@ type chatRequest struct {
 	Temperature *float64        `json:"temperature"`
 	TopP        *float64        `json:"top_p"`
 
-	// SessionID pins the session this request continues (SDD §2.4.1, spec
-	// REQ-2). It is the body carrier of the same extension the
-	// X-Mimo-Session-Id header carries; the header wins when both are present.
-	// Ignored on a one-shot (stream:false) request (REQ-10).
-	SessionID string `json:"session_id"`
+	// `session_id` is deliberately absent: it pinned the session a streaming request
+	// continued, and streaming plus the session store were deleted, not switched off
+	// (ADR 0017). A client that still sends it is told it was ignored — the key is
+	// not in knownRequestFields (TDD OSTD-012).
 
 	// Thinking controls. The OpenAI-standard spelling is `reasoning_effort`
 	// (none|minimal|low|medium|high): anything but "none" turns the model's

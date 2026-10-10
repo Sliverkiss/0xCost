@@ -286,7 +286,7 @@ Payload (`mimo-web-api/src/upstream.js:140-164`; confirmed
   `mimo-web-proxy/internal/mimo/web_client.go:37-49` adds `sec-ch-ua`/`sec-fetch-*` —
   UA version should match `sec-ch-ua` for risk-control consistency, `web_client.go:30-33`).
 
-#### 2.4.1 Session extensions (proposed, streaming only)
+#### 2.4.1 Session extensions (retired with the streaming path and the store, ADR 0017)
 
 Client→gateway extensions that let a caller pin which conversation it is
 continuing, so identity stops being a guess over message content
@@ -299,10 +299,14 @@ continuing, so identity stops being a guess over message content
 | out | header `X-Mimo-Session-Id` | the effective id, so the client can pin it next turn |
 | out | header `X-Mimo-Session-Mode` | `chain` \| `replay` \| `fork` (debug/ops value) |
 
-**Streaming only.** `stream:false` is a one-shot request: no identity is
-resolved, the store is not read or written, no session header is returned, and a
-supplied session id is ignored with a debug note (REQ-10; `NOSTICK-003` remains
-the permanent contract). The OpenAI `user` field is deliberately not an identity
+**Retired, not switched off (ADR 0017).** Streaming and the session store are gone,
+so nothing here is implemented any more: the body field no longer exists in the
+decoder, and a client that still sends `session_id` gets
+`X-Mimo-Warnings: ignored unsupported fields: [session_id]` — the key is outside
+`knownRequestFields`, so it is reported rather than silently dropped (TDD OSTD-012).
+`stream:false` is the only mode: no identity is resolved, the store is not read or
+written, no session header is returned (REQ-10; `NOSTICK-003` remains the permanent
+contract). The OpenAI `user` field is deliberately not an identity
 source — it is usually a per-request nonce.
 
 Additive only: with no new fields and no new headers, the request behaves

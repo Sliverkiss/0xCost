@@ -341,6 +341,39 @@ func TestOSTD007ModelIDUnchangedByStandardFields(t *testing.T) {
 	}
 }
 
+// OSTD-012: the retired `session_id` carrier is reported, not silently accepted.
+// It pinned the session a streaming request continued; streaming and the session
+// store were deleted, not switched off (ADR 0017), so the key sits outside
+// knownRequestFields and a client that still sends it is told. Silence would be the
+// worse failure: the client would believe it is pinning a conversation this gateway
+// no longer has.
+func TestOSTD012RetiredSessionIDIsReported(t *testing.T) {
+	ts, _ := scriptedServer(t)
+	resp, err := ts.Chat(ostdBody("mimo-v2.6-flash", map[string]any{"session_id": "s-abc"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 — an unknown field is reported, never rejected", resp.StatusCode, raw)
+	}
+	if warn := resp.Header.Get("X-Mimo-Warnings"); !strings.Contains(warn, "session_id") {
+		t.Errorf("warnings = %q, want the retired session_id carrier named", warn)
+	}
+
+	// And a request that does not carry it stays clean.
+	resp2, err := ts.Chat(ostdBody("mimo-v2.6-flash", nil), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	_, _ = io.ReadAll(resp2.Body)
+	if warn := resp2.Header.Get("X-Mimo-Warnings"); warn != "" {
+		t.Errorf("a plain request carried warnings = %q, want none", warn)
+	}
+}
+
 // OSTD-011: a request that says nothing about thinking follows the model's own
 // declared default (ADR 0031) — the upstream's catalog declares thinking on for
 // every chat model, which is also where the Studio's own UI starts. A plain OpenAI
