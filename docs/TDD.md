@@ -542,7 +542,7 @@ Rows assert both status/shape and the triggering path.
 | ERRMAP-006 | Upstream 429 surfaced | 429 / `rate_limit_error` / `upstream_rate_limited` |
 | ERRMAP-007 | Upstream 401 after refresh retry | 401 / `invalid_request_error` / `upstream_auth_expired` |
 | ERRMAP-008 | Upstream 5xx / transport | 502 / `api_error` / `upstream_failure` |
-| ERRMAP-009 | Content filter (`sensitive_query`) | 400 / `invalid_request_error` / `content_filter` |
+| ERRMAP-009 | Content filter (`sensitive_query`) | 400 / `invalid_request_error` / `content_filter`, and the platform's own event name + payload leave in `message` (ADR 0033); BUSY-002 and MODEL-001 likewise assert the upstream's Chinese sentence survives (`UpstreamMessage` unit-covered in `internal/mimo`) |
 | ERRMAP-010 | Query exceeds channel char cap | 400 / `invalid_request_error` / `context_too_long` (cross-ref API-016) |
 | TOOLONG-001 | The platform's mid-stream too-long refusal becomes a client error | `MapError` with `ErrUpstreamStream{"Sorry, the text you sent is too long!…"}` | 400 `context_too_long` whose message tells the caller to send fewer or shorter messages — not a 502 carrying English prose |
 | TOOLONG-002 | The same refusal arriving as an HTTP error body | `MapError` with `UpstreamError{502, "query is too long"}` | 400 `context_too_long` |
@@ -756,8 +756,10 @@ structural" kind are found by tooling rather than by reading:
   results, `strings.Cut` results used without their "found" flag, and `defer`/
   `time.After` inside loops. Its function table is deliberately narrow so the output
   stays readable; the exclusions are named in the source with the reason. Last run:
-  9 findings, all correct as written (several deliberately so, e.g. the idempotent
-  `defer lease.Release()` backstop).
+  22 findings, all correct as written (several deliberately so, e.g. the idempotent
+  `defer lease.Release()` backstop). The newest is the same tolerated shape as its
+  neighbours: a `sensitive_*` frame's `data` is decoded best-effort because the event
+  name is the verdict and a malformed payload must never fail the turn.
 
 ## 5. Live verification protocol
 

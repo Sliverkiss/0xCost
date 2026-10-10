@@ -83,6 +83,11 @@ func TestUpstreamBusyTwiceMapsTo503(t *testing.T) {
 	if !containsEvent(body, "upstream_busy") {
 		t.Errorf("body = %q, want code upstream_busy", body)
 	}
+	// The platform's own sentence travels with it (ADR 0033): "the upstream is
+	// busy" is our reading, 服务器繁忙，请稍后再试 is its evidence.
+	if !strings.Contains(body, "服务器繁忙") {
+		t.Errorf("body = %q, want the upstream's own wording passed through", body)
+	}
 	// Platform load, not a dead account: the account must stay selectable.
 	if got := ts.Pool.StateOf("acc1"); got != pool.StateAvailable {
 		t.Errorf("account state after busy = %v, want %v (busy must not cool the account)", got, pool.StateAvailable)
@@ -100,6 +105,12 @@ func TestUpstreamModelRejectedFailsFast(t *testing.T) {
 	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", "hello"}))
 	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s, want 400 model_not_available_on_channel", status, body)
+	}
+	if !strings.Contains(body, "模型名称错误") {
+		t.Errorf("body = %q, want the upstream's own wording passed through (ADR 0033)", body)
+	}
+	if strings.Count(body, "模型名称错误") > 1 {
+		t.Errorf("body = %q, repeats the upstream wording", body)
 	}
 	if !containsEvent(body, "model_not_available_on_channel") {
 		t.Errorf("body = %q, want code model_not_available_on_channel", body)

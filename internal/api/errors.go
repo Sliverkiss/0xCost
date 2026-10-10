@@ -287,9 +287,12 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Replay cap exceeded (SDD §5.3B, TDD API-015).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "too_many_turns", tooMany.Error(), 0)
 	case errors.As(err, &filter):
-		// sensitive_query / sensitive_title (SDD §7.4, TDD ERRMAP-009).
+		// sensitive_query / sensitive_title (SDD §7.4, TDD ERRMAP-009). The
+		// platform's own event name and wording reach the client verbatim
+		// (ADR 0033): a caller that sees only "the query was rejected" cannot tell
+		// a moderation judgement from a broken request.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
-			"upstream content filter rejected the query", 0)
+			filter.Error(), 0)
 	case errors.As(err, &noSSE):
 		// A streaming request on a non-streaming deployment (ADR 0016). Named,
 		// with the fix, because the client can act on it.
@@ -348,7 +351,7 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// §11.1). Surfaced as 400: the request cannot succeed as written, and
 		// retrying it is pointless.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model_not_available_on_channel",
-			"upstream rejected the model name for this channel: "+err.Error(), 0)
+			withUpstream("the upstream channel does not serve this model id", err), 0)
 	case errors.As(err, &uv):
 		// The client named a voice this account does not have (audio.go).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unknown_voice", uv.Error(), 0)
@@ -367,7 +370,7 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Transient platform throttle that outlived the retry (SDD §7.1).
 		// 503 + a short Retry-After, not a 502: the request is fine.
 		writeError(w, http.StatusServiceUnavailable, "api_error", "upstream_busy",
-			"upstream is busy; retry shortly", busyRetryAfterSeconds)
+			withUpstream("upstream is busy; retry shortly", err), busyRetryAfterSeconds)
 	case isAuthErr(err):
 		// Upstream 401 surviving the refresh retry (SDD §7.4 row 8, TDD
 		// ERRMAP-007/RENEW-006).
@@ -411,6 +414,16 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "api_error", "upstream_failure",
 			"upstream failure: "+err.Error(), 0)
 	}
+}
+
+// withUpstream appends the platform's own wording, verbatim, to a sentence we
+// wrote (ADR 0033). When the failure carried no upstream text the sentence stands
+// alone, so callers never see a dangling colon.
+func withUpstream(ours string, err error) string {
+	if m := strings.TrimSpace(mimo.UpstreamMessage(err)); m != "" && !strings.Contains(ours, m) {
+		return ours + ": " + m
+	}
+	return ours
 }
 
 // truncateForLog bounds a string destined for a log line.

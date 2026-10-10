@@ -37,3 +37,4 @@ rather than at chat history.
 | [0030](0030-client-strings-are-data-not-structure.md) | Client-controlled strings are data, not structure: bound and validate anything that reaches a header, a file name or a media type, and let sniffed bytes outrank a declared type | accepted |
 | [0031](0031-thinking-follows-the-models-own-default.md) | The thinking default is the model's own (`thinkingDefaultOn`), not a switch of ours: the request's standard field, else the declared default, else the platform's behaviour — no deployment knob | accepted |
 | [0032](0032-every-error-carries-a-code.md) | Every error carries a code — the key is always present and never empty, one name per meaning across the chat/audio/admin surfaces | accepted |
+| [0033](0033-a-refusal-keeps-the-platforms-own-words.md) | A refusal keeps the platform's own words — the upstream's text travels verbatim, our status and code stay ours | accepted |

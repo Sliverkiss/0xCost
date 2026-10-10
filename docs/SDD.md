@@ -343,7 +343,7 @@ data:{"type":null,"content":"[DONE]","usage":null}
 | `message` | Text delta (`type:"text"`) | Split thinking markers, emit deltas |
 | `usage` | Token counts; **emitted multiple times, last one wins** (`mimo-web-proxy/internal/handler/chat.go:156-159`) | Keep last |
 | `error` | Upstream error, `content` = message | **Classified** (see §7.1): transient throttle → one retry after 800ms; model-name rejection → 400, never retried; anything else → fail turn |
-| `sensitive_query` / `sensitive_title` | Content-moderation block | Fail turn with content-filter error |
+| `sensitive_query` / `sensitive_title` | Content-moderation block | Fail turn with content-filter error; the event name **and** its `content` payload reach the client verbatim (ADR 0033) |
 | `web_search` | Search results: a JSON array (live: ≤16 entries, one frame ≈94 KB; `usedContent` is a **JSON boolean**, `metadata` an **object**) | Parse with per-field tolerance (ADR 0007) → citations/annotations. The page body (`text`) is not forwarded |
 | `doc`, `tip_ratio`, `tip_truncate` | Search/parse progress | Ignore (nothing client-visible) |
 | `finish` | `content:"[DONE]"` | End of turn |
@@ -1368,6 +1368,22 @@ a name, one name per meaning across the chat, audio and admin surfaces (a malfor
 body is `malformed_request_body` everywhere), and OpenAI's own `model_not_found` is used
 where OpenAI has a code for the failure. `null` is reserved for a failure that has no
 name at all (ADR 0032, TDD OSTD-013).
+
+**A refusal the platform made carries the platform's own words.** When the upstream is
+the one that judged the request — a content-moderation block, a model id this channel
+does not serve, a platform throttle — `message` states our finding and then quotes the
+upstream verbatim:
+
+```
+400 content_filter                content filtered by upstream (sensitive_query): topic not allowed
+400 model_not_available_on_channel the upstream channel does not serve this model id: 模型名称错误
+503 upstream_busy                 upstream is busy; retry shortly: 服务器繁忙，请稍后再试
+```
+
+The quoted part is the upstream's, untranslated and unedited: it is the only account of
+*why* the platform refused, and it is what tells a moderate block apart from a broken
+request when the client reads a log at 3am (ADR 0033). The status and `code` stay ours —
+a client switches on those, never on prose.
 
 ```jsonc
 {"error": {"message": "...", "type": "...", "code": "..."}}

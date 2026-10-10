@@ -23,11 +23,41 @@ type Event struct {
 }
 
 // ErrContentFilter marks sensitive_query / sensitive_title blocks
-// (SDD §2.5, TDD ERRMAP-009).
-type ErrContentFilter struct{ Reason string }
+// (SDD §2.5, TDD ERRMAP-009). Reason is the upstream's own event name and
+// Message its own `content` payload, both kept verbatim: the platform's sentence
+// is the authoritative account of why it refused, and a caller that only sees our
+// paraphrase cannot tell a content judgement from a transport failure.
+type ErrContentFilter struct {
+	Reason  string // event name: sensitive_query | sensitive_title
+	Message string // the event's own `content`, when it sent one
+}
 
 func (e *ErrContentFilter) Error() string {
-	return "content filtered by upstream: " + e.Reason
+	s := "content filtered by upstream (" + e.Reason + ")"
+	if m := strings.TrimSpace(e.Message); m != "" {
+		s += ": " + m
+	}
+	return s
+}
+
+// UpstreamMessage returns the upstream platform's own wording behind err, when the
+// failure carried one. Every path that reports an upstream refusal includes this
+// verbatim (ADR 0033): the text is the platform's, so nothing downstream has to
+// guess what it meant, and it is the only part a caller can act on.
+func UpstreamMessage(err error) string {
+	var fe *upstreamFrameError
+	if errors.As(err, &fe) {
+		return fe.message
+	}
+	var cf *ErrContentFilter
+	if errors.As(err, &cf) {
+		return cf.Error()
+	}
+	var us *ErrUpstreamStream
+	if errors.As(err, &us) {
+		return us.Message
+	}
+	return ""
 }
 
 // In-band `event:error` frames are NOT interchangeable. Two of the messages
@@ -181,7 +211,9 @@ func (s *streamer) handleEvent(ev Event) (bool, error) {
 		_ = json.Unmarshal([]byte(ev.Data), &p)
 		return false, classifyInBandError(p.Content)
 	case "sensitive_query", "sensitive_title":
-		return false, &ErrContentFilter{Reason: ev.Name}
+		var p msgPayload
+		_ = json.Unmarshal([]byte(ev.Data), &p)
+		return false, &ErrContentFilter{Reason: ev.Name, Message: p.Content}
 	case "web_search":
 		// Search results (M19). Tolerated strictly: a malformed payload is
 		// logged and skipped — it must never break the turn, and the parse

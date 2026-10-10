@@ -261,8 +261,10 @@ func TestERRMAPUpstream5xxRetryRecovers(t *testing.T) {
 	}
 }
 
-// ERRMAP-009: sensitive_query → 400 invalid_request_error / content_filter,
-// no pool penalty (SDD §7.1 content-level).
+// ERRMAP-009: sensitive_query → 400 invalid_request_error / content_filter, no pool
+// penalty (SDD §7.1 content-level), AND the platform's own words leave the building
+// (ADR 0033): the event name and its `content` payload are the only account of why
+// the turn was refused, so the client gets them verbatim instead of our paraphrase.
 func TestERRMAPContentFilter(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSESensitive})
@@ -270,9 +272,15 @@ func TestERRMAPContentFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, typ, code := readErr(t, resp)
+	status, msg, typ, code := readErr(t, resp)
 	if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "content_filter" {
 		t.Fatalf("got %d %q %q", status, typ, code)
+	}
+	// FixtureSSESensitive carries event:sensitive_query with content "topic not allowed".
+	for _, want := range []string{"sensitive_query", "topic not allowed"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, want the upstream's own %q passed through", msg, want)
+		}
 	}
 	if ts.Pool.StateOf("acc1") != pool.StateAvailable {
 		t.Errorf("content filter must not penalize the account, state = %v", ts.Pool.StateOf("acc1"))
