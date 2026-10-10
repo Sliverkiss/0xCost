@@ -652,10 +652,11 @@ func (s *Server) budgetError(clientCtx, ctx context.Context, where string) error
 	// The per-turn lease TTL can fire while the request budget is still alive;
 	// the shorter of the two is what actually bit.
 	budget := s.requestTimeout
+	lease := false
 	if s.leaseTTL > 0 && (budget <= 0 || s.leaseTTL < budget) {
-		budget = s.leaseTTL
+		budget, lease = s.leaseTTL, true
 	}
-	return &requestTimeoutError{Budget: budget, Where: where}
+	return &requestTimeoutError{Budget: budget, Where: where, Lease: lease}
 }
 
 // onPiece forwards one upstream delta to the client's stream (ADR 0034).

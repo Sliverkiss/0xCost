@@ -220,16 +220,28 @@ func upstreamTooLongMessage() string {
 type requestTimeoutError struct {
 	Budget time.Duration
 	Where  string
+	// Lease is true when the silence window (MIMO2API_LEASE_TTL_S) was the bound
+	// that fired rather than the wall clock. The two knobs are named in the
+	// message, so the caller has to know which one bit.
+	Lease bool
 }
 
+// Error names the knob the operator has to turn. Naming only the bound that
+// actually fired matters: on the shipped default (REQUEST_TIMEOUT_MS=0) the bound
+// is the silence window, and pointing at a disabled knob sends an operator to the
+// wrong environment variable (ADR 0036).
 func (e *requestTimeoutError) Error() string {
+	knob := "MIMO2API_REQUEST_TIMEOUT_MS"
+	if e.Lease {
+		knob = "MIMO2API_LEASE_TTL_S"
+	}
 	where := e.Where
 	if where == "" {
-		where = "waiting for the upstream"
+		where = "waiting for its first byte"
 	}
-	return fmt.Sprintf("the upstream did not answer within the gateway's %s budget while %s; "+
-		"the gateway aborted the request (MIMO2API_REQUEST_TIMEOUT_MS / MIMO2API_LEASE_TTL_S). "+
-		"Retry, send fewer messages per request, or raise the budget", e.Budget.Round(time.Second), where)
+	return fmt.Sprintf("the upstream stayed silent for the gateway's %s %s; "+
+		"the gateway gave up on the request (raise %s if the platform is simply slow). "+
+		"Retry, or send fewer messages per request", e.Budget.Round(time.Second), where, knob)
 }
 
 func (s *Server) MapError(w http.ResponseWriter, err error) {

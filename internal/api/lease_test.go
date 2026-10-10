@@ -47,6 +47,11 @@ func TestRequestBudgetReturnsChatTimeout(t *testing.T) {
 	if !strings.Contains(msg, "1s") || !strings.Contains(msg, "MIMO2API_REQUEST_TIMEOUT_MS") {
 		t.Errorf("message %q must name the budget and the knob", msg)
 	}
+	// The wall clock is what bit here, so the silence window must not be named:
+	// an operator sent to the wrong knob stays stalled (TIMEOUT-004).
+	if strings.Contains(msg, "MIMO2API_LEASE_TTL_S") {
+		t.Errorf("message %q names the lease window the wall clock never used", msg)
+	}
 	if st := ts.Pool.StateOf(acct[0].ID); st != pool.StateAvailable {
 		t.Errorf("account state = %v after a gateway timeout, want available (no cooldown)", st)
 	}
@@ -125,6 +130,11 @@ func TestLeaseTTLReturnsChatTimeout(t *testing.T) {
 	}
 	if !strings.Contains(msg, "1s") || !strings.Contains(msg, "LEASE_TTL") {
 		t.Errorf("message %q must name the lease TTL (the smaller budget)", msg)
+	}
+	// The silence window is what bit here; naming the wall clock would point the
+	// operator at a knob that is disabled on the shipped default (TIMEOUT-004).
+	if strings.Contains(msg, "MIMO2API_REQUEST_TIMEOUT_MS") {
+		t.Errorf("message %q names the disabled wall clock", msg)
 	}
 	if st := ts.Pool.StateOf(acct[0].ID); st != pool.StateAvailable {
 		t.Errorf("account state = %v, want available", st)
