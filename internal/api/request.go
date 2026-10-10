@@ -62,7 +62,10 @@ type chatRequest struct {
 	// reasoning:{"type":"enabled"} — still work when the standard field is
 	// absent (SDD §5.2).
 	ReasoningEffort string `json:"reasoning_effort"`
-	EnableThinking  bool   `json:"enable_thinking"`
+	// EnableThinking is the older spelling of the switch, kept as a pointer so an
+	// explicit false is distinguishable from "not sent": the deployment default is
+	// on, and only an explicit value may turn reasoning off (ADR 0031).
+	EnableThinking *bool `json:"enable_thinking"`
 	// Search controls. OpenAI's `web_search_options` is the standard spelling
 	// (present = search this turn); `web_search_status` keeps the finer
 	// disabled|auto|enabled control and wins when both are given; the ":online"
@@ -147,18 +150,31 @@ func decodeChatBody(raw []byte) (*chatRequest, error) {
 	return req, nil
 }
 
-// thinkingEnabled resolves the thinking opt-ins (SDD §5.2, TDD API-010/011,
-// OSTD-001..003). The standard `reasoning_effort` decides whenever it is
-// present — including "none", which is the explicit off switch — and the older
-// spellings only apply when it is absent.
-func (req *chatRequest) thinkingEnabled() bool {
+// thinkingEnabled resolves the thinking switch (SDD §5.2, TDD API-010/011,
+// OSTD-001..003/011, ADR 0031). OpenAI's reasoning models think unless told not to
+// — `reasoning_effort` defaults to a working level and only an explicit lower value
+// turns reasoning down — so this gateway's default is ON, not off:
+//
+//   - `reasoning_effort` decides whenever present: "none" is the explicit off
+//     switch, every other accepted value means on;
+//   - otherwise the older spellings decide, and an explicit false in either is off
+//     (`enable_thinking:false`, `reasoning":{"type":"disabled"}`);
+//   - with none of them sent, `defaultOn` applies (MIMO2API_DEFAULT_THINKING, on).
+//
+// The consequence a caller sees is the point of the change: a plain chat request
+// now gets the model's working in `reasoning_content`, instead of a switch only an
+// opted-in client could reach. Turning it off is one standard field.
+func (req *chatRequest) thinkingEnabled(defaultOn bool) bool {
 	if v := strings.ToLower(strings.TrimSpace(req.ReasoningEffort)); v != "" {
 		return v != "none"
 	}
-	if req.EnableThinking {
-		return true
+	if req.EnableThinking != nil {
+		return *req.EnableThinking
 	}
-	return req.Reasoning != nil && strings.EqualFold(req.Reasoning.Type, "enabled")
+	if req.Reasoning != nil && strings.TrimSpace(req.Reasoning.Type) != "" {
+		return strings.EqualFold(req.Reasoning.Type, "enabled")
+	}
+	return defaultOn
 }
 
 // reasoningEffortErr validates the standard field's value (OpenAI: minimal,

@@ -247,6 +247,7 @@ func run() error {
 		DefaultModel: cfg.DefaultModel(),
 		ReplayCap:    cfg.ReplayCap(),
 		// Image input guards (IMG-*): 10 images / 20 MiB each by default.
+		DefaultThinking:   cfg.DefaultThinking(),
 		MaxImages:         cfg.MaxImages(),
 		MaxImageBytes:     cfg.MaxImageBytes(),
 		MaxImagePixels:    cfg.MaxImagePixels(),

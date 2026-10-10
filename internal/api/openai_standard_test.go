@@ -5,9 +5,10 @@ package api_test
 // able to ask for both without learning a field of ours, and a typo must fail
 // loudly instead of quietly doing nothing.
 //
-// Documentation: SDD §5.2, docs/TDD.md OSTD-001..007.
+// Documentation: SDD §5.2, docs/TDD.md OSTD-001..007, OSTD-011.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -337,5 +338,88 @@ func TestOSTD007ModelIDUnchangedByStandardFields(t *testing.T) {
 	}
 	if got := ts.Upstream.Requests()[0].Model; got != "mimo-v2.6-pro" {
 		t.Errorf("upstream model = %q, want %q", got, "mimo-v2.6-pro")
+	}
+}
+
+// OSTD-011: a request that says nothing about thinking follows the model's own
+// declared default (ADR 0031) — the upstream's catalog declares thinking on for
+// every chat model, which is also where the Studio's own UI starts. A plain OpenAI
+// body therefore gets the model's working in `reasoning_content`; before this it
+// got nothing, because the switch was off unless a client opted in.
+func TestOSTD011ThinkingFollowsTheModelsDeclaredDefault(t *testing.T) {
+	thinkingServer := func(t *testing.T, opts *testserver.TestServerOptions) *testserver.TestServer {
+		t.Helper()
+		acct := oneAccount()
+		ts := testserver.NewTestServer(t, acct, opts)
+		ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{Body: testutil.FixtureSSEThinking})
+		// Warm the catalog snapshot the way main.go does at startup: the declared
+		// defaults reach the request path through that snapshot, and a cold one
+		// would silently fall back to the deployment default (ADR 0031).
+		ts.API.RefreshModelRedirects(context.Background())
+		return ts
+	}
+
+	// (1) No thinking field at all: the catalog declares thinking on for flash, so
+	// the upstream call carries the switch and the response carries the working.
+	ts := thinkingServer(t, nil)
+	resp, err := ts.Chat(ostdBody("mimo-v2.6-flash", nil), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp))
+	if reqs := ts.Upstream.Requests(); len(reqs) == 0 || !reqs[0].EnableThinking {
+		t.Errorf("upstream enableThinking = false for a plain body; the model declares thinking on")
+	}
+	if got := comp.Choices[0].Message.ReasoningContent; got != "Let me check the math." {
+		t.Errorf("reasoning_content = %q, want the model's working", got)
+	}
+	if comp.Choices[0].Message.Content != "The answer is 4." {
+		t.Errorf("content = %q, want the answer", comp.Choices[0].Message.Content)
+	}
+
+	// (2) The standard field still turns it off, and then no reasoning comes back.
+	ts2 := thinkingServer(t, nil)
+	resp2, err := ts2.Chat(ostdBody("mimo-v2.6-flash", map[string]any{"reasoning_effort": "none"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp2 := testutil.ParseCompletion(t, testutil.ReadJSON(t, resp2))
+	if ts2.Upstream.Requests()[0].EnableThinking {
+		t.Errorf("reasoning_effort=none did not turn the upstream switch off")
+	}
+	if got := comp2.Choices[0].Message.ReasoningContent; got != "" {
+		t.Errorf("reasoning leaked with thinking off: %q", got)
+	}
+
+	// (3) The older spelling's explicit false is honoured too. It is a pointer
+	// precisely so "not sent" (follow the model) and "false" (off) differ.
+	ts3 := thinkingServer(t, nil)
+	if _, err := ts3.Chat(ostdBody("mimo-v2.6-flash", map[string]any{"enable_thinking": false}), ""); err != nil {
+		t.Fatal(err)
+	}
+	if ts3.Upstream.Requests()[0].EnableThinking {
+		t.Errorf("enable_thinking:false did not turn the upstream switch off")
+	}
+
+	// (4) The deployment knob does not override a model's own declaration: the
+	// catalog is the authority, the knob only covers ids it does not describe.
+	off := false
+	ts4 := thinkingServer(t, &testserver.TestServerOptions{DefaultThinking: &off})
+	if _, err := ts4.Chat(ostdBody("mimo-v2.6-flash", nil), ""); err != nil {
+		t.Fatal(err)
+	}
+	if !ts4.Upstream.Requests()[0].EnableThinking {
+		t.Errorf("MIMO2API_DEFAULT_THINKING=off overrode the model's declared default")
+	}
+
+	// (5) ...which is the case the knob exists for: an id this account's catalog
+	// does not describe (here mimo-v2.6-pro, whose row carries no
+	// thinkingDefaultOn) follows the deployment default.
+	ts5 := thinkingServer(t, &testserver.TestServerOptions{DefaultThinking: &off})
+	if _, err := ts5.Chat(ostdBody("mimo-v2.6-pro", nil), ""); err != nil {
+		t.Fatal(err)
+	}
+	if ts5.Upstream.Requests()[0].EnableThinking {
+		t.Errorf("an undeclared model ignored MIMO2API_DEFAULT_THINKING=off")
 	}
 }

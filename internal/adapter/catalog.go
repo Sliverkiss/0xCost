@@ -33,13 +33,19 @@ const (
 
 // CatalogEntry is one model as reported by an account (or by the static floor).
 type CatalogEntry struct {
-	ID     string
-	Name   string
-	Page   string
-	Web    int  // 0|1|2
-	Think  bool // default-on
-	Audio  string
-	NToken string // upstream context size when given ("1M")
+	ID    string
+	Name  string
+	Page  string
+	Web   int  // 0|1|2
+	Think bool // default-on
+	// ThinkKnown says whether the account catalog itself declared the thinking
+	// default, as opposed to the value being the zero from the built-in floor
+	// (or from an unreadable catalog). The request path uses the declared default
+	// when a request says nothing about thinking, so "not declared" must not be
+	// indistinguishable from "declared off" (ADR 0031).
+	ThinkKnown bool
+	Audio      string
+	NToken     string // upstream context size when given ("1M")
 	// RedirectTo is the upstream's own `redirectTo`: the id this one has been
 	// superseded by. The upstream refuses the superseded id on the audio surface
 	// (400 "model: [x] not support" / "modelCode cannot be empty") and answers it
@@ -133,6 +139,7 @@ func (e CatalogEntry) Merge(o CatalogEntry) CatalogEntry {
 		out.Web = o.Web
 	}
 	out.Think = out.Think || o.Think
+	out.ThinkKnown = out.ThinkKnown || o.ThinkKnown
 	if audioRank(o.Audio) > audioRank(out.Audio) {
 		out.Audio = o.Audio
 	}

@@ -37,7 +37,7 @@ func FuzzChatRequestDecode(f *testing.F) {
 		}
 		_ = req.mediaErr(10)
 		_ = req.imageDetailErr()
-		_ = req.thinkingEnabled()
+		_ = req.thinkingEnabled(true)
 	})
 }
 

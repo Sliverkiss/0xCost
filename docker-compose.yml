@@ -52,6 +52,10 @@ services:
       #   SMS on its own — the operator finishes a human gate (ADR 0013).
       - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
+      # Thinking follows the model's own declared default (the account catalog's
+      # thinkingDefaultOn); this is the fallback for an id the catalog does not
+      # describe, and `reasoning_effort:"none"` is the per-request switch (ADR 0031).
+      - MIMO2API_DEFAULT_THINKING=${MIMO2API_DEFAULT_THINKING:-on}
       # ADR 0019: a real client-facing budget, the per-turn/slot TTL, and the
       # conservative slot policy. Pinned so a default change cannot silently
       # alter when capacity goes back to the pool.

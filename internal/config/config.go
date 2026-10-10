@@ -178,6 +178,7 @@ type Config struct {
 	cooldownCap          time.Duration
 	probeInterval        time.Duration
 	logLevel             string
+	defaultThinking      bool
 	otpAuto              bool
 	crossRegionAgree     bool
 
@@ -228,6 +229,10 @@ func Load() (*Config, error) {
 		// dispatch is an explicit operator decision (MIMO2API_OTP_AUTO=true).
 		// A default of true meant any login attempt — including the startup
 		// catalog warm-up — silently spent an SMS.
+		// The thinking switch defaults to ON (ADR 0031): a plain OpenAI request
+		// should get a reasoning model's working, and turning it off is one field
+		// (`reasoning_effort:"none"`).
+		defaultThinking:  getenvBool("MIMO2API_DEFAULT_THINKING", true),
 		otpAuto:          getenvBool("MIMO2API_OTP_AUTO", false),
 		crossRegionAgree: getenvBool("MIMO2API_CROSS_REGION_AGREE", true),
 		// Not MIMO2API_-prefixed on purpose: the hosted deployment sets the
@@ -431,6 +436,11 @@ func (c *Config) Debug() bool {
 	return strings.EqualFold(strings.TrimSpace(c.logLevel), "debug")
 }
 func (c *Config) OTPAuto() bool { return c.otpAuto }
+
+// DefaultThinking is the deployment's default for the upstream thinking switch
+// (ADR 0031): on unless MIMO2API_DEFAULT_THINKING turns it off. A pointer because
+// the api layer reads nil as "not configured", which also means on.
+func (c *Config) DefaultThinking() *bool { v := c.defaultThinking; return &v }
 
 // CrossRegionAgree reports whether the client may agree to the cross-region
 // personal-data-transfer demand automatically (MIMO2API_CROSS_REGION_AGREE,

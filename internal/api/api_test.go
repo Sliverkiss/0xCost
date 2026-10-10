@@ -231,13 +231,15 @@ func TestAPIReasoningAlias(t *testing.T) {
 	}
 }
 
-// API-010 companion: thinking off strips reasoning entirely.
+// API-010 companion: thinking off strips reasoning entirely. Since ADR 0031 a
+// request has to say so — the default follows the model's own declaration, which
+// the catalog sets to on — so this asks for off with the standard field.
 func TestAPIThinkingOffStripsReasoning(t *testing.T) {
 	ts := testserver.NewTestServer(t, []testserver.TestAccount{{
 		ID: "acc1", PH: testutil.TestPH, Cookie: testutil.TestCookie,
 		Script: []testutil.ScriptStep{{Body: testutil.FixtureSSEThinking}},
 	}}, nil)
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "2+2"}), "")
+	resp, err := ts.Chat(ostdBody("mimo-v2.6-pro", map[string]any{"reasoning_effort": "none"}), "")
 	if err != nil {
 		t.Fatal(err)
 	}

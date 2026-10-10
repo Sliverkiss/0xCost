@@ -131,7 +131,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		msgs:      am,
 		model:     model,
 		fastchat:  fastchat,
-		thinking:  req.thinkingEnabled(),
+		thinking:  req.thinkingEnabled(s.thinkingDefaultFor(model)),
 		search:    search,
 		citations: req.citationsWanted(),
 		temp:      req.Temperature,

@@ -1005,7 +1005,7 @@ Supported request fields:
 | `temperature`, `top_p` | Forwarded inside `modelConfig` (mimo-web-proxy sends `temperature:0.8, top_p:0.95` defaults, `web_client.go:127-140`); pass through when provided, else omit. |
 | `max_tokens` / `max_completion_tokens` | Not supported upstream; ignored (warning header). |
 | `tools`, `tool_choice`, `functions`, `response_format`, `n`, `seed`, ... | Stripped, not rejected. `X-Mimo-Warnings` response header lists dropped fields — bounded to 8 names of 40 characters plus `+N more`, sorted and deduplicated, because the list is built from client keys and an unbounded one made the response unparseable for callers with a 64 KiB header limit (ADR 0030). |
-| `reasoning_effort` | **Standard thinking knob.** `none` → `enableThinking:false`; `minimal`/`low`/`medium`/`high` → `true` (the upstream switch is boolean, so the level itself has nothing to map onto). Anything else → 400 `unsupported_reasoning_effort`, before any account work. |
+| `reasoning_effort` | **Standard thinking knob.** `none` → `enableThinking:false`; `minimal`/`low`/`medium`/`high` → `true` (the upstream switch is boolean, so the level itself has nothing to map onto). Anything else → 400 `unsupported_reasoning_effort`, before any account work. Absent → the model's own declared default from the catalog (`thinkingDefaultOn`), and `MIMO2API_DEFAULT_THINKING` (on) for an id the catalog does not describe (ADR 0031). |
 | `web_search_options` | **Standard search knob.** Presence → `modelConfig.webSearchStatus:"enabled"`. `search_context_size` (`low`/`medium`/`high`) is validated and then reported in `X-Mimo-Warnings`, because the upstream switch has no size axis; an unknown size → 400 `unsupported_search_context_size`. |
 
 Thinking and search both lead with the **standard** OpenAI field (see the
@@ -1014,7 +1014,16 @@ and `reasoning: {"type":"enabled"}` (a la simple-chat `openai.go:355-417`) — s
 work when `reasoning_effort` is absent; whenever it is present it decides,
 including `none` as the explicit off switch. Either opt-in →
 `modelConfig.enableThinking: true` → reasoning surfaced as `reasoning_content`
-(marker splitting per §2.5). Default: off.
+(marker splitting per §2.5).
+
+Default: **the model's own**. When a request says nothing, the switch follows the
+account catalog's `thinkingDefaultOn` for that id (`true` for every chat model on the
+live account — the same value the Studio UI starts from), else the deployment default
+`MIMO2API_DEFAULT_THINKING` (on); the built-in floor declares nothing and never counts
+as an off (ADR 0031). A caller that wants the old behaviour sends
+`reasoning_effort:"none"`. Note that `usage.reasoning_tokens` is the upstream's own
+number and stays non-zero even with the switch off: it reports the work the model did,
+not what we exposed.
 
 Search: `web_search_options` (presence = search this turn) is the standard
 spelling; `web_search_status` remains for the finer `disabled`/`auto`/`enabled`

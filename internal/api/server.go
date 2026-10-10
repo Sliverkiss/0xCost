@@ -35,6 +35,8 @@ type Server struct {
 	maxImages      int
 	maxImageBytes  int
 	maxImagePixels int
+	// defaultThinking is the deployment default for the thinking switch (ADR 0031).
+	defaultThinking bool
 	// imageClient fetches client-supplied image URLs. Its transport refuses
 	// loopback/private/link-local destinations on every hop (imageinput.go), so a
 	// caller cannot use the gateway as a probe into the host's own network.
@@ -73,6 +75,11 @@ type Server struct {
 		mu sync.Mutex
 		at time.Time
 		m  map[string]string
+		// thinks caches each id's declared thinking default (`thinkingDefaultOn`)
+		// from the same snapshot: a request that says nothing about thinking must
+		// be able to follow the model's own setting without the request path
+		// reading a catalog (ADR 0011/0031).
+		thinks map[string]bool
 	}
 }
 
@@ -89,9 +96,10 @@ func (s *Server) modelRedirects() map[string]string {
 	return s.redirects.m
 }
 
-// RefreshModelRedirects rebuilds the map from the account catalogs, at most once
-// per catalog TTL. It is the exported warm-up main.go calls at startup and on its
-// janitor tick, so the request paths never pay for a catalog read.
+// RefreshModelRedirects rebuilds the cached catalog *hints* from the account
+// catalogs — the superseded-id map and each id's declared thinking default — at
+// most once per catalog TTL. It is the exported warm-up main.go calls at startup
+// and on its janitor tick, so the request paths never pay for a catalog read.
 func (s *Server) RefreshModelRedirects(ctx context.Context) {
 	s.redirects.mu.Lock()
 	if s.redirects.m != nil && time.Since(s.redirects.at) < s.catalogWindow() {
@@ -100,13 +108,19 @@ func (s *Server) RefreshModelRedirects(ctx context.Context) {
 	}
 	s.redirects.mu.Unlock()
 
-	m := s.redirectMapOf(s.catalogEntries(ctx))
+	entries := s.catalogEntries(ctx)
+	m := s.redirectMapOf(entries)
+	thinks := thinkingDefaultsOf(entries)
 	s.redirects.mu.Lock()
 	s.redirects.m = m
+	s.redirects.thinks = thinks
 	s.redirects.at = time.Now()
 	s.redirects.mu.Unlock()
 	if len(m) > 0 {
 		s.debugf("models: %d superseded ids will be resolved before they reach the upstream", len(m))
+	}
+	if len(thinks) > 0 {
+		s.debugf("models: %d ids declare their own thinking default; a request that says nothing follows it", len(thinks))
 	}
 }
 
@@ -190,6 +204,10 @@ type Options struct {
 	// this is the bound that keeps a 200 KB PNG header from turning into gigabytes
 	// of pixel buffer.
 	MaxImagePixels int
+	// DefaultThinking is the deployment's default for the upstream thinking switch
+	// (ADR 0031). nil means on: OpenAI's reasoning models think unless told not to.
+	DefaultThinking *bool
+
 	// ImageAllowPrivate lets the fetch reach loopback/private/link-local
 	// destinations (MIMO2API_IMAGE_ALLOW_PRIVATE). Off by default: a
 	// client-supplied URL is assumed hostile, and a public gateway must not double
@@ -284,32 +302,33 @@ func New(opts Options) *Server {
 		}
 	}
 	return &Server{
-		pool:           opts.Pool,
-		imageClient:    newImageHTTPClient(opts.ImageAllowPrivate),
-		maxImagePixels: opts.MaxImagePixels,
-		store:          opts.Accounts,
-		client:         opts.Client,
-		otp:            newOTPStore(),
-		recovery:       newRecoveryState(),
-		apiKeys:        keys,
-		defaultModel:   opts.DefaultModel,
-		replayCap:      opts.ReplayCap,
-		maxImages:      opts.MaxImages,
-		maxImageBytes:  opts.MaxImageBytes,
-		requestTimeout: opts.RequestTimeout,
-		leaseTTL:       opts.LeaseTTL,
-		slotHold:       opts.SlotHold,
-		maxQueryChars:  opts.MaxQueryChars,
-		logger:         logger,
-		debug:          opts.Debug,
-		audioConvs:     mimo.NewConversationCache(0),
-		audioPoll:      opts.AudioPoll,
-		catalogTTL:     opts.CatalogTTL,
-		ttsTimeout:     opts.TTSTimeout,
-		ttsMaxTimeout:  opts.TTSMaxTimeout,
-		asrTimeout:     opts.ASRTimeout,
-		speechMaxChars: opts.SpeechMaxChars,
-		defaultVoice:   opts.DefaultVoice,
+		pool:            opts.Pool,
+		defaultThinking: thinkingDefault(opts.DefaultThinking),
+		imageClient:     newImageHTTPClient(opts.ImageAllowPrivate),
+		maxImagePixels:  opts.MaxImagePixels,
+		store:           opts.Accounts,
+		client:          opts.Client,
+		otp:             newOTPStore(),
+		recovery:        newRecoveryState(),
+		apiKeys:         keys,
+		defaultModel:    opts.DefaultModel,
+		replayCap:       opts.ReplayCap,
+		maxImages:       opts.MaxImages,
+		maxImageBytes:   opts.MaxImageBytes,
+		requestTimeout:  opts.RequestTimeout,
+		leaseTTL:        opts.LeaseTTL,
+		slotHold:        opts.SlotHold,
+		maxQueryChars:   opts.MaxQueryChars,
+		logger:          logger,
+		debug:           opts.Debug,
+		audioConvs:      mimo.NewConversationCache(0),
+		audioPoll:       opts.AudioPoll,
+		catalogTTL:      opts.CatalogTTL,
+		ttsTimeout:      opts.TTSTimeout,
+		ttsMaxTimeout:   opts.TTSMaxTimeout,
+		asrTimeout:      opts.ASRTimeout,
+		speechMaxChars:  opts.SpeechMaxChars,
+		defaultVoice:    opts.DefaultVoice,
 	}
 }
 
@@ -605,11 +624,11 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 	for _, id := range ids {
 		page := pages[id]
 		row := rows[id]
-		var think bool
+		var think, thinkKnown bool
 		var wsDefault string
 		if row.Model != "" {
 			if row.ThinkingDefaultOn != nil {
-				think = *row.ThinkingDefaultOn
+				think, thinkKnown = *row.ThinkingDefaultOn, true
 			}
 			if row.WebSearchDefaultStatus != nil {
 				wsDefault = *row.WebSearchDefaultStatus
@@ -621,6 +640,7 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 			Page:       page,
 			Web:        adapter.WebSearchLevel(page, wsDefault),
 			Think:      think,
+			ThinkKnown: thinkKnown,
 			Audio:      adapter.AudioForPage(page),
 			NToken:     row.NToken,
 			RedirectTo: redirects[id],
@@ -677,6 +697,46 @@ func (s *Server) storeRedirects(m map[string]string) {
 }
 
 // redirectMapOf builds the superseded-id map from an entry slice.
+// thinkingDefault reads Options.DefaultThinking: not configured (nil) means on,
+// because the platform's own catalog declares thinking on for its chat models and
+// OpenAI's reasoning models think unless told not to (ADR 0031).
+func thinkingDefault(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+// thinkingDefaultsOf maps the ids the account catalog itself described onto their
+// declared thinking default. An entry that only came from the built-in floor is
+// left out: the floor has no opinion, and its zero must not be read as a
+// declaration that thinking is off (ADR 0031).
+func thinkingDefaultsOf(entries []adapter.CatalogEntry) map[string]bool {
+	m := map[string]bool{}
+	for _, e := range entries {
+		if e.ThinkKnown {
+			m[e.ID] = e.Think
+		}
+	}
+	return m
+}
+
+// thinkingDefaultFor is the thinking switch's default for a request that says
+// nothing about thinking (ADR 0031): the platform's own declaration for the model
+// (`thinkingDefaultOn` — the value the Studio UI starts from, true for every chat
+// model on this account), and for an id the catalog does not describe, the
+// deployment default (MIMO2API_DEFAULT_THINKING). Read from the cached snapshot,
+// never a fetch (ADR 0011).
+func (s *Server) thinkingDefaultFor(model string) bool {
+	s.redirects.mu.Lock()
+	v, ok := s.redirects.thinks[model]
+	s.redirects.mu.Unlock()
+	if ok {
+		return v
+	}
+	return s.defaultThinking
+}
+
 func (s *Server) redirectMapOf(entries []adapter.CatalogEntry) map[string]string {
 	m := map[string]string{}
 	for _, e := range entries {

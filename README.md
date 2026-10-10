@@ -81,10 +81,15 @@ configured default). `/v1/models` reports what this deployment can actually
 serve, read from the account's own Studio catalog (`bot/config`
 `modelConfigListNg`, `pageType: chat` rows) with the static list as the floor —
 on the live test account that is 15 ids, including `clawm-alpha`/`clawl-alpha`
-and the omni variants. Reasoning is returned when `reasoning_effort` is anything
-but `none` (the older `enable_thinking: true` / `reasoning: {"type":"enabled"}`
-spellings still work); the thinking arrives as `reasoning_content` on the
-message. The response is OpenAI's `chat.completion` key for key: `message.refusal`
+and the omni variants. Reasoning arrives as `reasoning_content` on the message.
+`reasoning_effort: "none"` turns it off and any other value turns it on (the older
+`enable_thinking: true` / `reasoning: {"type":"enabled"}` spellings still work); a
+request that says nothing follows **the model's own declared default**, which the
+account catalog sets to on for its chat models — so a plain OpenAI body gets the
+working too (ADR 0031). `usage.prompt_tokens` is the platform's own accounting and
+includes its fixed preamble (~2,235 tokens on every request, measured by intercept
+and identical across models and channels); a search-enabled turn jumps to ~27k
+because the platform injects the pages it fetched. The response is OpenAI's `chat.completion` key for key: `message.refusal`
 and `choices[0].logprobs` are sent as `null`, and `usage` always carries
 `prompt_tokens_details`/`completion_tokens_details` (zero-filled when the upstream
 counted none) — clients never have to branch on a missing key. Errors carry
@@ -365,6 +370,7 @@ All variables are `MIMO2API_`-prefixed. Defaults:
 | `MIMO2API_POOL_STATS_WINDOW_S` | `300` | Window inside which risk-control signals are correlated across accounts behind one egress |
 | Cookie / credential lifetimes (measured 2026-10-09) | — | `passToken` 30 d, `cUserId`/`userId` 30 d, `deviceId` 390 d, `pass_ua` 89 d, `uLocale` 15 d; renewal **echoes** the passToken, only a full login rotates it (docs/live-findings.md DEVICE-004) |
 | Keepalive / self-healing (ADR 0014) | — | Every 12 h (`MIMO2API_SESSION_REFRESH_HOURS`) the session cookie is re-minted from `userID + passToken`; a **revoked credential** schedules an asynchronous single-flight password re-login that rotates the passToken and puts the account back in rotation. A request that discovers the revocation answers `account_action` ("retry in a few seconds") instead of blocking; a login that lands on a human gate persists the device identity, disables the account with the reason and dispatches nothing. `/v1/admin/pool` reports `recovery{in_flight,attempts,last_error}` |
+| `MIMO2API_DEFAULT_THINKING` | `on` | The thinking switch's default when a request names none **and** the account catalog does not describe the model. `on`/`1`/`true`/`yes` turn it on; anything else (`off`, a typo) turns it off, which is the conservative direction here — the same parse the other booleans use. A catalog row's own `thinkingDefaultOn` always wins over this, so the gateway follows the platform's declared behaviour rather than a global (ADR 0031). `off` restores the pre-0031 behaviour for undeclared ids; `reasoning_effort:"none"` is the per-request switch |
 | `MIMO2API_OTP_AUTO` | `false` | Allow a login to send a **real SMS** for the new-device OTP challenge (complete via `/v1/admin/otp/submit`). Off by default: the dispatch is an explicit operator decision (ADR 0013) |
 | `MIMO2API_CROSS_REGION_AGREE` | `true` | Agree to the cross-region personal-data-transfer demand on login (non-mainland egress IPs). `false` refuses automatically and leaves the account for an operator, who can still approve one login with `POST /v1/admin/consent/agree` (ADR 0001) |
 | `MIMO2API_X_TIMEZONE` | `Asia/Shanghai` | Upstream `x-timeZone` header |
