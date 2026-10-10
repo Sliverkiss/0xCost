@@ -4,8 +4,10 @@ A Go gateway in front of Xiaomi MiMo Studio (aistudio.xiaomimimo.com) that speak
 the OpenAI HTTP surface: chat (one-shot), TTS and ASR, web search, model listing.
 
 - Chat: the standard OpenAI knobs are the documented path — `reasoning_effort`
-  turns the model's thinking on (`none` off) and `web_search_options` turns search
-  on; model ids are never renamed to carry an option (ADR 0027). Non-streaming only. There is no SSE path and no session store — the
+  sets the model's thinking (`none` off; a request that names nothing follows the
+  model's own declared default from the account catalog, ADR 0031) and
+  `web_search_options` turns search on; model ids are never renamed to carry an
+  option (ADR 0027). Non-streaming only. There is no SSE path and no session store — the
   request carries its own history, the gateway turns the upstream's SSE into one
   JSON body, and `stream: true` is refused with a clear 400 instead of switching
   anything off. Function calling is not emulated: a `tools` field is ignored and
