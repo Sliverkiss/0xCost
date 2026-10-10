@@ -260,6 +260,48 @@ func TestChatIdleStall(t *testing.T) {
 	}
 }
 
+// SSE-014 companion (ADR 0036): silence **before any byte** is our own patience
+// running out, not a stall. It surfaces as ErrSilentUpstream so the API layer
+// answers with our own 504 and leaves the account alone; a slow search must not
+// cool a healthy account. Silence *after* the upstream started answering stays
+// ErrIdleStall (transport class, POOLATTR-012).
+func TestChatSilentUpstreamIsItsOwnBound(t *testing.T) {
+	_, up := chatEnv(t)
+	up.ResetScript(testPH)
+	up.Script(testPH, testutil.ScriptStep{
+		Body:        testutil.FixtureSSEBasic,
+		StallBefore: 3 * time.Second, // nothing on the wire, not even headers
+	})
+	small := New(Options{Base: up.URL(), IdleTimeout: 200 * time.Millisecond})
+
+	start := time.Now()
+	_, err := small.Chat(context.Background(), testCookie, testPH, ChatRequest{Query: "hi", Model: "mimo-128k"})
+	if !errors.Is(err, ErrSilentUpstream) {
+		t.Fatalf("err = %v, want ErrSilentUpstream", err)
+	}
+	if errors.Is(err, ErrIdleStall) {
+		t.Error("pre-first-byte silence must not surface as the stall error: the two carry opposite pool decisions")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("the pre-header window fired late: %v", elapsed)
+	}
+}
+
+// SSE-014 companion (ADR 0036): the reader reports activity on every byte even
+// when no window is set — "no window" and "no activity signal" are different
+// things, and the lease's moving expiry depends on the second.
+func TestIdleReaderReportsActivityWithoutAWindow(t *testing.T) {
+	r := newIdleWatchedReader(strings.NewReader("abc"), func() {}, 0)
+	fired := 0
+	r.onActivity = func() { fired++ }
+	if _, err := r.Read(make([]byte, 8)); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if fired != 1 {
+		t.Errorf("activity callbacks = %d, want 1 (it must fire with no window)", fired)
+	}
+}
+
 // SSE-014 companion: a normally-paced stream never trips the watchdog —
 // reads reset the timer.
 func TestChatIdleWatchdogNoFalseTrip(t *testing.T) {

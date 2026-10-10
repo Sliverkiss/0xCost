@@ -40,3 +40,4 @@ rather than at chat history.
 | [0033](0033-a-refusal-keeps-the-platforms-own-words.md) | A refusal keeps the platform's own words — the upstream's text travels verbatim, our status and code stay ours | accepted |
 | [0034](0034-streaming-chat-is-served-again.md) | Streaming chat is served again: `stream:true` selects SSE on the same pipeline, the commit boundary is the first upstream delta, errors after it travel in-band | accepted (supersedes the client-facing half of 0017) |
 | [0035](0035-aistudio-headers-match-the-spa.md) | The aistudio surface sends exactly the SPA's headers: no `X-Requested-With`, no `Authorization`, `Accept: */*` — verified against the whole bundle (0 hits) | accepted |
+| [0036](0036-the-lease-window-moves-with-the-stream.md) | The lease window moves with the upstream (silence, not a wall clock): pre-first-byte silence is our own bound, mid-stream silence is a stall, `MIMO2API_REQUEST_TIMEOUT_MS` defaults to 0 | accepted (amends 0019) |

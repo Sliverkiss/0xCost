@@ -107,6 +107,17 @@
 **闭环证据（实测）**：TTS 合成 `你好，这是一次语音合成测试。` → 上传 wav → ASR 返回
 `你好，这是一次语音合成测试。`（逐字一致，约 2 s）。
 
+**注意（2026-10-10 全量 bundle 核对）：SPA 的语音输入不走 `asr/recognize`。**
+它的「按住说话/上传音频」是把音频**当资源上传**（`resource/genUploadInfo` → `PUT` → 拿
+`resourceUrl`），然后把该 `resourceUrl` 作为**附件塞进 chat 的 message**（chunk 4702：
+`AsrAudioUploadToken` / `AsrAudioState` 状态机 → `R.YO.upload(...)` → `U(...)` 拼进 multiMedias），
+转写由 chat 那一轮服务端完成。也就是说：
+
+- 我们对外提供的 ASR（`asr/recognize` + 轮询）是**平台仍然存在的另一条路径**，实测可用
+  （上面闭环），但**不是参考客户端的行为**——指纹对齐的角度它同样只受"同一基类头集合 + `ph`"
+  约束，没有额外的头/参数要求；
+- 如果哪天要做"和网页行为一致"的 ASR，正确做法是复用附件上传 + chat 挂载，而不是 recognize。
+
 ## 5. 联网检索（chat 内）
 
 - 请求：`modelConfig.webSearchStatus ∈ disabled|auto|enabled`（SPA 枚举 `RATIO/TRUNCATE` 对应
@@ -346,6 +357,24 @@ BUSY-001/BUSY-002/MODEL-001（重试与映射，含"账号不被降温"）。
 
 （`X-Requested-With` 在 **usercross/passport 面**是硬要求：`66108 = missing X-Requested-With`，
 见 `docs/usercross-reverse.md`。两个面的头集合不同，不能混用。）
+
+**上传 PUT（签名存储，跨域）** —— 全量核对的第三个面：
+
+```js
+R = async (file, onProgress, signal, md5) => {
+  const {uploadUrl, resourceUrl, objectName} = await D.post("/genUploadInfo", {fileName: file.name, ...(md5 && {fileContentMd5: md5})}, ...);
+  const [, u] = await n.E.put(uploadUrl, file, {headers: {"Content-Type": "application/octet-stream", ...(md5 && {"content-md5": md5})}, onUploadProgress: onProgress, signal});
+}
+```
+
+`onUploadProgress` 让基类 `fetch()` 走 `requestWithProgress`（`new XMLHttpRequest` +
+`setRequestHeader` 逐个头），所以这一支的头 = 基类合并结果 `{...this.headers, ...getHeaders(), ...调用点}`
+**+** 浏览器给 XHR 的默认值：`Accept: */*`、`Origin`、`Referer`（默认 referrer policy 跨域只留
+origin）、`sec-fetch-dest: empty`/`mode: cors`/`site: cross-site`。**没有 `withCredentials`，
+所以跨域到存储时不带 Cookie**（签名 URL 也不需要）。我们由
+`client.go:setAistudioStorageHeaders` 生成这一集合（`Content-Type`/`content-md5` 由调用点补），
+`attach.go` / `audio.go` 两条上传路径共用，ATTACH-001 与 AUDIO-006 逐头断言（含"不该发的头发了
+就是 tell"的负断言）。
 
 **对本项目的意义**：`internal/mimo/sse.go` 一直在消费同一套帧；"`message` 是增量"正是
 "直接透传、无需与累计文本 diff"的依据；`<think>\0` 标记即 splitter 输入；`tip_ratio`/

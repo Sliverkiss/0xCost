@@ -57,7 +57,7 @@ type ParsedResource struct {
 }
 
 // UploadFile uploads bytes to the resource surface. The PUT goes to signed
-// object storage, so it carries the md5 and the browser User-Agent but no
+// object storage, so it carries the md5 and the browser header set but no
 // upstream cookie — exactly like the ASR upload path (audio.go).
 func (c *Client) UploadFile(ctx context.Context, cookie, ph, fileName string, data []byte) (*UploadedResource, error) {
 	if fileName == "" {
@@ -78,9 +78,9 @@ func (c *Client) UploadFile(ctx context.Context, cookie, ph, fileName string, da
 	if err != nil {
 		return nil, err
 	}
+	c.setAistudioStorageHeaders(put.Header)
 	put.Header.Set("Content-Type", "application/octet-stream")
 	put.Header.Set("content-md5", digest)
-	put.Header.Set("User-Agent", c.userAgent)
 	put.ContentLength = int64(len(data))
 	resp, err := c.http.Do(put)
 	if err != nil {

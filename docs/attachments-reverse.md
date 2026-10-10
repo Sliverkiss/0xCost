@@ -20,7 +20,18 @@ Upload:
 1. `POST /open-apis/resource/genUploadInfo` body `{fileName, fileContentMd5?}` →
    `{uploadUrl, resourceUrl, objectName}` (the SPA calls it with the MD5 of the
    bytes; our audio path already does the same for ASR).
-2. `PUT <uploadUrl>` with the raw bytes, `Content-Type: application/octet-stream`.
+2. `PUT <uploadUrl>` with the raw bytes, `Content-Type: application/octet-stream`
+   and `content-md5: <md5hex>`. This PUT is the one call on this surface whose
+   header set differs, because the SPA reaches for progress reporting and the
+   client switches from `fetch` to `XMLHttpRequest` (`onUploadProgress`):
+   `{...client.headers, ...getHeaders(), ...caller}` still applies, so
+   `Accept-Language: zh-CN` and `x-timeZone` ride along, the XHR default
+   `Accept: */*` appears, and the caller adds only Content-Type + content-md5
+   (`web-surface-reverse.md` §11.7.1). The signed URL lives on another host and
+   the XHR never sets `withCredentials`, so **no Cookie travels**, `Referer` is
+   trimmed to the origin by the default referrer policy, and
+   `sec-fetch-site: cross-site` (`internal/mimo/client.go`
+   `setAistudioStorageHeaders`, pinned by ATTACH-001 / AUDIO-00x).
 3. `POST /open-apis/resource/parse` with **query parameters**
    `{fileUrl, objectName, model}` and an empty body → the parse result, whose
    `id` is the media handle the chat request references, plus `tokenUsage`.

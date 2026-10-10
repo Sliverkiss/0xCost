@@ -123,6 +123,18 @@ func TestTranscribeSuccess(t *testing.T) {
 	if paths[len(paths)-1] != "/open-apis/asr/recognizeStatus" {
 		t.Errorf("last call = %q, want the status poll", paths[len(paths)-1])
 	}
+	// The ASR upload hits the same signed storage with the same header set as the
+	// attachment upload (both go through the SPA's XHR branch, ADR 0035).
+	puts := 0
+	for _, req := range up.AudioRequests() {
+		if strings.HasPrefix(req.Path, "/mock-upload/") {
+			puts++
+			assertStoragePutHeaders(t, req.Header)
+		}
+	}
+	if puts != 1 {
+		t.Errorf("storage PUTs = %d, want 1", puts)
+	}
 }
 
 // AUDIO-007: conversation reuse — one create per (account, kind), recreate after

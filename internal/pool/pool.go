@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yg/mimo2api/internal/accounts"
@@ -321,12 +322,53 @@ type Lease struct {
 	// through (SDD §4.8). Every upstream call made for this lease uses it.
 	Egress string
 
-	issued time.Time     // when the slot was claimed (wall clock, for the reaper)
-	ttl    time.Duration // this slot's TTL (0 = never reaped)
+	issued time.Time     // when the slot was claimed (for reporting)
+	ttl    time.Duration // this slot's silence window (0 = never reaped)
+
+	// lastActivity is the wall clock of the last upstream byte on this lease.
+	// The expiry moves with it (ADR 0036): a slot is reaped for **silence**, not
+	// for taking long, so a search that keeps fetching pages may hold its slot
+	// far past the window while a wedged turn is reclaimed on time.
+	lastActivity atomic.Int64
 
 	mu       sync.Mutex
 	onExpire func() // cancels the in-flight upstream call (set by the caller)
 	released bool
+}
+
+// Touch records upstream activity on this lease, moving its expiry. The chat
+// pipeline calls it from the SSE reader, i.e. on every byte from the upstream
+// (ADR 0036) — not per parsed piece, so a frame this gateway does not turn into
+// a delta (a doc or usage event, a page the search is sampling) still counts as
+// the upstream being alive. Safe on a nil lease.
+func (l *Lease) Touch() {
+	if l == nil {
+		return
+	}
+	l.lastActivity.Store(time.Now().UnixNano())
+}
+
+// IssuedAt is when the slot was claimed — used for reporting how long a request
+// has held capacity, which is a different question from how long the upstream
+// has been quiet.
+func (l *Lease) IssuedAt() time.Time {
+	if l == nil {
+		return time.Time{}
+	}
+	return l.issued
+}
+
+// SilentFor reports how long this lease has been without upstream activity, and
+// whether it has ever had any (a fresh lease counts from its claim).
+func (l *Lease) SilentFor(now time.Time) time.Duration {
+	if l == nil {
+		return 0
+	}
+	last := l.lastActivity.Load()
+	if last == 0 {
+		return now.Sub(l.issued)
+	}
+	return now.Sub(time.Unix(0, last))
 }
 
 // ArmExpiry registers the cancel func the reaper calls when this lease
@@ -403,7 +445,9 @@ func (p *Pool) ReapExpiredSlots() int {
 	p.mu.Lock()
 	var expired []*Lease
 	for l := range p.live {
-		if l.ttl > 0 && !l.issued.IsZero() && now.Sub(l.issued) > l.ttl {
+		// Silence, not age: the window moves with every upstream byte
+		// (Lease.Touch, ADR 0036).
+		if l.ttl > 0 && l.SilentFor(now) > l.ttl {
 			expired = append(expired, l)
 		}
 	}
@@ -420,7 +464,8 @@ func (p *Pool) ReapExpiredSlots() int {
 		}
 		l.Release()
 		if p.logf != nil {
-			p.logf("pool: reaped slot account=%s after %s (TTL %s) — the request that held it was still running", l.ID, now.Sub(l.issued).Round(time.Second), l.ttl)
+			p.logf("pool: reaped slot account=%s after %s of silence (window %s, held %s) — the request that held it was still running",
+				l.ID, l.SilentFor(now).Round(time.Second), l.ttl, now.Sub(l.issued).Round(time.Second))
 		}
 	}
 	p.mu.Lock()
@@ -585,6 +630,7 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 // reaper. Callers hold p.mu.
 func (p *Pool) registerLease(a *account) *Lease {
 	l := &Lease{Pool: p, ID: a.id, Egress: a.egress, issued: time.Now(), ttl: p.slotTTL}
+	l.Touch() // a fresh lease counts as active from its claim
 	if p.slotTTL > 0 {
 		p.live[l] = struct{}{}
 	}

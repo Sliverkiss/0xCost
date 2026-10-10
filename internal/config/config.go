@@ -60,18 +60,22 @@ func parseSlotHold(v string) (string, error) {
 // Default durations per SDD §6.
 const (
 	// DefaultRequestTimeout is the whole client-facing budget for one chat
-	// request (ADR 0019). It replaced a knob that nothing read, so the real
-	// behaviour used to be "no deadline at all" — bounded only by a hardcoded
-	// 30-minute HTTP client timeout. 120s covers a single measured turn
-	// (6–40s, long ones ~100s) and sits inside the ~100s origin read timeout
-	// of a CDN in front of us, so we answer with our own 504 and numbers
-	// instead of letting an intermediary cut the connection (524).
-	DefaultRequestTimeout = 120 * time.Second
+	// request. **0 = no wall clock, and that is the default** (ADR 0036): a wall
+	// clock is not a liveness test, silence is. A turn that keeps talking is
+	// bounded by the client's own patience; one that goes quiet longer than the
+	// lease silence window is cut, and its slot is reaped. Set this only when
+	// something in front of the gateway needs a hard ceiling to relay — a CDN
+	// reading a silent origin response for ~100s will cut it before we can name
+	// the cause.
+	DefaultRequestTimeout = 0
 	DefaultSSEIdleTimeout = 180 * time.Second
-	// DefaultLeaseTTL bounds one upstream turn and, as a backstop, the in-flight
-	// slot a turn holds (ADR 0019). A slot is capacity, not stickiness: it is
-	// per request, and its TTL is what stops a wedged connection from pinning
-	// an account for the 30 minutes the HTTP client used to allow.
+	// DefaultLeaseTTL is the upstream **silence** window for one turn, and the
+	// moving expiry of the in-flight slot that turn holds (ADR 0019, amended by
+	// ADR 0036). Every byte the upstream sends resets it, so a long search that
+	// keeps fetching pages is never cut for taking long — only for going quiet.
+	// A slot is capacity, not stickiness: the window is what stops a wedged
+	// connection from pinning an account for the 30 minutes the HTTP client used
+	// to allow.
 	DefaultLeaseTTL = 120 * time.Second
 	// DefaultSlotHold is when a request gives its in-flight slot back:
 	// "last-byte" (the slot spans the generation) or "first-byte" (the slot is
@@ -377,17 +381,26 @@ func (c *Config) LeaseTTL() time.Duration { return c.leaseTTL }
 // byte rather than after the last one (ADR 0019, MIMO2API_SLOT_HOLD).
 func (c *Config) SlotHold() string { return c.slotHold }
 
-// UpstreamTimeout is the HTTP client timeout for upstream calls. It is derived,
-// never a bare constant: a single upstream turn can only legitimately outlive
-// its own lease TTL, and the old hardcoded 30 minutes is what let one wedged
-// connection hold an account slot for half an hour (ADR 0019). The margin
-// covers connection setup, DNS and TLS inside the same budget.
-func (c *Config) UpstreamTimeout() time.Duration { return c.leaseTTL + 30*time.Second }
-func (c *Config) SSEIdleTimeout() time.Duration  { return c.sseIdleTimeout }
-func (c *Config) SessionRefresh() time.Duration  { return c.sessionRefresh }
-func (c *Config) MaxInflight() int               { return c.maxInflight }
-func (c *Config) QueueWait() time.Duration       { return c.queueWait }
-func (c *Config) AudioPoll() time.Duration       { return c.audioPoll }
+// UpstreamTimeout is the HTTP client timeout for upstream calls. It must never
+// be what decides a turn is dead — the turn's **silence window** decides that
+// (ADR 0036) — so with no operator wall clock configured the client carries no
+// timeout at all: a live turn is bounded by the client's own patience, a dead
+// one by silence, and a wedged socket by the little that silence leaves open.
+// (The old derived value, leaseTTL+30s, would have become the de-facto wall
+// clock the moment the lease stopped being one.) When
+// MIMO2API_REQUEST_TIMEOUT_MS *is* set, the client outlives it by a margin so
+// that our own named 504 wins the race against a bare i/o timeout.
+func (c *Config) UpstreamTimeout() time.Duration {
+	if c.requestTimeout > 0 {
+		return c.requestTimeout + 30*time.Second
+	}
+	return 0
+}
+func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
+func (c *Config) SessionRefresh() time.Duration { return c.sessionRefresh }
+func (c *Config) MaxInflight() int              { return c.maxInflight }
+func (c *Config) QueueWait() time.Duration      { return c.queueWait }
+func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
 
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }

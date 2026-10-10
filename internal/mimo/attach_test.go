@@ -6,6 +6,7 @@ package mimo
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -34,10 +35,49 @@ func TestUploadFilePipeline(t *testing.T) {
 	if got := up.LastUpload(); string(got) != string(body) {
 		t.Errorf("uploaded bytes = %q, want %q", got, body)
 	}
-	// The upload URL is signed storage: cookie must NOT travel to it.
+	// The upload URL is signed storage: cookie must NOT travel to it, and the
+	// rest of the set is the SPA's XHR branch verbatim.
+	puts := 0
 	for _, req := range up.AudioRequests() {
-		if strings.HasPrefix(req.Path, "/mock-upload/") && req.Header.Get("Cookie") != "" {
-			t.Error("the PUT to storage carried an upstream cookie; it is a signed URL on another host")
+		if strings.HasPrefix(req.Path, "/mock-upload/") {
+			puts++
+			assertStoragePutHeaders(t, req.Header)
+		}
+	}
+	if puts != 1 {
+		t.Errorf("storage PUTs = %d, want 1", puts)
+	}
+}
+
+// assertStoragePutHeaders pins the header set of the signed-storage PUT
+// (ADR 0035). The SPA issues that PUT through its own client's XHR branch, so
+// the client's two headers ride along and the browser contributes the XHR
+// defaults for a cross-origin request: `Accept: */*`, cross-site sec-fetch, and
+// **no Cookie** (XHR does not set withCredentials, and the URL is signed).
+// An extra header here is a tell in the same way it is on the API surface.
+func assertStoragePutHeaders(t *testing.T, h http.Header) {
+	t.Helper()
+	exact := map[string]string{
+		"Accept":          "*/*",
+		"Accept-Language": "zh-CN",
+		"Content-Type":    "application/octet-stream",
+		"sec-fetch-dest":  "empty",
+		"sec-fetch-mode":  "cors",
+		"sec-fetch-site":  "cross-site",
+	}
+	for k, v := range exact {
+		if got := h.Get(k); got != v {
+			t.Errorf("storage PUT %s = %q, want %q", k, got, v)
+		}
+	}
+	for _, k := range []string{"x-timeZone", "Origin", "Referer", "User-Agent", "sec-ch-ua", "sec-ch-ua-platform", "content-md5"} {
+		if h.Get(k) == "" {
+			t.Errorf("storage PUT is missing %s", k)
+		}
+	}
+	for _, k := range []string{"Cookie", "X-Requested-With", "Authorization"} {
+		if v := h.Get(k); v != "" {
+			t.Errorf("storage PUT sends %s = %q; the SPA's XHR branch never sends it on the signed URL", k, v)
 		}
 	}
 }

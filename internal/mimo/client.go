@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yg/mimo2api/internal/adapter"
@@ -191,6 +192,20 @@ func proxyTransport(base http.RoundTripper, proxy *url.URL) http.RoundTripper {
 // surfaces an error frame, and applies the 30s-cooldown ladder (§4.4).
 var ErrIdleStall = errors.New("upstream stream stalled (no SSE event within idle timeout)")
 
+// ErrSilentUpstream: the upstream accepted the request but sent **nothing at
+// all** within the turn's silence window — not even response headers.
+//
+// It is deliberately distinct from ErrIdleStall, because the two silences mean
+// opposite things about the account (ADR 0036):
+//
+//   - silence before any byte is our own patience running out. The platform may
+//     simply be slow to search, and nothing is wrong with the account, so this
+//     surfaces as our own 504 and the pool leaves the account alone.
+//   - silence *after* the upstream started answering is a stall — a transport
+//     problem on the platform/account side — and keeps that classification
+//     (POOLATTR-012: it cools the account on the transport ladder).
+var ErrSilentUpstream = errors.New("upstream sent no bytes within the silence window")
+
 // idleWatchedReader wraps the SSE body with a no-byte watchdog: if nothing
 // is read for timeout, the upstream request is aborted (via cancel) and
 // ErrIdleStall surfaces from the read. Any successful read resets the
@@ -202,6 +217,10 @@ type idleWatchedReader struct {
 	timer   *time.Timer
 	stalled chan struct{}
 	once    sync.Once
+	// onActivity, when non-nil, is called on every byte — the lease's moving
+	// signal (ADR 0036). It fires even when timeout is 0, because "no window"
+	// and "no activity signal" are different things.
+	onActivity func()
 }
 
 func newIdleWatchedReader(r io.Reader, cancel context.CancelFunc, timeout time.Duration) *idleWatchedReader {
@@ -211,6 +230,9 @@ func newIdleWatchedReader(r io.Reader, cancel context.CancelFunc, timeout time.D
 		timeout: timeout,
 		stalled: make(chan struct{}),
 	}
+	// onActivity is set by the caller after construction; it fires on every
+	// byte even when the window is disabled, because the lease still needs the
+	// activity signal (ADR 0036).
 	if timeout > 0 {
 		w.timer = time.AfterFunc(timeout, func() {
 			w.once.Do(func() {
@@ -231,8 +253,13 @@ func (w *idleWatchedReader) Read(p []byte) (int, error) {
 		return n, ErrIdleStall
 	default:
 	}
-	if err == nil && w.timer != nil && n > 0 {
-		w.timer.Reset(w.timeout)
+	if err == nil && n > 0 {
+		if w.onActivity != nil {
+			w.onActivity()
+		}
+		if w.timer != nil {
+			w.timer.Reset(w.timeout)
+		}
 	}
 	return n, err
 }
@@ -283,6 +310,32 @@ func (c *Client) setAistudioHeaders(h http.Header) {
 	h.Set("sec-fetch-dest", "empty")
 	h.Set("sec-fetch-mode", "cors")
 	h.Set("sec-fetch-site", "same-origin")
+}
+
+// setAistudioStorageHeaders is the set the SPA's upload PUT carries. That PUT
+// goes through the same HTTP client as every other aistudio call — so
+// Accept-Language and x-timeZone ride along — but with onUploadProgress set,
+// which switches the client to its XMLHttpRequest branch. Three things change
+// with it: the browser's XHR default Accept is `*/*`, the target is the signed
+// storage host (so the request is cross-origin: sec-fetch-site is cross-site
+// and Referer is trimmed to the origin by the default referrer policy), and XHR
+// does not set withCredentials — which is why **no Cookie travels to storage**
+// (docs/web-surface-reverse.md §11.7.1, ADR 0035). Content-Type and content-md5
+// stay with the caller: the body is a File/Blob, so it never gets the JSON type,
+// and the storage host verifies the digest when it is present.
+func (c *Client) setAistudioStorageHeaders(h http.Header) {
+	h.Set("Accept", "*/*")
+	h.Set("Accept-Language", "zh-CN")
+	h.Set("x-timeZone", c.timezone)
+	h.Set("Origin", c.base)
+	h.Set("Referer", c.base+"/")
+	h.Set("User-Agent", c.userAgent)
+	h.Set("sec-ch-ua", c.secChUA)
+	h.Set("sec-ch-ua-mobile", "?0")
+	h.Set("sec-ch-ua-platform", `"Windows"`)
+	h.Set("sec-fetch-dest", "empty")
+	h.Set("sec-fetch-mode", "cors")
+	h.Set("sec-fetch-site", "cross-site")
 }
 
 // modelConfig is the upstream modelConfig object. Temperature/TopP are
@@ -344,6 +397,17 @@ type ChatRequest struct {
 	// OnEvent, when non-nil, reports each upstream event's name and payload
 	// size as it arrives (debug tracing; M19).
 	OnEvent func(name string, dataLen int, prefix string)
+	// IdleTimeout bounds **silence** on this turn: every byte the upstream sends
+	// resets it (0 = the client's configured default). The chat pipeline passes
+	// the pool's lease silence window here, so one number bounds both the turn
+	// and the slot it holds (ADR 0036).
+	IdleTimeout time.Duration
+	// OnActivity, when non-nil, fires on every upstream byte, before parsing —
+	// so a live turn that has not produced a piece yet (search fetching pages,
+	// a doc/usage frame) still counts as activity. The chat pipeline points it
+	// at the lease, which is how a slot's expiry moves with the stream instead
+	// of being a wall clock (ADR 0036).
+	OnActivity func()
 }
 
 // ChatResult is the completed turn.
@@ -487,6 +551,30 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Turn silence window (ADR 0036): the caller may override the client's
+	// default, and the chat pipeline passes the pool's lease window so one
+	// number bounds both the turn and the slot it holds.
+	idle := c.idleTimeout
+	if req.IdleTimeout > 0 {
+		idle = req.IdleTimeout
+	}
+
+	// Pre-first-byte guard. The body watchdog below only exists once a response
+	// arrives, so a platform that is thinking — a search fetching pages, before
+	// anything reaches the wire — would otherwise hang until the operator's wall
+	// clock, or forever when none is set. It is cleared the moment response
+	// headers arrive, after which the body watchdog owns the window.
+	var noBytes atomic.Bool
+	noBytes.Store(true)
+	var preHeader *time.Timer
+	if idle > 0 {
+		preHeader = time.AfterFunc(idle, func() {
+			if noBytes.Load() {
+				cancel() // aborts the in-flight request; classified below
+			}
+		})
+	}
+
 	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -495,9 +583,16 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	httpReq.Header.Set("Cookie", cookie)
 
 	resp, err := c.http.Do(httpReq)
+	if preHeader != nil {
+		preHeader.Stop()
+	}
 	if err != nil {
+		if noBytes.Load() {
+			return nil, fmt.Errorf("chat request: %w (window %s)", ErrSilentUpstream, idle)
+		}
 		return nil, fmt.Errorf("chat request: %w", err)
 	}
+	noBytes.Store(false) // headers arrived: the body watchdog takes over
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -508,10 +603,13 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 		return nil, ue
 	}
 
-	// Idle watchdog wraps the SSE body (SDD §7.3).
+	// Body watchdog (SDD §7.3): every byte resets the window and reports
+	// activity to the caller, which is what moves a lease's expiry with the
+	// stream (ADR 0036).
 	stream := io.Reader(resp.Body)
-	if c.idleTimeout > 0 {
-		watch := newIdleWatchedReader(resp.Body, cancel, c.idleTimeout)
+	if idle > 0 || req.OnActivity != nil {
+		watch := newIdleWatchedReader(resp.Body, cancel, idle)
+		watch.onActivity = req.OnActivity
 		defer watch.stop()
 		stream = watch
 	}

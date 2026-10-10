@@ -53,6 +53,12 @@ type ScriptStep struct {
 	// and sleep between the halves (mid-stream stall, TDD API-019).
 	StallMidStream time.Duration
 	MidStreamSplit int
+	// DripChunks + DripGap: write the body in this many pieces, sleeping
+	// DripGap between them. Every gap is shorter than a turn's silence window,
+	// so the turn is slow but alive — the shape the moving lease must let run
+	// (ADR 0036, TIMEOUT-003).
+	DripChunks int
+	DripGap    time.Duration
 	// AbortAfterBody: close the connection after the body without a clean
 	// end (mid-stream abort, TDD STICKY-009).
 	AbortAfterBody bool
@@ -362,7 +368,33 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 
-	if step.StallMidStream > 0 && step.MidStreamSplit > 0 && step.MidStreamSplit < len(step.Body) {
+	switch {
+	case step.DripChunks > 1:
+		size := (len(step.Body) + step.DripChunks - 1) / step.DripChunks
+		// One timer reused across chunks: time.After in the loop would leave a
+		// timer behind on every iteration (staticaudit timer-in-loop).
+		gap := time.NewTimer(step.DripGap)
+		defer gap.Stop()
+		for i := 0; i < len(step.Body); i += size {
+			end := i + size
+			if end > len(step.Body) {
+				end = len(step.Body)
+			}
+			io.WriteString(w, step.Body[i:end])
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			if end < len(step.Body) && step.DripGap > 0 {
+				gap.Reset(step.DripGap)
+				select {
+				case <-gap.C:
+				case <-r.Context().Done():
+					m.markCancelled(rec)
+					return
+				}
+			}
+		}
+	case step.StallMidStream > 0 && step.MidStreamSplit > 0 && step.MidStreamSplit < len(step.Body):
 		io.WriteString(w, step.Body[:step.MidStreamSplit])
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -374,7 +406,7 @@ func (m *MockUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		io.WriteString(w, step.Body[step.MidStreamSplit:])
-	} else {
+	default:
 		io.WriteString(w, step.Body)
 	}
 	if step.AbortAfterBody {

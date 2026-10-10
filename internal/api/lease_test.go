@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -54,9 +55,55 @@ func TestRequestBudgetReturnsChatTimeout(t *testing.T) {
 	}
 }
 
-// TIMEOUT-002: the per-turn lease TTL is the other half — a turn that outlives
-// its TTL is cut with the same client-facing shape, and the message names the
-// smaller of the two budgets (the one that actually bit).
+// TIMEOUT-003 (ADR 0036): a turn that keeps talking is never cut for taking
+// long. The lease window here is far shorter than the whole turn, but every gap
+// between upstream bytes is shorter still, so the request must finish — this is
+// the case that used to die at the window while the platform was working
+// (a web search that took 120s+ because it was fetching pages).
+func TestSlowButLiveTurnSurvivesTheSilenceWindow(t *testing.T) {
+	acct := oneAccount()
+	const window = 300 * time.Millisecond
+	ts := testserver.NewTestServer(t, acct, &testserver.TestServerOptions{
+		LeaseTTL: window,
+	})
+	const (
+		chunks = 12
+		gap    = 120 * time.Millisecond
+	)
+	ts.Upstream.Script(acct[0].PH, testutil.ScriptStep{
+		Body:       testutil.FixtureSSEBasic,
+		DripChunks: chunks,
+		DripGap:    gap,
+	})
+
+	start := time.Now()
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (%s), want 200: a live turn must not be cut by the silence window",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if elapsed <= window {
+		t.Fatalf("the turn finished in %s; this case needs it to outlive the %s window", elapsed, window)
+	}
+	if st := ts.Pool.StateOf(acct[0].ID); st != pool.StateAvailable {
+		t.Errorf("account state = %v after a slow but live turn, want available (nothing was wrong with it)", st)
+	}
+	if n := ts.Pool.InFlight(); n != 0 {
+		t.Errorf("in-flight slots = %d after the turn, want 0", n)
+	}
+}
+
+// TIMEOUT-002: the per-turn lease window is the other half — a turn that goes
+// **silent** for longer than the window, before any byte, is cut with the same
+// client-facing shape, and the message names the smaller of the two budgets
+// (the one that actually bit).
 func TestLeaseTTLReturnsChatTimeout(t *testing.T) {
 	acct := oneAccount()
 	ts := testserver.NewTestServer(t, acct, &testserver.TestServerOptions{

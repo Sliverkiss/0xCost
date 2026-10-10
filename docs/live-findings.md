@@ -455,3 +455,26 @@ Two smaller readings:
 The same run is also the acceptance evidence for ADR 0035: all six calls succeeded after the
 aistudio header set dropped `X-Requested-With` and moved `Accept` to `*/*`, so the platform accepts
 the SPA-faithful set on both the streaming and JSON paths.
+
+## 2026-10-10 (later) — the moving lease window, measured
+
+After ADR 0036 the turn bound is silence, not a wall clock. Three search turns through the same
+public entry, same key, nothing cut by the gateway (`docker logs` shows no bound firing):
+
+| Shape | Status | Total | First SSE frame | Frames |
+|---|---|---|---|---|
+| `stream:true` + search | 200 | 56.2 s | **49.5 s** | 58 |
+| `stream:false` + search (table prompt) | 200 | **110.6 s** | — | — |
+| `stream:true` + search (table prompt) | 200 | 57.6 s | **40.4 s** | 239 |
+
+What matters in those numbers is the gap before the first frame: **a search turn is silent for
+40–50 s while the platform fetches pages**, and its prompt grows to 26k–27k tokens. That is why a
+fixed 120 s budget was the wrong instrument — it measures patience, not liveness — and why the
+110.6 s non-streaming call above (past the old 100 s-ish intermediary read window) is the case
+that used to surface as the CDN's own error page rather than ours.
+
+The remaining limit is honest and named: if the upstream stays **completely** silent past the
+window (120 s by default), the turn is still cut — but now with our own `504 chat_timeout` naming
+`MIMO2API_LEASE_TTL_S`, without cooling the account, and with the log line separating "silent for
+Xs" from "held the slot for Ys". Raising that window is a one-variable decision for the operator;
+the observed headroom is ~2.4× (50 s of silence against a 120 s window).

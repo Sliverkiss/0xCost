@@ -64,10 +64,11 @@ func TestDefaults(t *testing.T) {
 	if c.UpstreamBase() != "https://aistudio.xiaomimimo.com" {
 		t.Errorf("upstream = %q", c.UpstreamBase())
 	}
-	// ADR 0019: 120s replaced a 300s value nothing read. The budget now exists,
-	// so the default is the number a client actually feels.
-	if c.RequestTimeout() != 120*time.Second {
-		t.Errorf("request timeout = %v", c.RequestTimeout())
+	// ADR 0036: no wall clock by default. Silence is the liveness test, so the
+	// request budget is opt-in — an operator sets it when something in front of
+	// the gateway needs a ceiling to relay.
+	if c.RequestTimeout() != 0 {
+		t.Errorf("request timeout = %v, want 0 (no wall clock by default, ADR 0036)", c.RequestTimeout())
 	}
 	if c.LeaseTTL() != 120*time.Second {
 		t.Errorf("lease ttl = %v", c.LeaseTTL())
@@ -77,7 +78,7 @@ func TestDefaults(t *testing.T) {
 	}
 	// The upstream client timeout is derived, not a constant: it must outlive a
 	// turn's own TTL but must not be the 30 minutes a wedged socket used to get.
-	if got := c.UpstreamTimeout(); got != c.LeaseTTL()+30*time.Second {
+	if got := c.UpstreamTimeout(); got != 0 {
 		t.Errorf("upstream timeout = %v, want lease TTL + 30s", got)
 	}
 	if c.SSEIdleTimeout() != 180*time.Second {

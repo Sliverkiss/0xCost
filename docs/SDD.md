@@ -751,6 +751,17 @@ waits up to `queue_wait` (default 15s; simple-chat uses 30s, `pool.go:162-163`, 
 default shorter because our clients are interactive). Timeout → `429 pool_busy` with
 `Retry-After` (error mapping from simple-chat `server.go:923-959`).
 
+**The lease window is a silence window, not a wall clock (ADR 0036, amending 0019).**
+Every byte the upstream sends moves it (`ChatRequest.OnActivity` → `Lease.Touch`), so
+a turn is cut for going quiet, never for taking long; the same number bounds the turn
+(client-side body watchdog + a pre-first-byte guard for the "nothing on the wire yet"
+case) and the slot (reaper: `now - lastActivity > window`). Silence before any byte is
+**our** bound — `504 chat_timeout` naming the window, no cooldown, because the platform
+may simply be slow. Silence after the upstream started answering is a **stall** and
+keeps its transport classification (POOLATTR-012). The operator's wall clock
+(`MIMO2API_REQUEST_TIMEOUT_MS`) is off by default and, when set, also caps the upstream
+HTTP client — it is the only remaining wall clock in the stack.
+
 **A lease is capacity for one request, never stickiness (ADR 0019).** It names the
 account the request is talking to (so every replayed turn keeps the same upstream
 conversation) and occupies one in-flight slot; it is not shared between requests and

@@ -1,9 +1,12 @@
 # 0019. A lease is per-request capacity with a TTL — not stickiness, and not a 30-minute hold
 
 Date: 2026-10-09
-Status: accepted
+Status: accepted — **amended by ADR 0036** (2026-10-10): the per-turn deadline this ADR
+introduces is now a *silence* window that moves with the upstream, and
+`MIMO2API_REQUEST_TIMEOUT_MS` defaults to 0. The lease model, the reaper and the
+per-request capacity rules below stand unchanged.
 Related: ADR 0009 (session identity, retired by 0017), ADR 0017 (no streaming, no
-session store), ADR 0015 (measured limits)
+session store), ADR 0015 (measured limits), ADR 0036 (the moving window)
 
 ## Context
 

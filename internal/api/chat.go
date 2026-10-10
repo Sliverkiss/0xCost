@@ -402,7 +402,8 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// Our own budget or the per-turn lease TTL fired (ADR 0019). Nothing
 			// is wrong with the account: no cooldown, no retry, and the client
 			// gets a 504 naming the knob instead of a silent hang.
-			s.logger.Printf("chat: gateway deadline while account %s was serving: %v", lease.ID, err)
+			s.logger.Printf("chat: our own bound fired while account %s was serving (silence window %s, held %s): %v",
+				lease.ID, lease.SilentFor(time.Now()).Round(time.Second), time.Since(lease.IssuedAt()).Round(time.Second), err)
 			lease.Release()
 			p.fail(w, s.budgetError(clientCtx, ctx, "waiting for the upstream"))
 			return
@@ -529,15 +530,18 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			chatReq.OnPiece = p.onPiece
 		}
 
-		// Per-turn deadline (ADR 0019): one upstream turn may not outlive the
-		// lease TTL. The cancel is armed on the lease so that a slot the reaper
-		// reclaims takes its in-flight upstream call down with it.
-		turnCtx := ctx
-		var cancelTurn context.CancelFunc
-		if s.leaseTTL > 0 {
-			turnCtx, cancelTurn = context.WithTimeout(ctx, s.leaseTTL)
-			lease.ArmExpiry(cancelTurn)
-		}
+		// Per-turn bound (ADR 0036, amending ADR 0019): the lease TTL is a
+		// **silence** window, and every upstream byte moves it (the reader calls
+		// OnActivity → lease.Touch). A turn is therefore cut for going quiet, not
+		// for taking long: a search that keeps fetching pages runs until it
+		// answers, while a wedged turn dies on time and its slot is reclaimed.
+		// The cancel stays armed on the lease so a reaped slot still takes its
+		// in-flight upstream call down with it; the operator's wall clock
+		// (MIMO2API_REQUEST_TIMEOUT_MS) rides on ctx, not here.
+		turnCtx, cancelTurn := context.WithCancel(ctx)
+		lease.ArmExpiry(cancelTurn)
+		chatReq.IdleTimeout = s.leaseTTL
+		chatReq.OnActivity = lease.Touch
 		res, err := s.clientFor(lease.Egress).Chat(turnCtx, cookie, ph, chatReq)
 		if cancelTurn != nil {
 			cancelTurn()
@@ -630,7 +634,13 @@ func isGatewayDeadline(err error, clientCtx context.Context) bool {
 	if clientCtx.Err() != nil {
 		return false // the client left; that is not a deadline
 	}
-	return errors.Is(err, context.DeadlineExceeded)
+	// context.DeadlineExceeded is the operator's wall clock (when set);
+	// ErrSilentUpstream is the turn's silence window expiring **before any
+	// byte** arrived. Both are our own clock, not the account's fault, so
+	// neither may cool an account down (ADR 0019/0036). ErrIdleStall is
+	// deliberately NOT here: silence after the upstream started answering is a
+	// stall, and it keeps its transport classification (POOLATTR-012).
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, mimo.ErrSilentUpstream)
 }
 
 // budgetError renders the deadline that fired as a client-facing error, naming

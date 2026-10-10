@@ -558,14 +558,16 @@ func (c *Client) uploadAudio(ctx context.Context, cookie, ph, fileName string, a
 	if info.UploadURL == "" || info.ResourceURL == "" {
 		return "", errors.New("asr: genUploadInfo returned no uploadUrl/resourceUrl")
 	}
-	// The upload URL is a signed object-storage link: no upstream cookie.
+	// The upload URL is a signed object-storage link on another host: the SPA's
+	// XHR branch sends no credential there, so the browser header set rides along
+	// without a Cookie (ADR 0035).
 	put, err := http.NewRequestWithContext(ctx, http.MethodPut, info.UploadURL, bytes.NewReader(audio))
 	if err != nil {
 		return "", err
 	}
+	c.setAistudioStorageHeaders(put.Header)
 	put.Header.Set("Content-Type", "application/octet-stream")
 	put.Header.Set("content-md5", digest)
-	put.Header.Set("User-Agent", c.userAgent)
 	put.ContentLength = int64(len(audio))
 	resp, err := c.http.Do(put)
 	if err != nil {

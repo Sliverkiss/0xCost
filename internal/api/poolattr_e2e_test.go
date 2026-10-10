@@ -17,9 +17,14 @@ import (
 
 // POOLATTR-012: an SSE idle-stall is a transport failure — it lands on the
 // transport counter and the recorded cooldown cause says so.
+//
+// The window that fires here is the **turn's silence window**, which is the
+// lease window (ADR 0036) — the pipeline passes it to the client, so setting
+// LeaseTTL is what bounds a turn; the client's own IdleTimeout option now only
+// covers calls the chat pipeline does not drive (TTS/ASR).
 func TestStallCoolsAccountAsTransport(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
-		IdleTimeout: 150 * time.Millisecond,
+		LeaseTTL: 150 * time.Millisecond,
 	})
 	ph := testutil.TestPH
 	// The stall must happen mid-stream (after the first bytes), otherwise the
@@ -58,7 +63,7 @@ func TestStallCoolsAccountAsTransport(t *testing.T) {
 // POOLATTR-001).
 func TestFiveXxAndTransportStayOnSeparateLadders(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
-		IdleTimeout: 150 * time.Millisecond,
+		LeaseTTL: 150 * time.Millisecond,
 	})
 	ph := testutil.TestPH
 	ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusInternalServerError})
