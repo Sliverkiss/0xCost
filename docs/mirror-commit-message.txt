@@ -1,16 +1,20 @@
 mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
 
 A Go gateway in front of Xiaomi MiMo Studio (aistudio.xiaomimimo.com) that speaks
-the OpenAI HTTP surface: chat (one-shot), TTS and ASR, web search, model listing.
+the OpenAI HTTP surface: chat (one-shot or streaming), TTS and ASR, web search, model
+listing.
 
 - Chat: the standard OpenAI knobs are the documented path — `reasoning_effort`
   sets the model's thinking (`none` off; a request that names nothing follows the
   model's own declared default from the account catalog, ADR 0031) and
   `web_search_options` turns search on; model ids are never renamed to carry an
-  option (ADR 0027). Non-streaming only. There is no SSE path and no session store — the
-  request carries its own history, the gateway turns the upstream's SSE into one
-  JSON body, and `stream: true` is refused with a clear 400 instead of switching
-  anything off. Function calling is not emulated: a `tools` field is ignored and
+  option (ADR 0027). Chat has two transports and no switch: `stream: false` (or no
+  field) gives one JSON body, `stream: true` gives OpenAI SSE chunks on the same
+  pipeline (ADR 0034) — the upstream is SSE either way, so the answer is identical and
+  only when you see it differs. Nothing is written before the upstream's first delta,
+  so an early failure is still a status code. The request carries its own history:
+  there is no session store, and every client message is replayed into a fresh
+  upstream conversation. Function calling is not emulated: a `tools` field is ignored and
   reported in `X-Mimo-Warnings`, because the protocol prompt an emulation needs
   spends 1,355-5,222 characters of the platform's 102,400-character query budget.
   The response is OpenAI's `chat.completion` key for key (`message.refusal` and
