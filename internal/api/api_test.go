@@ -296,8 +296,8 @@ func TestAPINoUserMessage(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_, typ, code := testutil.ParseError(t, body)
-	if typ != "invalid_request_error" || code != "" {
-		t.Errorf("error = %q %q", typ, code)
+	if typ != "invalid_request_error" || code != "no_user_message" {
+		t.Errorf("error = %q %q, want invalid_request_error/no_user_message (ADR 0032)", typ, code)
 	}
 }
 

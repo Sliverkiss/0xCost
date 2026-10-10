@@ -30,7 +30,21 @@ type apiError struct {
 	Message string  `json:"message"`
 	Type    string  `json:"type"`
 	Param   *string `json:"param"`
-	Code    string  `json:"code,omitempty"`
+	// Code is a pointer with no omitempty: OpenAI's error object always carries the
+	// key (null when there is no code), and this project's rule is that a key OpenAI
+	// sends as null is sent as null rather than omitted — the same treatment
+	// message.refusal and choices[0].logprobs get. Without this, a client validating
+	// against that schema had to branch on the key's absence (TDD OSTD-013).
+	Code *string `json:"code"`
+}
+
+// codeOf maps an internal code onto the wire value: nil — JSON null — when the
+// failure has no code of its own.
+func codeOf(code string) *string {
+	if code == "" {
+		return nil
+	}
+	return &code
 }
 
 // errorParams maps the codes that ARE about one request field onto it. A code
@@ -71,15 +85,14 @@ func writeError(w http.ResponseWriter, status int, typ, code, message string, re
 	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{
-		Message: message, Type: typ, Param: paramForCode(code), Code: code,
+		Message: message, Type: typ, Param: paramForCode(code), Code: codeOf(code),
 	}})
 }
 
 // Sentinel request-level errors (chat.go raises these before the upstream
 // call; MapError translates them per SDD §7.4).
 var (
-	errUnsupportedContent = errors.New("unsupported content part")
-	errMalformedRequest   = errors.New("malformed request body")
+	errMalformedRequest = errors.New("malformed request body")
 	// errUnsupportedReasoningEffort: a reasoning_effort outside the OpenAI set
 	// (none|minimal|low|medium|high).
 	errUnsupportedReasoningEffort = errors.New("unsupported reasoning_effort")
@@ -264,13 +277,15 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 			"no accounts available", 0)
 	case errors.As(err, &nf):
 		// Unknown model → 404 naming available ids (SDD §5.2, TDD API-013).
-		writeError(w, http.StatusNotFound, "invalid_request_error", "", nf.Error(), 0)
+		// OpenAI's own code for this failure is `model_not_found`, so a client that
+		// switches on it keeps working.
+		writeError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", nf.Error(), 0)
 	case errors.As(err, &nouser):
 		// No sendable user message (SDD §7.4, TDD ERRMAP-002/API-014).
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "", nouser.Error(), 0)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "no_user_message", nouser.Error(), 0)
 	case errors.As(err, &tooMany):
 		// Replay cap exceeded (SDD §5.3B, TDD API-015).
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "", tooMany.Error(), 0)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "too_many_turns", tooMany.Error(), 0)
 	case errors.As(err, &filter):
 		// sensitive_query / sensitive_title (SDD §7.4, TDD ERRMAP-009).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
@@ -322,13 +337,11 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Search switch (M19, TDD WS-002).
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "unsupported_search_status",
 			"web_search_status must be one of: disabled, auto, enabled", 0)
-	case errors.Is(err, errUnsupportedContent):
-		// Image content parts (SDD §5.2, TDD API-012).
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
-			"image content parts are not supported; use text parts", 0)
 	case errors.Is(err, errMalformedRequest):
-		// Malformed JSON body (SDD §7.4, TDD ERRMAP-002).
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
+		// Malformed JSON body (SDD §7.4, TDD ERRMAP-002). The code matches the audio
+		// surface's (`audio.go`), because it is the same failure: one name for one
+		// meaning, and never an empty code (ADR 0032).
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "malformed_request_body",
 			"malformed request body", 0)
 	case errors.Is(err, mimo.ErrUpstreamModelRejected):
 		// The upstream channel refuses this model id (docs/web-surface-reverse.md

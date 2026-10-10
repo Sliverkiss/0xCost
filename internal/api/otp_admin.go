@@ -134,7 +134,7 @@ func (s *Server) handleOTPSubmit(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil || body.ID == "" || body.Code == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "malformed_request_body",
 			"body must be {\"id\": \"<challenge id>\", \"code\": \"<otp code>\"}", 0)
 		return
 	}
@@ -158,7 +158,7 @@ func (s *Server) handleOTPSubmit(w http.ResponseWriter, r *http.Request) {
 	acct, aok := s.store.Get(p.AccountID)
 	if !aok {
 		s.otp.remove(p.Challenge.ID)
-		writeError(w, http.StatusInternalServerError, "api_error", "",
+		writeError(w, http.StatusInternalServerError, "api_error", "account_not_found",
 			"account vanished from store during OTP submit", 0)
 		return
 	}

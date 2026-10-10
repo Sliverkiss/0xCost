@@ -66,22 +66,24 @@ func TestERRMAPBadKey(t *testing.T) {
 	}
 }
 
-// ERRMAP-002: malformed body / no user message → 400 invalid_request_error,
-// no code (SDD §7.4 rows 1-2).
+// ERRMAP-002: malformed body / no user message → 400 invalid_request_error with a
+// NAMED code (SDD §7.4, ADR 0032): an empty code left a client switching on `code`
+// with nothing to switch on, and the audio surface was already answering
+// `malformed_request_body` for the same failure.
 func TestERRMAPMalformedAndNoUser(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	for _, body := range []string{
-		`{"messages":[`, // broken JSON
-		`{"model":"mimo-v2.6-pro","messages":[]}`,                                          // empty messages
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"system","content":"only system"}]}`, // no user turn
+	for _, tc := range []struct{ body, wantCode string }{
+		{`{"messages":[`, "malformed_request_body"},                                                             // broken JSON
+		{`{"model":"mimo-v2.6-pro","messages":[]}`, "malformed_request_body"},                                   // empty messages
+		{`{"model":"mimo-v2.6-pro","messages":[{"role":"system","content":"only system"}]}`, "no_user_message"}, // no user turn
 	} {
-		resp, err := ts.Chat(body, "")
+		resp, err := ts.Chat(tc.body, "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		status, _, typ, code := readErr(t, resp)
-		if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "" {
-			t.Errorf("body %q: got %d %q %q", body, status, typ, code)
+		if status != http.StatusBadRequest || typ != "invalid_request_error" || code != tc.wantCode {
+			t.Errorf("body %q: got %d %q %q, want %d invalid_request_error %q", tc.body, status, typ, code, http.StatusBadRequest, tc.wantCode)
 		}
 	}
 	if ts.Upstream.ChatHits() != 0 {

@@ -675,6 +675,8 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(errorBody{Error: apiError{
 			Message: fmt.Sprintf("model %q not found; available models: %s", id, strings.Join(modelIDs(adapter.Usable(entries)), ", ")),
 			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    codeOf("model_not_found"),
 		}})
 		return
 	}

@@ -341,6 +341,99 @@ func TestOSTD007ModelIDUnchangedByStandardFields(t *testing.T) {
 	}
 }
 
+// OSTD-013: every error body carries all four keys, and `code` is a real string —
+// never absent, never null (ADR 0032). OpenAI's error object always has the key, and
+// this gateway's rule is that a key OpenAI sends as null is sent as null rather than
+// omitted (message.refusal, choices[0].logprobs) — but a *code* is information, so
+// leaving it empty was the wrong half of that rule: a client switching on the code
+// got nothing to switch on. Every failure this surface can report now has a name, and
+// one name is used for one meaning (a malformed body is `malformed_request_body` on
+// the chat, audio and admin surfaces alike).
+func TestOSTD013ErrorBodyAlwaysCarriesFourKeys(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{APIKeys: []string{"k1"}})
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+
+	cases := []struct {
+		name       string
+		call       func() (*http.Response, error)
+		wantStatus int
+		wantCode   string
+	}{
+		{"body-level failure", func() (*http.Response, error) {
+			return ts.Post("/v1/chat/completions", "k1",
+				`{"model":"mimo-v2.6-flash","stream":false,"messages":[]}`)
+		}, http.StatusBadRequest, "malformed_request_body"},
+		{"no sendable user message", func() (*http.Response, error) {
+			return ts.Post("/v1/chat/completions", "k1",
+				`{"model":"mimo-v2.6-flash","stream":false,"messages":[{"role":"system","content":"x"}]}`)
+		}, http.StatusBadRequest, "no_user_message"},
+		{"over the replay cap", func() (*http.Response, error) {
+			var msgs []map[string]any
+			for i := 0; i < 40; i++ {
+				msgs = append(msgs, map[string]any{"role": "user", "content": "hi"})
+			}
+			raw, err := json.Marshal(map[string]any{
+				"model": "mimo-v2.6-flash", "stream": false, "messages": msgs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ts.Post("/v1/chat/completions", "k1", string(raw))
+		}, http.StatusBadRequest, "too_many_turns"},
+		{"unknown model", func() (*http.Response, error) {
+			return ts.Post("/v1/chat/completions", "k1", ostdBody("gpt-4o", nil))
+		}, http.StatusNotFound, "model_not_found"},
+		{"unknown model id on the listing", func() (*http.Response, error) {
+			return ts.Get("/v1/models/gpt-4o", "k1")
+		}, http.StatusNotFound, "model_not_found"},
+		{"unknown voice", func() (*http.Response, error) {
+			return ts.Post("/v1/audio/speech", "k1",
+				`{"model":"mimo-v2.5-tts","input":"hi","voice":"nope"}`)
+		}, http.StatusBadRequest, "unknown_voice"},
+		{"unsupported reasoning_effort", func() (*http.Response, error) {
+			return ts.Post("/v1/chat/completions", "k1",
+				ostdBody("mimo-v2.6-flash", map[string]any{"reasoning_effort": "ultra"}))
+		}, http.StatusBadRequest, "unsupported_reasoning_effort"},
+		{"bad key", func() (*http.Response, error) {
+			return ts.Chat(ostdBody("mimo-v2.6-flash", nil), "wrong")
+		}, http.StatusUnauthorized, "invalid_api_key"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := tc.call()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			raw, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", resp.StatusCode, raw, tc.wantStatus)
+			}
+			var env struct {
+				Error map[string]json.RawMessage `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &env); err != nil {
+				t.Fatalf("body is not an error envelope: %s", raw)
+			}
+			for _, k := range []string{"message", "type", "param", "code"} {
+				if _, ok := env.Error[k]; !ok {
+					t.Errorf("error body is missing the %q key: %s", k, raw)
+				}
+			}
+			var got *string
+			if rc, ok := env.Error["code"]; ok {
+				_ = json.Unmarshal(rc, &got)
+			}
+			switch {
+			case got == nil:
+				t.Errorf("code is null: every failure this surface reports has a code (ADR 0032)")
+			case *got != tc.wantCode:
+				t.Errorf("code = %q, want %q", *got, tc.wantCode)
+			}
+		})
+	}
+}
+
 // OSTD-012: the retired `session_id` carrier is reported, not silently accepted.
 // It pinned the session a streaming request continued; streaming and the session
 // store were deleted, not switched off (ADR 0017), so the key sits outside

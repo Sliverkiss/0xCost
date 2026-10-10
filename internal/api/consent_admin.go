@@ -28,7 +28,7 @@ func (s *Server) handleConsentAgree(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil ||
 		strings.TrimSpace(body.AccountID) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "",
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "malformed_request_body",
 			`body must be {"account_id": "<id>"}`, 0)
 		return
 	}

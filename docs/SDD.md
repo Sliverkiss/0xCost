@@ -1363,6 +1363,12 @@ client wrote it (`reasoning_effort`, `web_search_options.search_context_size`,
 `messages[].content[].image_url.url`, `messages`, `stream`); a failure that is not
 about one field reports `param: null` instead of guessing a field.
 
+`code` is **always present and never empty**: every failure this surface can report has
+a name, one name per meaning across the chat, audio and admin surfaces (a malformed
+body is `malformed_request_body` everywhere), and OpenAI's own `model_not_found` is used
+where OpenAI has a code for the failure. `null` is reserved for a failure that has no
+name at all (ADR 0032, TDD OSTD-013).
+
 ```jsonc
 {"error": {"message": "...", "type": "...", "code": "..."}}
 ```
@@ -1370,7 +1376,10 @@ about one field reports `param: null` instead of guessing a field.
 | Condition | HTTP | type | code |
 |---|---|---|---|
 | Bad API key | 401 | invalid_request_error | invalid_api_key |
-| Malformed request / no user message | 400 | invalid_request_error | — |
+| Malformed request body | 400 | invalid_request_error | malformed_request_body |
+| No sendable user message | 400 | invalid_request_error | no_user_message |
+| History over the replay cap (§5.3B) | 400 | invalid_request_error | too_many_turns |
+| Unknown model id (chat and `/v1/models/<id>`) | 404 | invalid_request_error | model_not_found |
 | All accounts cooldown/parked | 429 | rate_limit_error | pool_parked (+ Retry-After = nearest recovery) |
 | All accounts busy (queue wait exceeded) | 429 | rate_limit_error | pool_busy (+ Retry-After) |
 | All accounts disabled / empty pool | 503 | api_error | no_accounts |
