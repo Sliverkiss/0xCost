@@ -416,3 +416,42 @@ The gateway currently **discards both signals**: `collectCookies` keeps only `na
 (attributes dropped) and the account file has no expiry field. Recording them
 (`credential_expires_at`) and showing the TTL in `/v1/admin/pool` is the obvious next
 small change: `credential_age_s` says how old the credential is, never when it dies.
+
+## 2026-10-10 — streaming chat, measured on the live path
+
+Run through the public entry (`https://mimo.xn--ug8h.eu.org`), which is the same container as
+`127.0.0.1:21223` (`/healthz` is byte-identical), one real upstream account, six calls, same prompt.
+A browser `User-Agent` is mandatory on the public entry: python-urllib is answered
+`403` + Cloudflare `error code: 1010`.
+
+| Model | Mode | First frame | Total | Frames | `finish` |
+|---|---|---|---|---|---|
+| `mimo-v2.6-flash` | stream | 23.41 s | 25.16 s | 30 | `stop` |
+| `mimo-v2.6-flash` | stream, `reasoning_effort:none` | 5.58 s | 7.20 s | 22 | `stop` |
+| `mimo-v2.6-flash` | JSON | — | 6.54 s | 0 | — |
+| `mimo-v2.6-pro-ultraspeed-studio` | stream | 1.76 s | 1.91 s | 5 | `stop` |
+| `mimo-v2.6-pro-ultraspeed-studio` | stream, `reasoning_effort:none` | 1.80 s | 1.96 s | 4 | `stop` |
+| `mimo-v2.6-pro-ultraspeed-studio` | JSON | — | 2.51 s | 0 | — |
+
+The response headers were `text/event-stream` + `X-Accel-Buffering: no`; frame order was
+`role` → `reasoning_content` → `content` → `finish:stop` → `usage` (with `choices:[]`) → `[DONE]`,
+and `keepalives=0` in every run (the upstream never went silent long enough to need one).
+
+What the numbers do **not** support: `flash` first-frame latency is volatile — an earlier run in the
+same hour showed first frame 11.08 s against a 31.90 s JSON total for the same model and prompt, so
+do not read a single pair as a speed verdict. The stable facts are that streaming starts producing
+tokens seconds before the JSON body exists, and that `ultraspeed` stays around 2 s in both modes.
+
+Two smaller readings:
+
+- `completion_tokens_details.reasoning_tokens` comes back **non-zero (14–25) even with thinking
+  off**, while `reasoning_content` is absent/empty. This is the platform's own count and we pass it
+  through verbatim (ADR 0031); whether to zero it when thinking is off is an open product question,
+  not a bug.
+- `prompt_tokens` is 2238–2240 with `cached_tokens` 2176 on every call — the fixed preamble
+  dominates the prompt and the platform is caching it, which is why per-call prompt cost barely
+  moves between a one-line question and a real one.
+
+The same run is also the acceptance evidence for ADR 0035: all six calls succeeded after the
+aistudio header set dropped `X-Requested-With` and moved `Accept` to `*/*`, so the platform accepts
+the SPA-faithful set on both the streaming and JSON paths.
