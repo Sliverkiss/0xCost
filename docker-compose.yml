@@ -1,0 +1,91 @@
+# mimo2api compose (SDD §6): container port 21223 (the same number on the host —
+# one port, not a mapping), /data volume for accounts.json, in-binary healthcheck
+# (distroless has no curl/wget).
+#
+# ONE container, ONE published port (ADR 0016, superseding the tool layer of
+# ADR 0012): host 21223 → the gateway itself.
+#
+#   client :21223 --(Bearer $MIMO2API_API_KEYS)--> mimo2api:21223
+#
+# A hosted deployment without a durable file system (Belmo) instead sets
+# DS_REDIS_HOST + DS_REDIS_TOKEN and keeps its accounts in Upstash — same
+# binary, no volume (ADR 0018).
+#
+# The tool layer is gone: MiMo has no native function calling, the middleware
+# serving it injected a protocol prompt that spent 1,355–5,222 characters of the
+# query budget (ADR 0015) — context the platform's 102,400-character ceiling does
+# not have to spare — and an OpenAI client that wants tools can call them itself
+# now that one hop and its prompt are out of the path. A request that still
+# carries `tools` is answered normally with the tools reported as dropped
+# (`X-Mimo-Warnings`), never silently.
+services:
+  mimo2api:
+    build: .
+    image: mimo2api
+    container_name: mimo2api
+    ports:
+      # The deployment's only published port, on the LOOPBACK ONLY (ADR 0016):
+      # TLS and the public hostname belong to the reverse proxy in front (Caddy
+      # terminates :443 and proxies to 127.0.0.1:21223), and every other service
+      # on this host binds 127.0.0.1 too — an exposed API port is an exposed key.
+      - "127.0.0.1:21223:21223"
+    volumes:
+      - ./data:/data # accounts.json (import source) + runtime state (SDD §4.7)
+    environment:
+      - MIMO2API_ACCOUNTS_FILE=/data/accounts.json
+      # Upstash as the account store (ADR 0018/0020). `--env-file data/deploy.env`
+      # only substitutes variables INTO this file: a container does not inherit
+      # the operator's shell, so these two lines are what actually hand the
+      # credentials to the process. Unset (the default) keeps the file backend,
+      # so the same compose file serves both a local deploy and Belmo.
+      - DS_REDIS_HOST=${DS_REDIS_HOST:-}
+      - DS_REDIS_TOKEN=${DS_REDIS_TOKEN:-}
+      - DS_REDIS_CA_FILE=${DS_REDIS_CA_FILE:-}
+      # The one key, shared by both hops: the middleware accepts it, then passes
+      # the caller's own header through, and this line is what authorises it here.
+      - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
+      - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
+      - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
+      # Pinned policy, not left to a default that could drift:
+      #   a revoked credential heals in the background (ADR 0014) instead of
+      #   stopping the deployment, and starting a re-login must never spend an
+      #   SMS on its own — the operator finishes a human gate (ADR 0013).
+      - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
+      - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
+      # ADR 0019: a real client-facing budget, the per-turn/slot TTL, and the
+      # conservative slot policy. Pinned so a default change cannot silently
+      # alter when capacity goes back to the pool.
+      - MIMO2API_REQUEST_TIMEOUT_MS=${MIMO2API_REQUEST_TIMEOUT_MS:-120000}
+      - MIMO2API_LEASE_TTL_S=${MIMO2API_LEASE_TTL_S:-120}
+      - MIMO2API_SLOT_HOLD=${MIMO2API_SLOT_HOLD:-last-byte}
+      # 0 = per-channel caps (50k fastchat / 102,400 others); a positive value is the
+      # operator override for a client that sends more context than the Studio's
+      # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
+      - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}      # Chat serves both transports on one pipeline (ADR 0034, superseding ADR 0017):
+      # no field or `stream:false` gives one JSON body, `stream:true` gives OpenAI SSE
+      # chunks. Nothing is written before the upstream's first delta — that is what keeps
+      # account failover working; after that point a failure arrives in-band as an `error`
+      # frame instead of a status code.
+    healthcheck:
+      test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous on purpose: a cold start (module-less distroless image, live
+      # catalog warm-up that talks to the upstream) can take longer than the first
+      # probe window, and a short start_period makes a first `up` report an
+      # unhealthy container while the gateway is in fact still coming up.
+      start_period: 30s
+    # Resource and privilege limits (ADR 0029). The gateway decodes client-supplied
+    # images and buffers client-supplied bodies, so the blast radius of a hostile
+    # request is bounded here, at the container, and not only in the code: a memory
+    # ceiling turns "this request wants gigabytes" into an OOM kill of THIS container
+    # instead of pressure on the whole host, and a pid ceiling bounds what a runaway
+    # can spawn.
+    mem_limit: 1g
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

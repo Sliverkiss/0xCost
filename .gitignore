@@ -1,0 +1,10 @@
+data/
+*.log
+/tmp/
+references/
+.cover/
+cover.out
+/mimo2api
+
+# build artifact: `go build ./scripts/...` writes it into the repo root
+/staticaudit

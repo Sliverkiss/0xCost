@@ -1,0 +1,69 @@
+mimo2api: OpenAI-compatible gateway for Xiaomi MiMo Studio
+
+A Go gateway in front of Xiaomi MiMo Studio (aistudio.xiaomimimo.com) that speaks
+the OpenAI HTTP surface: chat (one-shot or streaming), TTS and ASR, web search, model
+listing.
+
+- Chat: the standard OpenAI knobs are the documented path — `reasoning_effort`
+  sets the model's thinking (`none` off; a request that names nothing follows the
+  model's own declared default from the account catalog, ADR 0031) and
+  `web_search_options` turns search on; model ids are never renamed to carry an
+  option (ADR 0027). Chat has two transports and no switch: `stream: false` (or no
+  field) gives one JSON body, `stream: true` gives OpenAI SSE chunks on the same
+  pipeline (ADR 0034) — the upstream is SSE either way, so the answer is identical and
+  only when you see it differs. Nothing is written before the upstream's first delta,
+  so an early failure is still a status code. The request carries its own history:
+  there is no session store, and every client message is replayed into a fresh
+  upstream conversation. Function calling is not emulated: a `tools` field is ignored and
+  reported in `X-Mimo-Warnings`, because the protocol prompt an emulation needs
+  spends 1,355-5,222 characters of the platform's 102,400-character query budget.
+  The response is OpenAI's `chat.completion` key for key (`message.refusal` and
+  `choices[0].logprobs` sent as `null`, `usage` always carrying its two detail
+  objects), and errors carry `param` naming the offending field.
+- Images: OpenAI `image_url` parts (a `data:` URL or an http(s) one) are fetched
+  and uploaded through the platform's own resource path (`genUploadInfo` → PUT →
+  `resource/parse`), then referenced from that turn's `multiMedias` — so an image is
+  accounted separately from the 102,400-character query budget. `image_url.detail`
+  is applied inside the gateway, on the bytes that go up: `low` is scaled to a 512 px
+  longest side (OpenAI's own definition of `low`), `auto`/`high` upload at the
+  channel's native resolution. A bad URL, a non-image body or an oversized file is a
+  named 400 (`image_fetch_failed`, `unsupported_image_type`, `image_too_large`,
+  `too_many_images`, `unsupported_image_detail`) and never cools an account down.
+- Hardening: a client-supplied `image_url` is fetched only after the address it
+  dials passes an outbound gate — loopback, private, link-local (cloud metadata),
+  CGNAT, unspecified and multicast are refused at connect time, so every redirect hop
+  is covered too — and a refused target is a named 400 `image_url_blocked`.
+  `MIMO2API_IMAGE_ALLOW_PRIVATE=true` is the operator's opt-out. Decoding is bounded
+  at `MIMO2API_MAX_IMAGE_PIXELS` (40 MP default), read from the header before any
+  decode, and the container runs with `mem_limit: 1g`, `pids_limit: 256`,
+  `no-new-privileges` and `cap_drop: ALL` (ADR 0029).
+- Audio: /v1/audio/speech (wav/mp3, the upstream's 1024-character limit enforced
+  before any upstream work) and /v1/audio/transcriptions (multipart).
+- Models: the account's real catalog from bot/config, cached, with ids the upstream
+  has retired resolved to their successors instead of advertised.
+- Accounts: a pool with per-class cooldowns (transport, 5xx, 429), risk-control
+  recording, per-account egress labels, OTP/consent handling, and self-healing
+  credentials — a 12 h keepalive, and an asynchronous password re-login when the
+  credential is revoked. Starting a re-login never spends an SMS on its own: the
+  operator completes the human gate.
+- Leases: capacity is per request, never per conversation. Each request has a
+  client-facing budget (504 on expiry), each upstream turn a TTL with a reaper,
+  and the slot returns to the pool before the response is written to a slow client.
+- Store: pluggable — the local accounts file, or Upstash (file or Redis behind one
+  interface, one JSON key per account plus an index set, stdlib RESP2 client, no
+  third-party dependency). `mimo2api -accounts <command>` lists, shows, enables,
+  disables, re-pins, removes, imports and exports accounts against whichever store
+  the environment selects.
+- Admin: GET /v1/admin/pool (masked ids, cooldown causes, risk events, invariant),
+  OTP submission, consent.
+
+Deployment: docker compose (distroless image, port 21223 on the loopback, behind a
+TLS reverse proxy publicly, in-binary healthcheck) or a hosted build with no volume — a
+plain Go binary, `nixpacks.toml` included, the platform's own PORT honoured, and
+the account store in Upstash. Real account identifiers are never written into the
+tree: they live in the git-ignored data/accounts.json and data/deploy.env, and
+`make hygiene` reads both and fails if any of their values appears in a tracked
+file.
+
+This mirror carries the code and the docs; the test suite is excluded from it
+(.gitattributes export-ignore). Design notes and decision records are in docs/.

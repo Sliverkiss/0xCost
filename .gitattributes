@@ -1,0 +1,16 @@
+# The published mirror is a distribution tree, not the working repository: it
+# carries the code and the docs, not the test suite. `git archive` honours
+# `export-ignore`, so `make push-mirror` publishes exactly this selection and never
+# the local history (which contains older commits that are not for publication).
+#
+# Nothing here changes the working repository: tests stay present and runnable
+# locally, and `go build ./...` works in the mirror without them (test-only packages
+# are imported by tests alone).
+*_test.go                        export-ignore
+**/testdata/**                   export-ignore
+/internal/testutil/**            export-ignore
+/internal/testserver/**          export-ignore
+/internal/live/**                export-ignore
+/docker/**                       export-ignore
+/deploy/toolforge/tests/**       export-ignore
+/deploy/toolforge/pytest.ini     export-ignore
