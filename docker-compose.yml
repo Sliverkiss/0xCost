@@ -61,10 +61,11 @@ services:
       # 0 = per-channel caps (50k fastchat / 102,400 others); a positive value is the
       # operator override for a client that sends more context than the Studio's
       # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
-      - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}
-      # Chat has no streaming path at all (ADR 0017): stream:true is refused
-      # with a clear 400. There is no switch — the SSE writer and the session
-      # store are deleted, not disabled.
+      - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}      # Chat serves both transports on one pipeline (ADR 0034, superseding ADR 0017):
+      # no field or `stream:false` gives one JSON body, `stream:true` gives OpenAI SSE
+      # chunks. Nothing is written before the upstream's first delta — that is what keeps
+      # account failover working; after that point a failure arrives in-band as an `error`
+      # frame instead of a status code.
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s
