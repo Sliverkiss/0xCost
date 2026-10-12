@@ -91,6 +91,7 @@ interval_secs = 30               # 检查间隔
 timeout_secs = 5
 
 [routing]
+enabled = true                   # 可选，默认 true；false = 注册但停用（见 §6 开关语义）
 models = [                       # 声明提供的模型（必须实测真实存在）
   "mimo/mimo-v2.6-pro",
   "mimo/mimo-v2.6-flash",
@@ -165,8 +166,18 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 
 ```
 注册 → 健康探测 → Serving ⇄ 熔断/半开 → 移除
+                 └──────→ Disabled（人工停用，可再启用）
 ```
 
+- **启用/停用（人工运营开关，与熔断正交）**：`routing.enabled = false` 或运行时
+  切换（管理 API / 配置热载）：
+  - **停用**：插件进入 `Disabled`——立即从路由与 `/v1/models` 目录移除、停止
+    健康探测；host-spawn 插件同时停掉进程（释放资源），external/remote 仅停止
+    转发、不触碰对方进程/服务
+  - **启用**：回到 注册→探测 流程，健康后恢复 Serving
+  - **与熔断的区别**：熔断是自动故障处理，冷却结束自动半开恢复；开关是人工
+    运营决策（源不稳/配额耗尽/维护中），**不会自动恢复**——关了就是关了，
+    直到再次启用
 - **host-spawn**：宿主负责拉起、健康循环、崩溃重启（退避上限可配）、优雅退出
   （SIGTERM 宽限期默认 10s）。插件进程退出即视为故障，走熔断流程。
 - **external**：宿主只做健康探测与路由；探测失败即摘除，恢复即回归。
