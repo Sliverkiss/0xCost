@@ -1,0 +1,61 @@
+name: Claude Code
+
+# 基于官方示例 https://github.com/anthropics/claude-code-action/blob/main/examples/claude.yml
+# 网关与 key 全部走仓库 Secrets（公开仓库不落任何明文）
+# 触发方式：
+#   ① issue 打上 `claude` 标签 → 自动接单
+#   ② issue/PR 评论 @claude <指令> → 对话式响应
+# 安全门禁：仅 Sliverkiss 本人的操作触发；单任务 60 分钟强制超时
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned, labeled]
+  pull_request_review:
+    types: [submitted]
+
+env:
+  ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+  ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+  ANTHROPIC_MODEL: GLM-5.3-Flash
+  ANTHROPIC_SMALL_FAST_MODEL: GLM-5.3-Flash
+  ANTHROPIC_DEFAULT_OPUS_MODEL: GLM-5.3-Flash
+  ANTHROPIC_DEFAULT_SONNET_MODEL: GLM-5.3-Flash
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: GLM-5.3-Flash
+  API_TIMEOUT_MS: '600000'
+
+jobs:
+  claude:
+    if: |
+      github.event.sender.login == 'Sliverkiss' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'claude') ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read # 让 Claude 能读取 PR 上的 CI 结果
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 用仓库自带 Actions token 做 GitHub API 认证（免装 Claude GitHub App；
+          # 若日后装了 App，可删掉此行改走 App OIDC 认证）
+          github_token: ${{ github.token }}
