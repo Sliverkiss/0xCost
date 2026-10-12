@@ -167,6 +167,13 @@ impl PluginInstance {
         self.manifest.routing.enabled
     }
 
+    /// Set `routing.enabled` (§6 manual switch). Host config file
+    /// overrides (R1W1 A2) land here so every consumer of the switch —
+    /// routing, catalog, probing — sees one consistent value.
+    pub fn set_routing_enabled(&mut self, enabled: bool) {
+        self.manifest.routing.enabled = enabled;
+    }
+
     /// Should this instance serve traffic right now? (§6: routable states
     /// only, and the manual switch respected.)
     pub fn is_servable(&self) -> bool {

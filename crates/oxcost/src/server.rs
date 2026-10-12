@@ -99,6 +99,12 @@ async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// in-process `health()` trait call; sidecars get an HTTP GET (§6).
 pub async fn probe_all(state: &AppState) {
     for inst in state.instance_list() {
+        // §6/A2: a disabled plugin (manifest switch or config override)
+        // does not exist to the outside world — including the prober.
+        if !inst.routing_enabled() {
+            tracing::debug!(plugin = inst.id(), "disabled — not probed");
+            continue;
+        }
         advance_state(&inst, |s| s.start_probing());
         let healthy = match inst.handle() {
             oxcost_core::PluginHandle::Sdk(plugin) => {

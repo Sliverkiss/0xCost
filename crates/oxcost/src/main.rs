@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use oxcost::config::HostConfigFile;
 use oxcost::loader::{load_plugins, print_registration_table, Cli, LoadOutcome};
 use oxcost::server;
 use oxcost::state::{AppState, FailedPlugin, HostConfig};
@@ -71,6 +72,11 @@ async fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
     registry.drain()
 }
 
+// Host assembly: config resolution + plugin loading + serving, one
+// linear top-to-bottom flow. Too long for the pedantic line budget by
+// nature (assembly, not logic — the pieces live in the library crate);
+// splitting it would only obscure the startup sequence.
+#[allow(clippy::too_many_lines)]
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -85,8 +91,44 @@ fn main() {
         }
     };
 
+    // Host config file (R1W1 A2): read once at startup; a restart picks
+    // up changes (hot reload deliberately out of scope). No --config →
+    // the env-only defaults below (back-compat).
+    let file_config = match &cli.config_path {
+        Some(path) => match HostConfigFile::load(path) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => {
+                eprintln!("oxcost: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
     let mut config = HostConfig::dev_default();
-    config.listen = cli.listen;
+    if let Some(cfg) = &file_config {
+        if let Some(bind) = &cfg.server.bind {
+            config.listen.clone_from(bind);
+        }
+        let keys = cfg.resolve_api_keys();
+        if !keys.is_empty() {
+            config.api_keys = keys;
+        }
+    }
+    // Env still wins over the file for listen/api_keys: the file is the
+    // deployment default, the env the operator override. When neither is
+    // set the dev defaults hold.
+    if let Ok(listen) = std::env::var("OXCOST_LISTEN") {
+        if !listen.is_empty() {
+            config.listen = listen;
+        }
+    }
+    // `--listen` (explicit) > env OXCOST_LISTEN > config file bind >
+    // dev default. cli.listen stays the dev default when unset, so
+    // compare against it to detect an explicit flag.
+    if cli.listen != "127.0.0.1:8080" {
+        config.listen = cli.listen;
+    }
     if let Ok(keys) = std::env::var("OXCOST_API_KEYS") {
         config.api_keys = keys
             .split(',')
@@ -122,6 +164,19 @@ fn main() {
                 );
             }
         }
+
+        // Apply config-file enabled overrides (A2): applied to the registry
+        // manifests after validation so the override cannot smuggle an
+        // invalid manifest in, and before instance construction so the
+        // §6 "off = invisible" semantics (no routing, no catalog, no
+        // probing) flow through the normal paths. SDK instances need the
+        // same override applied post-construction (their manifest is a
+        // conversion, not a reference into the registry).
+        if let Some(cfg) = &file_config {
+            for entry in registry.list_mut() {
+                cfg.apply_overrides(&mut entry.manifest);
+            }
+        }
         print_registration_table(&registry);
 
         // Build runtime instances for successfully registered plugins:
@@ -134,11 +189,16 @@ fn main() {
                 .iter()
                 .find(|p| p.manifest().id == entry.manifest.id);
             if let Some(plugin) = sdk_match {
-                let id = entry.manifest.id.clone();
-                instances.insert(
-                    id,
-                    Arc::new(PluginInstance::from_sdk_plugin(Arc::clone(plugin))),
-                );
+                let mut inst = PluginInstance::from_sdk_plugin(Arc::clone(plugin));
+                // The SDK instance holds its own converted manifest copy —
+                // apply the config override post-construction so this form
+                // honors [plugins."<id>"].enabled too.
+                if let Some(cfg) = &file_config {
+                    inst.set_routing_enabled(
+                        cfg.effective_enabled(inst.id(), inst.routing_enabled()),
+                    );
+                }
+                instances.insert(entry.manifest.id.clone(), Arc::new(inst));
                 continue;
             }
             match oxcost_contract::resolve_auth(&entry.manifest, |name: &str| {

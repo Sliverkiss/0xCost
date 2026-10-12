@@ -4,6 +4,7 @@ description = "OxCost host-sdk plugin: simple-chat (deepseek-flash web chat, rea
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 oxcost-sdk = { workspace = true }

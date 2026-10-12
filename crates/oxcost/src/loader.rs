@@ -11,6 +11,8 @@ pub struct Cli {
     pub plugins_dir: PathBuf,
     /// Listen address for the axum server (default `127.0.0.1:8080`).
     pub listen: String,
+    /// Host config file path (R1W1 A2). `None` → defaults + env.
+    pub config_path: Option<PathBuf>,
     /// Load, validate, print the registration table, and exit without
     /// serving (manifest check mode).
     pub check: bool,
@@ -24,6 +26,7 @@ impl Cli {
         let mut plugins_dir = PathBuf::from("plugins");
         let mut listen = String::from("127.0.0.1:8080");
         let mut check = false;
+        let mut config_path: Option<PathBuf> = None;
         let mut iter = args.iter();
         // Skip argv[0].
         iter.next();
@@ -45,11 +48,10 @@ impl Cli {
                     check = true;
                 }
                 "--config" => {
-                    // Accepted for forward compatibility (host config file);
-                    // must still carry a value.
-                    if iter.next().is_none() {
+                    let Some(value) = iter.next() else {
                         return Err("--config requires a file path".into());
-                    }
+                    };
+                    config_path = Some(PathBuf::from(value));
                 }
                 other => return Err(format!("unknown argument `{other}`")),
             }
@@ -57,6 +59,7 @@ impl Cli {
         Ok(Self {
             plugins_dir,
             listen,
+            config_path,
             check,
         })
     }
@@ -156,6 +159,7 @@ mod tests {
         let cli = Cli::parse(&["oxcost".into()]).unwrap();
         assert_eq!(cli.plugins_dir, PathBuf::from("plugins"));
         assert_eq!(cli.listen, "127.0.0.1:8080");
+        assert_eq!(cli.config_path, None);
         assert!(!cli.check);
 
         let cli = Cli::parse(&[
@@ -176,8 +180,9 @@ mod tests {
         // --listen requires a value.
         assert!(Cli::parse(&["oxcost".into(), "--listen".into()]).is_err());
 
-        // --config accepted with a value.
-        assert!(Cli::parse(&["oxcost".into(), "--config".into(), "x.toml".into()]).is_ok());
+        // --config requires a value and stores it.
+        let cli = Cli::parse(&["oxcost".into(), "--config".into(), "x.toml".into()]).unwrap();
+        assert_eq!(cli.config_path, Some(PathBuf::from("x.toml")));
         assert!(Cli::parse(&["oxcost".into(), "--config".into()]).is_err());
         assert!(Cli::parse(&["oxcost".into(), "--wat".into()]).is_err());
     }

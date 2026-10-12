@@ -4,6 +4,7 @@ description = "OpenAI wire types (chat completions request/response, SSE event s
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 serde = { workspace = true }

@@ -4,6 +4,7 @@ description = "TokenHarbor host-sdk plugin: tokenharbor.ai web chat → OpenAI p
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 oxcost-contract = { workspace = true }

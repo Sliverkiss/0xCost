@@ -1,0 +1,46 @@
+# cargo-deny configuration (R1W1 A4).
+# License policy: AGPL-3.0 compatible only (project is AGPL-3.0, see
+# CLAUDE.md). Bans are empty for now — wave-1 establishes the gate, the
+# baseline lives in docs/R1W1_NOTES.md.
+
+[graph]
+targets = []
+
+[licenses]
+version = 2
+allow = [
+    # Workspace members: the project's own license.
+    "AGPL-3.0",
+    # AGPL-3.0-compatible dependency licenses (permissive only).
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Empty ban list for wave 1; duplicate detection is informational
+# (warnings recorded as baseline) until the tree is cleaned up.
+multiple-versions = "warn"
+# Wildcard version requirements are denied — except for path deps
+# (workspace-internal crates have no version req; cargo-deny flags
+# them as STAR unless this is enabled).
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[advisories]
+# Any RUSTSEC advisory affecting a used dependency fails the gate.
+version = 2
+yanked = "warn"

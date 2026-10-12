@@ -3,6 +3,7 @@ name = "mimo-rust"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
+publish = false
 description = "mimo2api (Go) ported as an in-process Oxcost plugin: chat + web_search against MiMo AI Studio"
 
 [dependencies]
