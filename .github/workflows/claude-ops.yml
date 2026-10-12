@@ -1,0 +1,127 @@
+name: Claude Ops
+
+# OxCost 全自动运维开发流水线
+# ① issue 打 auto:fix 标签 → Claude 自动排查修复并开 PR
+# ② issue 打 auto:feat 标签 → Claude 自动实现新功能并开 PR
+# ③ PR/issue 评论 @claude <指令> → 对话式改代码
+# ④ 每周一 11:00 (CST) 自动巡检 + 手动 dispatch
+# 模型流量全部走自建网关（公开仓库 Actions runner 免费，写码不限量）
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  schedule:
+    - cron: '0 3 * * 1' # 每周一 03:00 UTC = 11:00 北京时间
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  ANTHROPIC_BASE_URL: http://130.61.28.166:12888
+  ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+  ANTHROPIC_MODEL: scan/deepseek-flash
+  ANTHROPIC_SMALL_FAST_MODEL: scan/deepseek-flash
+  ANTHROPIC_DEFAULT_OPUS_MODEL: scan/deepseek-flash
+  ANTHROPIC_DEFAULT_SONNET_MODEL: scan/deepseek-flash
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: scan/deepseek-flash
+
+jobs:
+  fix-issue:
+    if: >-
+      github.event_name == 'issues' &&
+      github.event.sender.login == 'Sliverkiss' &&
+      contains(github.event.issue.labels.*.name, 'auto:fix')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - name: Claude 排查修复
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          claude_args: '--allowed-tools "Edit,Write,NotebookEdit,WebFetch,Task,Bash"'
+          prompt: |
+            请排查并修复 issue #${{ github.event.issue.number }}。
+            标题：${{ github.event.issue.title }}
+            描述：
+            ${{ github.event.issue.body }}
+
+            工作要求：
+            1. 先定位根因（复现或读代码分析），再做最小化修复，不做无关改动
+            2. 修复后运行构建与测试确保通过（Go 项目: go build ./... && go test ./...；无代码则跳过）
+            3. 在新分支上提交并开 PR（基分支 main），PR 描述第一行写 `Fixes #${{ github.event.issue.number }}`
+            4. 用中文在 issue 下简要汇报：根因结论 + 修复方案 + PR 链接
+            5. 禁止：修改 .github/workflows/**、.coderabbit.yaml、LICENSE；直接 push 到 main；合并或关闭任何 PR/issue
+
+  feat-issue:
+    if: >-
+      github.event_name == 'issues' &&
+      github.event.sender.login == 'Sliverkiss' &&
+      contains(github.event.issue.labels.*.name, 'auto:feat')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - name: Claude 实现新功能
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          claude_args: '--allowed-tools "Edit,Write,NotebookEdit,WebFetch,Task,Bash"'
+          prompt: |
+            请根据 issue #${{ github.event.issue.number }} 实现新功能。
+            标题：${{ github.event.issue.title }}
+            需求描述：
+            ${{ github.event.issue.body }}
+
+            工作要求：
+            1. 先想清楚设计（简述方案），再实现；遵循仓库 CLAUDE.md 约定
+            2. 功能必须带测试（Go 项目: go build ./... && go test ./... 全绿）
+            3. 在新分支上提交并开 PR（基分支 main），PR 描述第一行写 `Closes #${{ github.event.issue.number }}`
+            4. 用中文在 issue 下汇报：设计方案 + 实现要点 + PR 链接
+            5. 禁止：修改 .github/workflows/**、.coderabbit.yaml、LICENSE；直接 push 到 main；合并或关闭任何 PR/issue
+
+  chat:
+    if: >-
+      (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
+      github.event.sender.login == 'Sliverkiss' &&
+      contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - name: Claude 对话式响应
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          claude_args: '--allowed-tools "Edit,Write,NotebookEdit,WebFetch,Task,Bash"'
+
+  weekly-ops:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == 'Sliverkiss')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - name: Claude 周巡检
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          claude_args: '--allowed-tools "Edit,Write,NotebookEdit,WebFetch,Task,Bash"'
+          prompt: |
+            对本仓库做例行巡检（OxCost，AI 网关聚合框架）：
+            1. 依赖健康：若有 go.mod，检查过期依赖与 Go 安全通告（govulncheck 可用则跑）；无代码则说明并跳过
+            2. 检查最近是否有失败的 workflow run，若有则分析原因
+            3. 发现小问题（文档错误、配置笔误）→ 直接开修复 PR；发现需要决策的大问题 → 开 issue 说明
+            4. 一切正常则不要开任何 PR/issue，只在运行摘要里写"巡检通过 + 检查了什么"
+            5. 禁止：修改 .github/workflows/**、.coderabbit.yaml、LICENSE；直接 push 到 main
