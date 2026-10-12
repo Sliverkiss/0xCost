@@ -20,4 +20,5 @@
 pub mod models;
 pub mod pool;
 pub mod sse;
+pub mod store;
 pub mod thinking;

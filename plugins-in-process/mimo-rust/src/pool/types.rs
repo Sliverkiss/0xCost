@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// An account's health state (SDD §4.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum State {
+    #[default]
     Available,
     Cooldown,
     Disabled,
