@@ -13,16 +13,19 @@
 //! - `upstream` — upstream chat client (payloads, watchdogs, taxonomy)
 //! - `chat` — retry-ladder pipeline
 //! - `config` — `MIMO_RUST_*` environment contract
+//! - `plugin` — `MimoPlugin`: the `OxcostPlugin` trait impl
 //!
 //! v1 scope: chat only. tts/asr/voiceclone are UNIMPLEMENTED-reserved
 //! (capability flags false); the `OxcostPlugin` implementation lands once
 //! the modules above are in place.
 
 pub mod chat;
+pub mod config;
 pub mod errmap;
 pub mod login;
 pub mod models;
 pub mod openai;
+pub mod plugin;
 pub mod pool;
 pub mod sse;
 pub mod store;
