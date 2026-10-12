@@ -6,6 +6,7 @@ members = [
     "crates/oxcost-core",
     "crates/oxcost-protocol",
     "crates/oxcost-sdk",
+    "plugins-in-process/mimo-rust",
 ]
 
 [workspace.package]
