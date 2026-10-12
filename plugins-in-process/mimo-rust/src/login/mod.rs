@@ -299,6 +299,26 @@ impl Client {
         h
     }
 
+    /// The chat POST (Go setBrowserHeaders + Cookie, client.go:285-288):
+    /// the aistudio surface plus Content-Type: application/json — the SPA's
+    /// fetch client adds the entity header on a JSON body, nothing else.
+    /// The future is raced against the silence window by the caller.
+    pub async fn chat_post(
+        &self,
+        target: String,
+        cookie: &str,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        self.http
+            .post(target)
+            .headers(self.aistudio_headers())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::COOKIE, cookie)
+            .body(body)
+            .send()
+            .await
+    }
+
     /// The upload-PUT variant (Go setAistudioStorageHeaders,
     /// client.go:326-339): XHR branch — cross-site sec-fetch, no Cookie
     /// travels to storage (ADR 0035). v1 chat does not upload, kept for

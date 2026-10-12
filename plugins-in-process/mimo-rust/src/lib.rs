@@ -6,10 +6,11 @@
 //! - [`models`] — static catalog, normalization, fastchat routing
 //! - [`thinking`] — ThinkSplitter (reasoning/content marker state machine)
 //! - `sse` — upstream SSE dialect: FrameExtractor + event dispatch
-//! - `openai` — OpenAI-shape shapers (chunks, usage, completion)
+//! - [`openai`] — OpenAI-shape shapers (chunks, usage, completion)
 //! - `citations` — web_search payload parsing + annotations
 //! - `pool` — account pool state machine (R1 port) + SQLite store
 //! - `login` — passport login chain, header sets, cookie jar
+//! - `upstream` — upstream chat client (payloads, watchdogs, taxonomy)
 //! - `chat` — retry-ladder pipeline
 //! - `config` — `MIMO_RUST_*` environment contract
 //!
@@ -25,3 +26,4 @@ pub mod sse;
 pub mod store;
 pub mod thinking;
 pub mod turnplan;
+pub mod upstream;
