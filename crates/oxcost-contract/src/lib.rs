@@ -2,12 +2,14 @@
 //! and capability model — the host/plugin contract layer (§3–§4 of
 //! docs/PLUGIN_CONTRACT.md). Pure data + rules, no I/O.
 
+pub mod auth;
 pub mod capability;
 pub mod manifest;
 pub mod parse;
 pub mod validate;
 pub mod version;
 
+pub use auth::{resolve_auth, AuthResolveError, EnvResolver};
 pub use capability::{Capability, CapabilitySet, Tier};
 pub use manifest::{
     AuthSection, CapabilitiesSection, EntryMode, EntrySection, HealthSection, LimitsSection,

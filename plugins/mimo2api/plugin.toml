@@ -1,0 +1,56 @@
+# mimo2api plugin manifest — OxCost external mode (contract §3).
+#
+# mimo2api is an independently deployed Go gateway for Xiaomi MiMo Studio
+# (docker compose, 127.0.0.1:21223). The host does not manage its process,
+# only health probing and routing. Zero changes to mimo2api's business code.
+#
+# Model list and capabilities below are derived from the LIVE
+# GET /v1/models output (2026-10-12) — see EVIDENCE.md for the raw response.
+
+manifestVersion = "0.1"
+id = "dev.oxcost.mimo2api"
+name = "mimo2api"
+version = "1.0.0"
+apiVersion = "v1"
+license = "AGPL-3.0"
+
+[entry]
+mode = "external"
+port = 21223
+
+[health]
+path = "/healthz"
+interval_secs = 30
+timeout_secs = 5
+
+[routing]
+enabled = true
+models = [
+  "mimo2api/mimo-v2.6-flash",
+  "mimo2api/mimo-v2.6-pro",
+  "mimo2api/mimo-v2.6-pro-ultraspeed-studio",
+  "mimo2api/mimo-v2.5-asr",
+  "mimo2api/mimo-v2.5-tts",
+  "mimo2api/mimo-v2.5-tts-voiceclone",
+  "mimo2api/mimo-v2.5-tts-voicedesign",
+]
+# mimo2api itself 404s unknown models (NormalizeModel → ErrModelNotFound),
+# so `pass` would only forward a doomed request; `reject` makes host-side
+# behavior deterministic. Justification in EVIDENCE.md.
+unknown_model = "reject"
+
+[capabilities]
+chat = true
+# Live /v1/models reports audio="asr" (mimo-v2.5-asr) and audio="tts"
+# (three TTS models); the endpoints are routed in mimo2api's server.go.
+audio_speech = true
+audio_transcription = true
+# Chat models report web_search=2 and chat.go handles
+# web_search_options / web_search_status / ":online".
+web_search = true
+
+[auth]
+keys = "env:MIMO2API_API_KEYS"
+
+[source]
+repository = "https://github.com/Sliverkiss/mimo2api"
