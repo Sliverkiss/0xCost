@@ -1,0 +1,10 @@
+[package]
+name = "oxcost-protocol"
+description = "OpenAI wire types (chat completions request/response, SSE event shapes)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "oxcost-core"
+description = "PluginRegistry and plugin lifecycle state machine (pure state, no I/O)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+oxcost-contract = { workspace = true }
+thiserror = { workspace = true }
