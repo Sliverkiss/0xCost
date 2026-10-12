@@ -7,6 +7,7 @@ members = [
     "crates/oxcost-protocol",
     "crates/oxcost-sdk",
     "plugins-in-process/tokenharbor",
+    "plugins-in-process/mimo-rust",
 ]
 
 [workspace.package]

@@ -1,0 +1,24 @@
+[package]
+name = "mimo-rust"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "mimo2api (Go) ported as an in-process Oxcost plugin: chat + web_search against MiMo AI Studio"
+
+[dependencies]
+oxcost-contract = { path = "../../crates/oxcost-contract" }
+oxcost-sdk = { path = "../../crates/oxcost-sdk" }
+
+md-5 = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "http2"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
