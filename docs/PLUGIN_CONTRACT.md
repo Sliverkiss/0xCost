@@ -259,3 +259,19 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 - 已满足项：`POST /v1/chat/completions`（流式/非流式）、账号池（插件内部事务，
   宿主无感）、`/healthz`、Upstash 存储、环境变量密钥
 - 待补项：`plugin.toml`、错误映射对齐第 4 节、契约文档 `PROTOCOL.md`
+- **不重写**：语言无关契约的 design intent——成熟网关零改造接入；Rust 用于
+  新写插件（可复用 `oxcost-protocol` crate），不用于重写存量
+
+## 10. 插件仓库与隐私边界
+
+1. **宿主仓库保持纯净**：公开宿主仓库只含框架代码与合成示例 fixture
+   （`plugins/example-*`），不含任何真实插件实现。
+2. **插件独立仓库**：每个插件有自己的仓库；涉及逆向契约、账号池运营细节的
+   插件使用**私有仓库**，经 git submodule 挂到 `plugins/<name>/`，或本地检出
+   后以 `--plugins <dir>` 指向加载。`[source].repository` 记录出处。
+3. **sidecar = 许可证隔离**：进程边界使插件构成独立作品，宿主 AGPL 不传染；
+   私有插件合法合规。
+4. **永不入库清单**（对一切仓库生效）：上游抓包证据、账号凭据、cookies、
+   账号池数据、`.env`。插件私有状态只存本地（见第 6 节账号池边界）。
+5. **诚实边界**：私有仓库防内容泄漏，不防仓库本身误公开；宿主公开文档描述
+   通用方法论（如 2api-Template 公开内容），被保护的是具体上游契约与运营细节。
