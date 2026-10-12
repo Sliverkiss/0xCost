@@ -55,11 +55,18 @@ impl PluginInstance {
     pub fn new(manifest: PluginManifest, key_source: KeySource) -> Self {
         let endpoint = match manifest.entry.mode {
             EntryMode::External => {
-                let port = manifest.entry.port.expect("validated external manifests carry a port");
+                let port = manifest
+                    .entry
+                    .port
+                    .expect("validated external manifests carry a port");
                 format!("http://127.0.0.1:{port}")
             }
             EntryMode::Remote => {
-                let mut url = manifest.entry.url.clone().expect("validated remote manifests carry a url");
+                let mut url = manifest
+                    .entry
+                    .url
+                    .clone()
+                    .expect("validated remote manifests carry a url");
                 while url.ends_with('/') {
                     url.pop();
                 }
@@ -137,7 +144,13 @@ impl PluginInstance {
     /// model routing + the plugin's `unknown_model` policy).
     pub fn route(&self, requested_model: &str) -> RouteDecision {
         // Exact match on the full prefixed id first.
-        if self.manifest.routing.models.iter().any(|m| m == requested_model) {
+        if self
+            .manifest
+            .routing
+            .models
+            .iter()
+            .any(|m| m == requested_model)
+        {
             let upstream_model = requested_model
                 .split_once('/')
                 .map(|(_, rest)| rest.to_string())
@@ -213,7 +226,10 @@ keys = "env:MIMO2API_API_KEYS"
     }
 
     fn instance() -> PluginInstance {
-        PluginInstance::new(external_manifest(), KeySource::Env("MIMO2API_API_KEYS".into()))
+        PluginInstance::new(
+            external_manifest(),
+            KeySource::Env("MIMO2API_API_KEYS".into()),
+        )
     }
 
     #[test]
@@ -294,14 +310,21 @@ keys = "env:MIMO2API_API_KEYS"
         m.routing.enabled = false;
         let inst = PluginInstance::new(m, KeySource::None);
         *inst.state_handle().lock().unwrap() = PluginState::Serving;
-        assert!(!inst.is_servable(), "routing.enabled=false must exclude from serving");
+        assert!(
+            !inst.is_servable(),
+            "routing.enabled=false must exclude from serving"
+        );
     }
 
     #[test]
     fn capabilities_and_models_reflected() {
         let inst = instance();
-        assert!(inst.capabilities().contains(oxcost_contract::Capability::Chat));
-        assert!(!inst.capabilities().contains(oxcost_contract::Capability::WebSearch));
+        assert!(inst
+            .capabilities()
+            .contains(oxcost_contract::Capability::Chat));
+        assert!(!inst
+            .capabilities()
+            .contains(oxcost_contract::Capability::WebSearch));
         assert_eq!(inst.advertised_models().len(), 2);
         assert_eq!(inst.id(), "dev.oxcost.mimo2api");
         assert_eq!(inst.name(), "mimo2api");

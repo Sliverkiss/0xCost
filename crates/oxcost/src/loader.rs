@@ -9,13 +9,21 @@ use std::path::{Path, PathBuf};
 pub struct Cli {
     /// Directory scanned for `<dir>/*/plugin.toml`.
     pub plugins_dir: PathBuf,
+    /// Listen address for the axum server (default `127.0.0.1:8080`).
+    pub listen: String,
+    /// Load, validate, print the registration table, and exit without
+    /// serving (manifest check mode).
+    pub check: bool,
 }
 
 impl Cli {
-    /// Parse argv; `--plugins <dir>` (default `plugins/`). Errors are
-    /// returned as message strings for `main` to print and exit 2.
+    /// Parse argv; `--plugins <dir>` (default `plugins/`), `--listen <addr>`,
+    /// and `--check`. Errors are returned as message strings for `main` to
+    /// print and exit 2.
     pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut plugins_dir = PathBuf::from("plugins");
+        let mut listen = String::from("127.0.0.1:8080");
+        let mut check = false;
         let mut iter = args.iter();
         // Skip argv[0].
         iter.next();
@@ -27,9 +35,18 @@ impl Cli {
                     };
                     plugins_dir = PathBuf::from(value);
                 }
+                "--listen" => {
+                    let Some(value) = iter.next() else {
+                        return Err("--listen requires an address".into());
+                    };
+                    listen = value.clone();
+                }
+                "--check" => {
+                    check = true;
+                }
                 "--config" => {
-                    // Accepted for forward compatibility (host config file
-                    // arrives with M1.5); must still carry a value.
+                    // Accepted for forward compatibility (host config file);
+                    // must still carry a value.
                     if iter.next().is_none() {
                         return Err("--config requires a file path".into());
                     }
@@ -37,7 +54,11 @@ impl Cli {
                 other => return Err(format!("unknown argument `{other}`")),
             }
         }
-        Ok(Self { plugins_dir })
+        Ok(Self {
+            plugins_dir,
+            listen,
+            check,
+        })
     }
 }
 
@@ -126,21 +147,6 @@ pub fn print_registration_table(registry: &PluginRegistry) {
     }
 }
 
-/// axum server stub (M1.5 wiring point). The binary does not serve yet;
-/// this function exists so the axum assembly surface is exercised.
-pub async fn serve() -> std::io::Result<()> {
-    let app = axum::Router::new();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    axum::serve(listener, app).await
-}
-
-// Keep the stub reachable for tests/future wiring without dead-code
-// warnings in the M1 binary.
-#[allow(dead_code)]
-fn _serve_reachable() -> impl std::future::Future<Output = std::io::Result<()>> {
-    serve()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +155,8 @@ mod tests {
     fn cli_defaults_and_flags() {
         let cli = Cli::parse(&["oxcost".into()]).unwrap();
         assert_eq!(cli.plugins_dir, PathBuf::from("plugins"));
+        assert_eq!(cli.listen, "127.0.0.1:8080");
+        assert!(!cli.check);
 
         let cli = Cli::parse(&[
             "oxcost".into(),
@@ -157,6 +165,16 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.plugins_dir, PathBuf::from("/tmp/my-plugins"));
+
+        let cli =
+            Cli::parse(&["oxcost".into(), "--listen".into(), "127.0.0.1:9090".into()]).unwrap();
+        assert_eq!(cli.listen, "127.0.0.1:9090");
+
+        let cli = Cli::parse(&["oxcost".into(), "--check".into()]).unwrap();
+        assert!(cli.check);
+
+        // --listen requires a value.
+        assert!(Cli::parse(&["oxcost".into(), "--listen".into()]).is_err());
 
         // --config accepted with a value.
         assert!(Cli::parse(&["oxcost".into(), "--config".into(), "x.toml".into()]).is_ok());

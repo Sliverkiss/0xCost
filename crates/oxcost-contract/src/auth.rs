@@ -18,7 +18,9 @@ pub enum AuthResolveError {
     #[error("auth.keys must be an `env:VAR_NAME` reference, got `{0}`")]
     NotEnvRef(String),
     /// The referenced environment variable is unset.
-    #[error("auth reference `{reference}` cannot be resolved: environment variable `{var}` is not set")]
+    #[error(
+        "auth reference `{reference}` cannot be resolved: environment variable `{var}` is not set"
+    )]
     MissingEnv {
         /// The raw reference, e.g. `env:MIMO2API_API_KEYS`.
         reference: String,
@@ -112,7 +114,12 @@ keys = "env:MIMO2API_API_KEYS"
     fn present_env_resolves_to_var_name() {
         let m = manifest_with("env:MIMO2API_API_KEYS");
         let vars = [("MIMO2API_API_KEYS".to_string(), "redacted".to_string())];
-        let resolver = |name: &str| vars.iter().find(|(k, _)| k == name).cloned().map(|(_, v)| v);
+        let resolver = |name: &str| {
+            vars.iter()
+                .find(|(k, _)| k == name)
+                .cloned()
+                .map(|(_, v)| v)
+        };
         assert_eq!(resolve_auth(&m, resolver).unwrap(), "MIMO2API_API_KEYS");
     }
 

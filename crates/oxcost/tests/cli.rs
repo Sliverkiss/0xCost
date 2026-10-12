@@ -38,6 +38,7 @@ fn bin() -> Command {
 #[test]
 fn example_remote_registers_and_exits_zero() {
     bin()
+        .arg("--check")
         .arg("--plugins")
         .arg(VALID_DIR)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -61,6 +62,7 @@ fn invalid_manifest_reports_specific_validation_error() {
     std::fs::write(plugin_dir.join("plugin.toml"), INVALID_TOML).expect("write fixture");
 
     bin()
+        .arg("--check")
         .arg("--plugins")
         .arg(&dir)
         .env("RUST_LOG", "off")
