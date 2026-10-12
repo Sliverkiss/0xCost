@@ -5,6 +5,7 @@ members = [
     "crates/oxcost-contract",
     "crates/oxcost-core",
     "crates/oxcost-protocol",
+    "crates/oxcost-sdk",
 ]
 
 [workspace.package]
@@ -16,6 +17,7 @@ license = "AGPL-3.0"
 oxcost-contract = { path = "crates/oxcost-contract" }
 oxcost-core = { path = "crates/oxcost-core" }
 oxcost-protocol = { path = "crates/oxcost-protocol" }
+oxcost-sdk = { path = "crates/oxcost-sdk" }
 
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }

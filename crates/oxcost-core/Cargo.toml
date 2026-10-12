@@ -7,4 +7,9 @@ license.workspace = true
 
 [dependencies]
 oxcost-contract = { workspace = true }
+oxcost-sdk = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true }

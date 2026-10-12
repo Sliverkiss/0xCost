@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 oxcost-contract = { workspace = true }
 oxcost-core = { workspace = true }
+oxcost-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

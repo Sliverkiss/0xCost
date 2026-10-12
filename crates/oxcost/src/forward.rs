@@ -54,16 +54,18 @@ pub enum HostError {
 
 impl IntoResponse for HostError {
     fn into_response(self) -> Response {
+        // §4 (revised M3): type strings match OpenAI's actual spellings —
+        // 4xx request/auth/model classes are `invalid_request_error`.
         let (status, body) = match self {
             HostError::InvalidRequest(msg) => (
                 StatusCode::BAD_REQUEST,
-                openai_error(&msg, "invalid_request", "invalid_request"),
+                openai_error(&msg, "invalid_request_error", "invalid_request"),
             ),
             HostError::ModelNotFound(model) => (
                 StatusCode::NOT_FOUND,
                 openai_error(
                     &format!("model `{model}` not found on any registered plugin"),
-                    "invalid_request",
+                    "invalid_request_error",
                     "model_not_found",
                 ),
             ),
@@ -75,7 +77,7 @@ impl IntoResponse for HostError {
                 StatusCode::UNAUTHORIZED,
                 openai_error(
                     "missing or invalid API key",
-                    "invalid_request",
+                    "invalid_request_error",
                     "invalid_api_key",
                 ),
             ),
@@ -113,10 +115,76 @@ pub fn rewrite_model(body: &Value, upstream_model: &str) -> String {
 /// Resolve the plugin key for the Authorization header from the instance's
 /// key source. Key material is read here and never logged.
 fn plugin_key(instance: &PluginInstance) -> Option<String> {
-    match instance.key_source() {
+    match instance.key_source()? {
         KeySource::Env(var) => std::env::var(var).ok(),
-        // host-spawn keyring arrives in M3.
+        // host-spawn keyring arrives with host-spawn support (M-later).
         KeySource::HostGenerated | KeySource::None => None,
+    }
+}
+
+/// Dispatch one chat request through an SDK plugin (contract §10): strip
+/// the `name/` prefix (already resolved by the caller), call the trait,
+/// map the outcome onto a Response with the same byte-faithful semantics
+/// as the sidecar path.
+async fn dispatch_sdk(
+    plugin: std::sync::Arc<dyn oxcost_sdk::OxcostPlugin>,
+    upstream_model: &str,
+    body: &Value,
+) -> Result<Response, HostError> {
+    // The request the plugin sees carries the unprefixed model id — same
+    // view an external sidecar gets (§5 model routing).
+    let mut outbound = body.clone();
+    outbound["model"] = Value::String(upstream_model.to_string());
+    let req = oxcost_sdk::ChatRequest::new(outbound).map_err(|e| {
+        // A body that passed host validation should never fail plugin-side
+        // validation; surface as 400 with the plugin's parameter detail.
+        HostError::InvalidRequest(e.message)
+    })?;
+
+    let ctx = oxcost_sdk::RequestContext::default();
+    match plugin.chat(req, ctx).await {
+        Ok(oxcost_sdk::ChatOutcome::Json(value)) => {
+            let bytes = value.to_string();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(bytes))
+                .map_err(|e| HostError::Upstream(format!("relay failed: {e}")))
+        }
+        Ok(oxcost_sdk::ChatOutcome::Sse(bytes)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(bytes))
+            .map_err(|e| HostError::Upstream(format!("stream relay failed: {e}"))),
+        // §4 error mapping: the plugin's typed error becomes the OpenAI
+        // error body verbatim (same strings a sidecar would emit).
+        Err(e) => {
+            let status =
+                StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let payload = openai_error(&e.message, &e.err_type, e.code.as_deref().unwrap_or(""));
+            let payload = set_error_param(payload, e.param.as_deref());
+            (status, axum::Json(payload)).into_response().pipe_ok()
+        }
+    }
+}
+
+/// Attach the `param` field to an error body when present.
+fn set_error_param(mut body: Value, param: Option<&str>) -> Value {
+    if let Some(p) = param {
+        body["error"]["param"] = Value::String(p.to_string());
+    }
+    body
+}
+
+/// Helper trait: keep `Result<Response, HostError>` ergonomics in
+/// `dispatch_sdk` without nesting matches.
+trait IntoResult {
+    fn pipe_ok(self) -> Result<Response, HostError>;
+}
+
+impl IntoResult for Response {
+    fn pipe_ok(self) -> Result<Response, HostError> {
+        Ok(self)
     }
 }
 
@@ -124,7 +192,8 @@ fn plugin_key(instance: &PluginInstance) -> Option<String> {
 ///
 /// - Resolves model → owning plugin (404 when none).
 /// - Rewrites `model` to the upstream id, relays everything else verbatim.
-/// - Injects `Authorization: Bearer <plugin key>`.
+/// - Sidecar form: HTTP with `Authorization: Bearer <plugin key>`.
+/// - SDK form: direct in-process trait call (contract §10).
 /// - `stream: false` → JSON pass-through; `stream: true` → SSE bytes
 ///   relayed as they arrive (byte-faithful).
 pub async fn forward_chat(
@@ -164,13 +233,43 @@ pub async fn forward_chat(
         return Err(HostError::ModelNotFound(model));
     };
 
-    // Outbound request.
+    // Transport dispatch: the single seam where plugin forms differ.
+    match instance.handle() {
+        oxcost_core::PluginHandle::Sdk(plugin) => {
+            dispatch_sdk(Arc::clone(plugin), &upstream_model, &body).await
+        }
+        oxcost_core::PluginHandle::Sidecar { .. } => {
+            forward_sidecar(
+                &instance,
+                &upstream_model,
+                &body,
+                is_stream_flag(&body),
+                state.config.request_timeout_secs,
+            )
+            .await
+        }
+    }
+}
+
+/// Read the `stream` flag for the sidecar path (the SDK path asks the
+/// plugin's own request wrapper instead).
+fn is_stream_flag(body: &Value) -> bool {
+    body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Sidecar transport: build the outbound HTTP request, relay the response
+/// (JSON bytes or SSE stream, byte-faithful).
+async fn forward_sidecar(
+    instance: &PluginInstance,
+    upstream_model: &str,
+    body: &Value,
+    is_stream: bool,
+    timeout_secs: u64,
+) -> Result<Response, HostError> {
     let url = instance.url_for("/v1/chat/completions");
-    let out_body = rewrite_model(&body, &upstream_model);
+    let out_body = rewrite_model(body, upstream_model);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            state.config.request_timeout_secs,
-        ))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| HostError::Upstream(format!("client build failed: {e}")))?;
 
@@ -178,7 +277,7 @@ pub async fn forward_chat(
         .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
         .body(out_body);
-    if let Some(key) = plugin_key(&instance) {
+    if let Some(key) = plugin_key(instance) {
         request = request.bearer_auth(key);
     }
 
@@ -189,7 +288,6 @@ pub async fn forward_chat(
 
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .map_err(|e| HostError::Upstream(format!("bad upstream status: {e}")))?;
-    let is_stream = wants_stream(&body);
 
     // Relay client-relevant headers; never relay plugin auth upstream-ward
     // and never leak plugin identity headers.
@@ -310,5 +408,29 @@ mod tests {
         assert_eq!(e["error"]["type"], "upstream_error");
         assert_eq!(e["error"]["code"], "upstream_error");
         assert!(e["error"]["param"].is_null());
+    }
+
+    #[test]
+    fn host_error_type_strings_match_openai() {
+        // §4 (revised M3): 4xx request/auth/model classes spell
+        // `invalid_request_error`, matching OpenAI's actual strings.
+        use http_body_util::BodyExt;
+        async fn error_body(e: HostError) -> Value {
+            let response = e.into_response();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let body = runtime.block_on(error_body(HostError::InvalidRequest("bad".into())));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        let body = runtime.block_on(error_body(HostError::ModelNotFound("m".into())));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "model_not_found");
+        let body = runtime.block_on(error_body(HostError::Unauthorized));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_api_key");
+        let body = runtime.block_on(error_body(HostError::Upstream("u".into())));
+        assert_eq!(body["error"]["type"], "upstream_error");
     }
 }

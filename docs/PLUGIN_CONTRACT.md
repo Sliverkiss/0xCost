@@ -173,14 +173,23 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 不属于独立能力，仍归 `chat`。`batches` 依赖 `files`，宿主校验依赖关系。
 
 **错误语义**（宿主依赖此映射对外统一报错，错误体一律 OpenAI 格式
-`{"error": {"message": ..., "type": ..., "code": ...}}`，插件不得透传上游哨兵文本）：
+`{"error": {"message": ..., "type": ..., "param": ..., "code": ...}}`，
+`type` 取值必须是下表列出的固定字符串（对齐 OpenAI 真实错误拼写，如
+`invalid_request_error`——不是 `invalid_request`），插件不得透传上游哨兵文本）：
 
-| 上游情况 | 插件响应 |
-|---|---|
-| 额度/登录墙哨兵（含 HTTP 200 但文本命中哨兵特征） | `429`，type `rate_limit_error` |
-| 上游空响应 / 非 2xx | `502`，type `upstream_error` |
-| 空 `messages` / 非法参数 | `400`，type `invalid_request` |
-| 流式中途出错 | 以尾帧表达（`finish_reason` + `[DONE]`），不裸断连 |
+| 上游情况 | 插件响应 | 固定 `type` 字符串 |
+|---|---|---|
+| 额度/登录墙哨兵（含 HTTP 200 但文本命中哨兵特征） | `429` | `rate_limit_error` |
+| 上游空响应 / 非 2xx | `502` | `upstream_error` |
+| 空 `messages` / 非法参数 | `400` | `invalid_request_error` |
+| 未知模型（路由层，§5） | `404` | `invalid_request_error`（`code: model_not_found`） |
+| 鉴权失败 | `401` | `invalid_request_error`（`code: invalid_api_key`） |
+| 流式中途出错 | 以尾帧表达（`finish_reason` + `[DONE]`），不裸断连 | — |
+
+（M2 对齐发现，2026-10-12：mimo2api 与 OpenAI 真实 API 均拼作
+`invalid_request_error`，服务端一般错误的 `api_error` 拼写同时确认；契约自此
+统一采用 OpenAI 的准确字符串。`param` 字段可空（`null`），语义为出错请求参数
+的名字；宿主与插件均应回填该字段。）
 
 **伪流式**：上游不支持流式时，插件切块定时下发 SSE，模拟打字机（首帧延迟 =
 上游响应时间）。上游支持流式则必须真流式。
@@ -262,9 +271,9 @@ repository = "https://github.com/Sliverkiss/mimo2api"
   宿主支持多版本并存，对不支持的清单拒绝注册并说明原因。
 - 协议演进保持**加法**：未来如需其他入口协议（如 Anthropic 格式），以宿主侧
   独立转换模块追加，插件契约不变——所有形态的插件永远只写 OpenAI 协议。
-- **形态路线图**：`host-sdk`（进程内 Rust 插件，M3 实现）→ 动态加载
-  （`dylib`/WASM 沙箱，按需评估）→ 插件市场/分发机制（远期）。每步都以
-  「契约接口不变」为前提。
+- **形态路线图**：`host-sdk`（进程内 Rust 插件，**已实现**，见下方规格）→
+  动态加载（`dylib`/WASM 沙箱，按需评估）→ 插件市场/分发机制（远期）。每步
+  都以「契约接口不变」为前提。
 - 本契约变更走 PR；对存量插件的破坏性变更必须 bump 主版本并给迁移指南。
 - 实验性字段放 `[experimental]` 表内，随时可能移除，不进兼容承诺。
 
@@ -290,8 +299,22 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 
 - **开源即架构**：宿主本体 AGPL-3.0 开源；host-sdk 插件编译进宿主、随宿主同
   AGPL——法律零摩擦。进程内形态是**性能主力**（零进程、零跳、零序列化边界）。
-- **host-sdk 实现时机**：M3 立起 SDK trait 层（插件注册/能力声明/请求处理接
-  口），不再等首个真实 Rust 插件；性能优先。
+- **host-sdk 已实现（M3，crate `oxcost-sdk`）**，实际规格如下：
+  - **trait 面**：插件作者只实现一个 Rust trait `OxcostPlugin`：
+    `manifest()`（返回代码内清单 `SdkManifest`）、`models()`（服务模型列表）、
+    `chat(req, ctx)`（async，流式/非流式统一返回）、`health()`。web_search/
+    audio 等其余能力为**能力门控的默认方法**（默认返回不支持；实现方按已声明
+    能力覆写）——本版仅保留钩子，不要求实现。
+  - **清单在代码里**：`SdkManifest`（id/name/version/capabilities/model 前缀
+    规则）与 plugin.toml 的 §3 语义**完全一致**，但由代码声明而非 TOML 文件，
+    经同一套校验规则（host 启动时跑 §3 校验，失败拒绝注册）。
+  - **注册是显式的**：`oxcost_sdk::Registry::register(Arc<dyn OxcostPlugin>)`，
+    宿主 main 里调用。不做 inventory/linkme 之类的收集魔术——显式可调试。
+  - **统一命名空间与统一路由**：SDK 插件与 sidecar 形态共用 `插件名/模型名`
+    前缀规则、`unknown_model` 策略、能力白名单与 `§5` 宿主承诺；宿主内部以
+    `PluginHandle` 枚举统一两种形态，路由/鉴权/聚合/错误映射层对形态无感。
+  - **sample-echo**：宿主内置一个仅供测试的合成 SDK 插件（确定性回声响应，
+    明确标注非真实功能），作为离线测试 fixture 驱动 SDK 路径的宿主测试。
 - **sidecar 的定位**：隐私与异构的后卫——敏感插件（逆向契约、账号运营）走
   sidecar/external 进程隔离，隐私边界（§11）不受 host-sdk 开源影响（AGPL 只
   约束编译进宿主的部分）；任意语言插件与存量 2api 也走此形态。
