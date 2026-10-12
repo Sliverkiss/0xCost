@@ -1,0 +1,11 @@
+0:{"scope":"","o":[],"l":false,"q":"","x":"d"}
+1:HL["/_next/static/media/569ce4b8f30dc12b-s.p.woff2","font",{"crossOrigin":"","type":"font/woff2"}]
+3:T2b4,%
+4:{"surface":"claude-opus-5.5","label":"Claude Opus 5.5","family":"anthropic","tier":"frontier","aaRank":1,"intelligenceIndex":61.2,"scoreOverdue":false,"priceIn":3,"priceOut":15,"isFree":false,"promo":false,"limited":false,"livePrice":true,"inputModalities":["text","image","file"],"outputModalities":["text"],"speedBuild":null,"availableAt":null,"freeUntil":null}
+{"surface":"glm-5.3-flash","label":"GLM 5.3 Flash","family":"z-ai","tier":"value","aaRank":22,"intelligenceIndex":41.1,"scoreOverdue":false,"priceIn":0.05,"priceOut":0.3,"isFree":false,"promo":false,"limited":false,"livePrice":false,"inputModalities":["text","image"],"outputModalities":["text"],"speedBuild":null,"availableAt":null,"freeUntil":null}
+5:I["9131",["820","static/chunks/app/models/page-8d02.js"],"",""]
+6:{"surface":"claude-haiku-5.5:free","label":"Claude Haiku 5.5","family":"anthropic","tier":"value","aaRank":30,"intelligenceIndex":43.3950199670746,"scoreOverdue":false,"priceIn":0,"priceOut":0,"isFree":true,"promo":true,"limited":false,"livePrice":false,"inputModalities":["text","image"],"outputModalities":"$4:1:props:children:1:props:rows:4:outputModalities","speedBuild":null,"availableAt":null,"freeUntil":"2026-10-15T13:00:00+00:00"}
+{"surface":"deepseek-v4.1-flash:free","label":"DeepSeek V4.1 Flash","family":"deepseek","tier":"value","aaRank":31,"intelligenceIndex":39.456167472527,"scoreOverdue":false,"priceIn":0,"priceOut":0,"isFree":true,"promo":false,"limited":false,"livePrice":false,"inputModalities":["text","image"],"outputModalities":"$4:1:props:children:1:props:rows:4:outputModalities","speedBuild":null,"availableAt":null,"freeUntil":null}
+{"surface":"mimo-v2.6-flash:free","label":"MiMo V2.6 Flash","family":"xiaomi","tier":"value","aaRank":38,"intelligenceIndex":37.8843590141754,"scoreOverdue":false,"priceIn":0,"priceOut":0,"isFree":true,"promo":false,"limited":false,"livePrice":false,"inputModalities":["text","image","audio","video"],"outputModalities":"$4:1:props:children:1:props:rows:4:outputModalities","speedBuild":null,"availableAt":null,"freeUntil":null}
+7:{"serverNow":"2026-10-12T05:30:18.826Z"}
+8:T88,

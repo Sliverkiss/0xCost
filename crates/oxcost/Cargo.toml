@@ -9,6 +9,7 @@ license.workspace = true
 oxcost-contract = { workspace = true }
 oxcost-core = { workspace = true }
 oxcost-sdk = { workspace = true }
+oxcost-plugin-tokenharbor = { path = "../../plugins-in-process/tokenharbor" }
 axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

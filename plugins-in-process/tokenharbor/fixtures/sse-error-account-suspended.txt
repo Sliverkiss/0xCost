@@ -1,0 +1,3 @@
+event: error
+data: {"code":"account_suspended","message":"Your account is suspended. Reply to the email we sent you about it, or write to support@tokenharbor.ai, and we'll take another look."}
+

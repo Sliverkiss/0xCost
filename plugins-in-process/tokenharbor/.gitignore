@@ -1,0 +1,7 @@
+# TokenHarbor plugin-private state — NOT committed (contract §3/§11).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.local

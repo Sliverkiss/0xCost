@@ -1,0 +1,32 @@
+[package]
+name = "oxcost-plugin-tokenharbor"
+description = "TokenHarbor host-sdk plugin: tokenharbor.ai web chat → OpenAI protocol inside the host process (contract §10)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+oxcost-contract = { workspace = true }
+oxcost-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+futures-util = "0.3.34"
+
+[features]
+default = []
+# Live end-to-end test (tests/live_e2e.rs): opt-in, never in gates.
+# Run manually: TH_LIVE_E2E=1 TH_ACCOUNT_1_EMAIL=… TH_ACCOUNT_1_PASSWORD=… \
+#   cargo test -p oxcost-plugin-tokenharbor --test live_e2e -- --ignored
+# (marked #[ignore]; skipped by default and in every gate)
+live-e2e = []
+
+[dev-dependencies]
+tempfile = "3"
+axum = { workspace = true }
