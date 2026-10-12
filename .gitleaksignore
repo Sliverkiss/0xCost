@@ -1,0 +1,14 @@
+# gitleaks baseline (R1W1 A4): reviewed false positives only.
+# Zero tolerance holds — any NEW finding fails the gate. Each entry was
+# individually reviewed; details in docs/R1W1_NOTES.md.
+#
+# Supabase anon key: public browser constant shipped in tokenharbor.ai's
+# web bundle, documented as "not a secret" in the plugin's README.
+e3886917d58ee46703ccb514e71513650d9b3285:plugins-in-process/tokenharbor/src/auth.rs:jwt:33
+# e2e script's negative-path test literal (expects 401).
+bf00169420407cdfb3666c6dc17ca8cd315829f6:scripts/e2e-mimo2api.sh:curl-auth-header:124
+# manifest validation test fixture (the literal-secret rejection test).
+4ca2a9897d9f45c07478815ad7a2d0d991b07d80:crates/oxcost-contract/tests/manifest_rules.rs:generic-api-key:150
+# README example placeholders.
+df1ab35b872ecd0c046d23a421fb59c50f6385df:README.md:curl-auth-header:81
+df1ab35b872ecd0c046d23a421fb59c50f6385df:README.md:curl-auth-header:83

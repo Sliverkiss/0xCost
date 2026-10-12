@@ -60,11 +60,20 @@ pub struct HostConfigFile {
 impl HostConfigFile {
     /// Parse TOML text. Syntax and shape errors include TOML line/column
     /// positions when available (toml's Display embeds them).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the document is not valid TOML or
+    /// does not match the host-config schema.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         toml::from_str(text).map_err(|e| ConfigError(format!("{e}")))
     }
 
     /// Load and parse a config file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the file cannot be read or parsed.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ConfigError(format!("cannot read {}: {e}", path.display())))?;
@@ -108,6 +117,7 @@ impl HostConfigFile {
     /// Effective `enabled` for one plugin id: config override or the
     /// manifest's value when no section exists. Exported for tests and
     /// for callers that need the decision without mutating a manifest.
+    #[must_use]
     pub fn effective_enabled(&self, id: &str, manifest_enabled: bool) -> bool {
         self.plugins.get(id).map_or(manifest_enabled, |s| s.enabled)
     }

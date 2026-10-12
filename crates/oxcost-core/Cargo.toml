@@ -4,6 +4,7 @@ description = "PluginRegistry and plugin lifecycle state machine (pure state, no
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 oxcost-contract = { workspace = true }

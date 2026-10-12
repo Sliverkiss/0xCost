@@ -4,6 +4,7 @@ description = "In-process plugin SDK: the OxcostPlugin trait, code-declared mani
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 oxcost-contract = { workspace = true }

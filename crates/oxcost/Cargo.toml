@@ -4,6 +4,7 @@ description = "OxCost host binary: CLI, manifest loading, axum assembly"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 oxcost-contract = { workspace = true }

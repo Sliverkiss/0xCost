@@ -15,6 +15,10 @@ members = [
 edition = "2021"
 version = "0.1.0"
 license = "AGPL-3.0"
+# Local deployment only (never published to crates.io). Also marks
+# members private for cargo-deny's wildcard lint: internal path deps
+# carry no version req.
+publish = false
 
 [workspace.dependencies]
 oxcost-contract = { path = "crates/oxcost-contract" }

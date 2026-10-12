@@ -72,6 +72,11 @@ async fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
     registry.drain()
 }
 
+// Host assembly: config resolution + plugin loading + serving, one
+// linear top-to-bottom flow. Too long for the pedantic line budget by
+// nature (assembly, not logic — the pieces live in the library crate);
+// splitting it would only obscure the startup sequence.
+#[allow(clippy::too_many_lines)]
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -103,7 +108,7 @@ fn main() {
     let mut config = HostConfig::dev_default();
     if let Some(cfg) = &file_config {
         if let Some(bind) = &cfg.server.bind {
-            config.listen = bind.clone();
+            config.listen.clone_from(bind);
         }
         let keys = cfg.resolve_api_keys();
         if !keys.is_empty() {
