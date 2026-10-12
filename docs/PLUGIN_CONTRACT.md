@@ -260,7 +260,10 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 - `manifestVersion` / `apiVersion` 语义：**主版本不兼容、次版本向后兼容**。
   宿主支持多版本并存，对不支持的清单拒绝注册并说明原因。
 - 协议演进保持**加法**：未来如需其他入口协议（如 Anthropic 格式），以宿主侧
-  独立转换模块追加，sidecar 契约不变——插件永远只写 OpenAI 协议。
+  独立转换模块追加，插件契约不变——所有形态的插件永远只写 OpenAI 协议。
+- **形态路线图**：`host-sdk`（进程内 Rust 插件，M3 实现）→ 动态加载
+  （`dylib`/WASM 沙箱，按需评估）→ 插件市场/分发机制（远期）。每步都以
+  「契约接口不变」为前提。
 - 本契约变更走 PR；对存量插件的破坏性变更必须 bump 主版本并给迁移指南。
 - 实验性字段放 `[experimental]` 表内，随时可能移除，不进兼容承诺。
 
@@ -279,19 +282,20 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 
 | 形态 | 进程 | 开销 | 适用 |
 |---|---|---|---|
-| `host-spawn` | 宿主拉起的 sidecar | ~10-20MB RSS/个；localhost 一跳 ~0.2ms | 任意语言插件，默认形态 |
+| `host-sdk` | **编译进宿主**（一等公民） | 零进程、零跳、最优性能 | 开源 Rust 插件，性能主力 |
+| `host-spawn` | 宿主拉起的 sidecar | ~10-20MB RSS/个；localhost 一跳 ~0.2ms | 任意语言插件 |
 | `external` | 独立部署的 sidecar | 同上（宿主不管理进程） | 存量 2api（mimo2api） |
 | `remote` | 无进程，纯转发 | 零本地开销 | 外部 OpenAI 兼容端点 |
-| `host-sdk`（路线图） | 编译进宿主 | 零进程、零跳 | **可信且开源**的轻量 Rust 插件 |
 
-- **host-sdk 实现时机**：首个真实 Rust 插件出现时（M 系列），不在骨架期预建
-  第二套运行时（避免过度设计）。
-- **host-sdk 的两个绑定代价**（sidecar 模式不存在）：进程内代码随宿主 AGPL
-  **必须开源**——隐私优先的敏感插件应继续用 sidecar；崩溃域共享，一个插件
-  panic 影响宿主。因此形态选择是**分插件而治**：可信开源插件走 host-sdk，
-  敏感/异构插件走 sidecar，存量走 external/remote。
-- localhost 进程边界的延迟（~0.2ms）相对上游真实耗时（500ms-60s）占比
-  ~0.01%，隔离收益（崩溃域/安全域/许可证域）远大于开销。
+- **开源即架构**：宿主本体 AGPL-3.0 开源；host-sdk 插件编译进宿主、随宿主同
+  AGPL——法律零摩擦。进程内形态是**性能主力**（零进程、零跳、零序列化边界）。
+- **host-sdk 实现时机**：M3 立起 SDK trait 层（插件注册/能力声明/请求处理接
+  口），不再等首个真实 Rust 插件；性能优先。
+- **sidecar 的定位**：隐私与异构的后卫——敏感插件（逆向契约、账号运营）走
+  sidecar/external 进程隔离，隐私边界（§11）不受 host-sdk 开源影响（AGPL 只
+  约束编译进宿主的部分）；任意语言插件与存量 2api 也走此形态。
+- **形态选择 = 分插件而治**：开源且性能敏感走 host-sdk；敏感/异构走
+  sidecar；存量走 external；外部端点走 remote。
 
 ## 11. 插件仓库与隐私边界
 
