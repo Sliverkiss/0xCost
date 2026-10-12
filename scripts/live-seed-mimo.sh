@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-MIMO_LIVE_KEY="${MIMO_LIVE_KEY:-mimo2api:accounts:18278724616}"
+MIMO_LIVE_KEY="${MIMO_LIVE_KEY:-mimo2api:accounts:<phone>}"
 DB_DIR="${DB_DIR:-/tmp/oxcost-mimo-live}"
 
 need() { [[ -n "${!1:-}" ]] || { echo "live-seed-mimo: $1 is not set" >&2; return 1; }; }
