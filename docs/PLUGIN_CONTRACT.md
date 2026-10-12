@@ -162,7 +162,7 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 | `POST /v1/files` 等 | 【files·实验性】文件 CRUD（目的域：batches/大文件 STT） |
 | `POST /v1/batches` + `GET /v1/batches/{id}` | 【batches·实验性】异步批量任务，依赖 files 能力 |
 | `POST /v1/realtime/sessions` | 【realtime·实验性】语音实时会话（WebSocket 透传） |
-| `GET /v1/models` | 返回与 `plugin.toml` 声明一致的真实目录 |
+| 模型目录 | 返回与 `plugin.toml` 声明一致的真实目录，且为宿主的**运行时真相源**（宿主按 TTL 动态拉取聚合，见 §5 动态模型目录）；目录变化时宿主缓存自动跟进 |
 | `GET /healthz` | `200 {"status":"ok"}` 为健康 |
 
 **能力分层与裁剪规则**：能力分**核心**（稳定 OpenAI 标准，契约完整承诺）与
@@ -204,6 +204,7 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 | 入口 | 单一地址、单一 key，OpenAI 协议：`POST /v1/chat/completions`、`GET /v1/models`、`GET /healthz` |
 | 模型映射 | 宿主支持请求模型名的**别名/通配符映射**（`*`、`前缀*`、`*后缀`），可绑定目标插件；映射发生在路由解析之前，映射后的名字按下一行规则路由 |
 | 模型路由 | `插件名/模型名` 精确路由；`/v1/models` 聚合全部已注册插件的健康目录 |
+| 动态模型目录 | 插件的 `/v1/models` 是**运行时真相源**，manifest.models 仅为**声明基线**：宿主启动拉取一次，之后按 TTL（默认 300s，可配，带 jitter）刷新并聚合缓存；刷新失败→继续用上次缓存（stale-while-error），基线中缺失的模型需连续 2 个周期缺失才摘除，基线外新增模型默认信任；目录变更产生事件供路由/负载均衡层消费（M3） |
 | 能力路由 | 宿主按 `/v1/<能力>/...` 端点族转发到声明了该能力的插件（核心+实验性能力同规则）；同一能力多插件时同样适用负载均衡与熔断；无人声明时 `404` |
 | 负载均衡 | 同一模型被多个插件声明时分发，策略三选一：**round-robin**（轮询）/ **fill-first**（填满优先）/ **failover**（优先首选插件，故障才转移）；支持请求级粘性（preferred 插件）；故障自动摘除 |
 | 未知模型 | 宿主按目标插件的 `unknown_model` 策略处理；无匹配插件时 `404 model_not_found` |

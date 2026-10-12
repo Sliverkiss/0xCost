@@ -59,6 +59,10 @@ Per contract §3, mode `external`:
   raw response + timestamp in `plugins/mimo2api/EVIDENCE.md`), prefix rule:
   `mimo2api/<model>`; `unknown_model` — decide `pass` vs `reject` from
   observed behavior, justify the choice in EVIDENCE.md.
+  NOTE (contract §5 dynamic model catalog): the manifest list is the
+  DECLARED BASELINE only — the runtime source of truth is the plugin's
+  `/v1/models`, aggregated+cached by the host. M2 scope: fetch once at
+  startup and serve the aggregate; TTL refresh machinery lands in M3.
 - `[capabilities]` — set `chat = true`; set `audio_speech` /
   `audio_transcription` / `web_search` per what `/v1/models` capability data
   actually reports; anything unverified stays unset.
