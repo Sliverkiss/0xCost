@@ -1,0 +1,3 @@
+event: error
+data: {"code":"model_unavailable","message":"That model isn't available in web chat. Pick another one from the model list."}
+

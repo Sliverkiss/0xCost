@@ -1,0 +1,15 @@
+event: thinking
+data: {"delta":"Let me think about this. "}
+
+event: thinking
+data: {"delta":"The answer is simple. "}
+
+event: chunk
+data: {"delta":"OK"}
+
+event: chunk
+data: {"delta":" — done."}
+
+event: done
+data: {"messageId":"msg_01ABC","model":"xiaomi/mimo-v2.6-flash:free","searchCount":0,"usage":{"inputTokens":12,"outputTokens":3},"billing":"free"}
+
