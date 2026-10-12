@@ -10,7 +10,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use oxcost_sdk::types::{ChatOutcome, ChatRequest, HealthStatus, RequestContext};
 use oxcost_sdk::OxcostPlugin;
@@ -182,7 +181,6 @@ fn sse_response(think: &str, text: &str) -> Vec<u8> {
             {"id": 1, "type": "THINK", "content": think},
             {"id": 2, "type": "RESPONSE", "content": text}
         ]}}})
-        .to_string()
     );
     sse_raw(body.as_bytes())
 }

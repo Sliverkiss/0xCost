@@ -96,6 +96,8 @@ async fn run_chat_empty_pool_is_503_no_accounts() {
 #[test]
 fn outcome_enum_shape() {
     // Type-level sanity: the Done arm carries both success and error.
-    let ok: Result<ChatOutcome, WireError> = Ok(ChatOutcome::Sse(vec![b'x']));
-    assert!(matches!(ok.unwrap(), ChatOutcome::Sse(_)));
+    let outcome: ChatOutcome = ChatOutcome::Sse(vec![b'x']);
+    let ChatOutcome::Sse(_) = outcome else {
+        panic!("expected Sse")
+    };
 }

@@ -67,7 +67,7 @@ fn parse_request_kitchen_sink() {
         vec![
             msg(
                 "user",
-                &format!("You are terse.\n\nSecond system.{SYSTEM_MERGE_SEPARATOR}hello"),
+                format!("You are terse.\n\nSecond system.{SYSTEM_MERGE_SEPARATOR}hello"),
             ),
             msg("assistant", "partial answer"),
             msg("tool", "tool result text"),
@@ -188,7 +188,7 @@ fn parse_request_merges_all_system_messages_into_first_user() {
     assert_messages(
         &req,
         vec![
-            msg("user", &format!("s1\n\ns2\n\ns3{SYSTEM_MERGE_SEPARATOR}u1")),
+            msg("user", format!("s1\n\ns2\n\ns3{SYSTEM_MERGE_SEPARATOR}u1")),
             msg("assistant", "a1"),
             msg("user", "u2"),
         ],
@@ -215,7 +215,7 @@ fn parse_request_system_merge_table() {
             ]}),
             want_msgs: vec![msg(
                 "user",
-                &format!("first\n\nsecond{SYSTEM_MERGE_SEPARATOR}question"),
+                format!("first\n\nsecond{SYSTEM_MERGE_SEPARATOR}question"),
             )],
             want_count: "system_messages=2",
             want_err: "",
@@ -238,7 +238,7 @@ fn parse_request_system_merge_table() {
                 {"role": "user", "content": "u2"}
             ]}),
             want_msgs: vec![
-                msg("user", &format!("mid{SYSTEM_MERGE_SEPARATOR}u1")),
+                msg("user", format!("mid{SYSTEM_MERGE_SEPARATOR}u1")),
                 msg("assistant", "a1"),
                 msg("user", "u2"),
             ],
@@ -252,7 +252,7 @@ fn parse_request_system_merge_table() {
                 {"role": "system", "content": "real"},
                 {"role": "user", "content": "q"}
             ]}),
-            want_msgs: vec![msg("user", &format!("real{SYSTEM_MERGE_SEPARATOR}q"))],
+            want_msgs: vec![msg("user", format!("real{SYSTEM_MERGE_SEPARATOR}q"))],
             want_count: "system_messages=1",
             want_err: "",
         },
@@ -267,7 +267,7 @@ fn parse_request_system_merge_table() {
             ]}),
             want_msgs: vec![msg(
                 "user",
-                &format!("part one\npart two{SYSTEM_MERGE_SEPARATOR}q"),
+                format!("part one\npart two{SYSTEM_MERGE_SEPARATOR}q"),
             )],
             want_count: "system_messages=1",
             want_err: "",
@@ -306,7 +306,7 @@ fn parse_request_system_merge_table() {
     for tc in cases {
         let got = parse(tc.body);
         if !tc.want_err.is_empty() {
-            let err = got.err().expect(tc.name);
+            let err = got.expect_err(tc.name);
             assert!(err.to_string().contains(tc.want_err), "{}: {err}", tc.name);
             continue;
         }
