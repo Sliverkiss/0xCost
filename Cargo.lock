@@ -614,7 +614,10 @@ name = "oxcost-core"
 version = "0.1.0"
 dependencies = [
  "oxcost-contract",
+ "oxcost-sdk",
+ "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

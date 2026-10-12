@@ -1,8 +1,10 @@
-//! PluginInstance: the host's runtime view of one registered plugin — the
-//! resolved endpoint URL, resolved auth key source, capability set, and a
-//! state handle. Pure data; the actual HTTP forwarding lives in the `oxcost`
-//! binary. Kept free of I/O so routing decisions are unit-testable.
+//! PluginInstance: the host's runtime view of one registered plugin —
+//! transport handle (sidecar HTTP vs in-process SDK), routing fields,
+//! capability set, and a state handle. Pure data; the actual dispatch
+//! (HTTP forwarding or SDK trait call) lives in the `oxcost` binary. Kept
+//! free of I/O so routing decisions are unit-testable.
 
+use crate::handle::PluginHandle;
 use crate::lifecycle::PluginState;
 use oxcost_contract::{CapabilitySet, EntryMode, PluginManifest, UnknownModelPolicy};
 use std::sync::{Arc, Mutex};
@@ -35,10 +37,8 @@ pub enum RouteDecision {
 #[derive(Debug)]
 pub struct PluginInstance {
     manifest: PluginManifest,
-    /// Base URL of the plugin's OpenAI surface, e.g. `http://127.0.0.1:21223`.
-    endpoint: String,
-    /// Resolved auth key source.
-    key_source: KeySource,
+    /// Transport handle: how requests reach this plugin's chat surface.
+    handle: PluginHandle,
     capabilities: CapabilitySet,
     /// Shared lifecycle state; the host advances it via the registry/state
     /// machine, the instance reads it when routing.
@@ -46,12 +46,11 @@ pub struct PluginInstance {
 }
 
 impl PluginInstance {
-    /// Build an instance from a validated manifest and its resolved key
-    /// variable. Endpoint URLs are derived from `[entry]`:
+    /// Build a sidecar instance from a validated manifest and its resolved
+    /// key source. Endpoint URLs are derived from `[entry]`:
     /// - external → `http://127.0.0.1:<port>`
     /// - remote   → the declared base url (trailing slashes normalized away)
-    /// - host-spawn → the port the host assigned at spawn (M3 seam: pass
-    ///   `assigned_port` then).
+    /// - host-spawn → the port the host assigned at spawn
     pub fn new(manifest: PluginManifest, key_source: KeySource) -> Self {
         let endpoint = match manifest.entry.mode {
             EntryMode::External => {
@@ -72,13 +71,30 @@ impl PluginInstance {
                 }
                 url
             }
-            EntryMode::HostSpawn => String::new(), // assigned when the host spawns the process (M3)
+            EntryMode::HostSpawn => String::new(), // assigned when the host spawns the process
         };
         let capabilities = CapabilitySet::from_section(&manifest.capabilities);
         Self {
             manifest,
-            endpoint,
-            key_source,
+            handle: PluginHandle::Sidecar {
+                endpoint,
+                key_source,
+            },
+            capabilities,
+            state: Arc::new(Mutex::new(PluginState::Registered)),
+        }
+    }
+
+    /// Build an in-process instance (contract §10): the manifest is the
+    /// SDK manifest converted to the shared contract shape, the handle is
+    /// the trait object itself. No endpoint, no key source — dispatch is a
+    /// direct call.
+    pub fn from_sdk_plugin(plugin: std::sync::Arc<dyn oxcost_sdk::OxcostPlugin>) -> Self {
+        let manifest = plugin.manifest().to_contract_manifest();
+        let capabilities = CapabilitySet::from_section(&manifest.capabilities);
+        Self {
+            manifest,
+            handle: PluginHandle::Sdk(plugin),
             capabilities,
             state: Arc::new(Mutex::new(PluginState::Registered)),
         }
@@ -94,19 +110,36 @@ impl PluginInstance {
         &self.manifest.name
     }
 
-    /// Base endpoint URL (no trailing slash).
+    /// Transport handle (sidecar HTTP vs in-process SDK dispatch).
+    pub fn handle(&self) -> &PluginHandle {
+        &self.handle
+    }
+
+    /// Base endpoint URL (no trailing slash). Empty for SDK plugins —
+    /// they have no endpoint; use [`Self::handle`] for dispatch.
     pub fn endpoint(&self) -> &str {
-        &self.endpoint
+        match &self.handle {
+            PluginHandle::Sidecar { endpoint, .. } => endpoint,
+            PluginHandle::Sdk(_) => "",
+        }
     }
 
     /// Full URL for one route path, e.g. `/v1/chat/completions`.
+    /// Sidecar plugins only; panics on SDK plugins (no endpoint exists —
+    /// call sites dispatch on the handle before reaching for URLs).
     pub fn url_for(&self, path: &str) -> String {
-        format!("{}{}", self.endpoint, path)
+        match &self.handle {
+            PluginHandle::Sidecar { endpoint, .. } => format!("{endpoint}{path}"),
+            PluginHandle::Sdk(_) => panic!("SDK plugins have no endpoint URL"),
+        }
     }
 
-    /// Resolved key source.
-    pub fn key_source(&self) -> &KeySource {
-        &self.key_source
+    /// Resolved key source (sidecar plugins only).
+    pub fn key_source(&self) -> Option<&KeySource> {
+        match &self.handle {
+            PluginHandle::Sidecar { key_source, .. } => Some(key_source),
+            PluginHandle::Sdk(_) => None,
+        }
     }
 
     /// Declared capabilities.
@@ -328,5 +361,89 @@ keys = "env:MIMO2API_API_KEYS"
         assert_eq!(inst.advertised_models().len(), 2);
         assert_eq!(inst.id(), "dev.oxcost.mimo2api");
         assert_eq!(inst.name(), "mimo2api");
+    }
+
+    // ---- SDK-plugin instances (contract §10) ----
+
+    mod sdk {
+        use super::*;
+        use oxcost_sdk::{ChatOutcome, ChatRequest, HealthStatus, ModelDescriptor, PluginError, RequestContext, SampleEcho, SdkManifest};
+
+        /// Unhealthy stub plugin for state tests.
+        struct UnhealthyEcho(SampleEcho);
+
+        impl oxcost_sdk::OxcostPlugin for UnhealthyEcho {
+            fn manifest(&self) -> &SdkManifest {
+                self.0.manifest()
+            }
+            fn models(&self) -> Vec<ModelDescriptor> {
+                self.0.models()
+            }
+            fn chat(
+                &self,
+                req: ChatRequest,
+                ctx: RequestContext,
+            ) -> oxcost_sdk::ChatFuture<'_> {
+                self.0.chat(req, ctx)
+            }
+            fn health(&self) -> HealthStatus {
+                HealthStatus::Unhealthy
+            }
+        }
+
+        #[test]
+        fn sdk_instance_routes_like_sidecar() {
+            let inst = PluginInstance::from_sdk_plugin(Arc::new(SampleEcho::new(&[])));
+            assert_eq!(inst.id(), "dev.oxcost.sample-echo");
+            assert_eq!(inst.name(), "sample-echo");
+            assert!(matches!(inst.handle(), PluginHandle::Sdk(_)));
+            // Same namespace semantics as the sidecar form.
+            assert_eq!(
+                inst.route("sample-echo/echo-1"),
+                RouteDecision::Forward {
+                    upstream_model: "echo-1".into()
+                }
+            );
+            assert_eq!(inst.route("sample-echo/ghost"), RouteDecision::Reject);
+            assert!(inst.capabilities().contains(oxcost_contract::Capability::Chat));
+            assert_eq!(inst.advertised_models(), ["sample-echo/echo-1"]);
+            // No endpoint/key for the in-process form.
+            assert_eq!(inst.endpoint(), "");
+            assert!(inst.key_source().is_none());
+        }
+
+        #[test]
+        fn sdk_instance_lifecycle_works_identically() {
+            let inst = PluginInstance::from_sdk_plugin(Arc::new(SampleEcho::new(&[])));
+            assert_eq!(inst.state(), PluginState::Registered);
+            *inst.state_handle().lock().unwrap() = PluginState::Serving;
+            assert!(inst.is_servable());
+
+            let un = PluginInstance::from_sdk_plugin(Arc::new(UnhealthyEcho(SampleEcho::new(&[]))));
+            *un.state_handle().lock().unwrap() = PluginState::Serving;
+            assert!(un.is_servable(), "health() is read at probe time, not by routing");
+        }
+
+        #[test]
+        fn sdk_handle_chat_dispatch_reaches_plugin() {
+            let inst = PluginInstance::from_sdk_plugin(Arc::new(SampleEcho::new(&[])));
+            let PluginHandle::Sdk(plugin) = inst.handle() else {
+                panic!("expected SDK handle")
+            };
+            let req = ChatRequest::new(serde_json::json!({
+                "model": "echo-1",
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .unwrap();
+            let outcome = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { plugin.chat(req, RequestContext::default()).await });
+            match outcome {
+                Ok(ChatOutcome::Json(v)) => {
+                    assert_eq!(v["choices"][0]["message"]["content"], "echo: ping");
+                }
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        }
     }
 }
