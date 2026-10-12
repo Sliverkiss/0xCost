@@ -65,15 +65,10 @@ fn request_full_roundtrip() {
     .expect("parse full request");
     roundtrip(&req);
 
-    let Some(UserContent::Parts(parts)) = req
-        .messages
-        .first()
-        .map(|m| match m {
-            ChatMessage::User(UserMessage { content }) => Some(content),
-            _ => None,
-        })
-        .flatten()
-    else {
+    let Some(UserContent::Parts(parts)) = req.messages.first().and_then(|m| match m {
+        ChatMessage::User(UserMessage { content }) => Some(content),
+        _ => None,
+    }) else {
         panic!("first message should be multimodal user content");
     };
     assert_eq!(parts.len(), 2);
