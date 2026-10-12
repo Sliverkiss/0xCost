@@ -2,13 +2,13 @@
 
 > OxCost 是 2api 网关的**插件宿主框架**：每个 `*-2api` 项目（把某站点的免费 AI
 > 服务转成 OpenAI 兼容 API 的网关）作为一个插件接入，宿主统一对外提供
-> OpenAI / Anthropic 双协议入口。
+> **OpenAI 协议**入口。
 >
 > 本文档是宿主与插件之间的**完整契约**：接入（manifest）、运行（sidecar 协议）、
 > 行为（验收清单）。插件无论用什么语言实现，满足本契约即可接入。
 >
 > 方法论吸收并致谢：
-> [2api-Template](https://github.com/lza6/2api-Template)（MIT，双协议/不变量/伪流式/错误映射）、
+> [2api-Template](https://github.com/lza6/2api-Template)（MIT，不变量/伪流式/错误映射）、
 > [dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)（manifest 清单与
 > apiVersion 协商模式）。
 
@@ -20,21 +20,23 @@
    封死在插件里。契约是唯一接口，宿主不感知任何插件内部实现。
 2. **Sidecar 第一公民**：插件是独立进程，宿主经 localhost HTTP 与其通信。
    语言无关、崩溃隔离、存量 2api 项目（如 mimo2api）零改造接入。
-3. **零明文密钥**：插件密钥经环境变量或插件私有配置注入；manifest 只允许
+3. **单一协议**：全线只对齐 **OpenAI 协议**（`/v1/chat/completions`）。
+   宿主对外、宿主对插件、插件对上游适配，都是同一套协议语义，不做协议转换层。
+4. **零明文密钥**：插件密钥经环境变量或插件私有配置注入；manifest 只允许
    引用（`env:VAR_NAME`），不允许出现任何字面量密钥。
-4. **目录真实**：插件声明的模型 id 必须来自实测，宿主不合并、不纠正、不编造。
-5. **可验收**：每条契约都是可验证的行为，不是风格偏好。
+5. **目录真实**：插件声明的模型 id 必须来自实测，宿主不合并、不纠正、不编造。
+6. **可验收**：每条契约都是可验证的行为，不是风格偏好。
 
 ## 2. 总体架构
 
 ```
-                 客户端（OpenAI SDK / Claude Code / Cursor / …）
-                    │  单一入口，单一 key
+                 客户端（OpenAI SDK / 各类兼容客户端）
+                    │  单一入口，单一 key，OpenAI 协议
                     ▼
 ┌───────────────────────────────────────────────────────────┐
 │  OxCost 宿主（Rust，单二进制，axum + tokio）                 │
 │                                                           │
-│  protocol 层   OpenAI SSE / Anthropic SSE 双协议（通用层）   │
+│  protocol 层   OpenAI chat completions / SSE（通用层）       │
 │  core 层       注册表 · 模型路由 · 负载均衡 · 熔断 · 限流      │
 │  contract 层   manifest 解析 / 校验 / apiVersion 协商        │
 │  sidecar 层    进程管理（spawn/健康/重启）+ HTTP 客户端       │
@@ -52,7 +54,7 @@ Rust workspace 划分：
 
 ```
 crates/
-├── oxcost-protocol/   双协议编解码与 SSE 流（吸收 2api-Template protocol/ 模块）
+├── oxcost-protocol/   OpenAI 协议编解码与 SSE 流
 ├── oxcost-contract/   manifest 模型、解析、校验、版本协商
 ├── oxcost-core/       注册表、路由、负载均衡、熔断、限流
 └── oxcost/            bin：axum 装配、配置加载、sidecar 进程管理
@@ -110,36 +112,35 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 
 ## 4. 运行契约 —— sidecar 接口
 
-插件作为 sidecar 进程，必须在 `127.0.0.1:<port>` 上提供：
+插件作为 sidecar 进程，必须在 `127.0.0.1:<port>` 上提供（**全部为 OpenAI 协议**）：
 
 | 端点 | 要求 |
 |---|---|
-| `POST /v1/chat/completions` | OpenAI 协议，`stream: true/false`，SSE 帧规范 |
-| `POST /v1/messages` | Anthropic 协议，事件序 `message_start → content_block_* → message_stop` |
-| `POST /v1/messages/count_tokens` | 返回 `{input_tokens:N}`（Claude Code 依赖） |
+| `POST /v1/chat/completions` | `stream: true/false` 均支持；SSE 帧符合 OpenAI 规范 |
 | `GET /v1/models` | 返回与 `plugin.toml` 声明一致的真实目录 |
 | `GET /healthz` | `200 {"status":"ok"}` 为健康 |
 
-**错误语义**（宿主依赖此映射对外统一报错，插件不得透传上游哨兵文本）：
+**错误语义**（宿主依赖此映射对外统一报错，错误体一律 OpenAI 格式
+`{"error": {"message": ..., "type": ..., "code": ...}}`，插件不得透传上游哨兵文本）：
 
 | 上游情况 | 插件响应 |
 |---|---|
-| 额度/登录墙哨兵（含 HTTP 200 但文本命中哨兵特征） | `429` + OpenAI/Anthropic 标准错误体 |
-| 上游空响应 / 非 2xx | `502` + 标准错误体 |
-| 空 `messages` / 非法参数 | `400` + 标准错误体 |
-| 流式中途出错 | 以尾帧表达（OpenAI `finish_reason` / Anthropic `message_stop`），不裸断连 |
+| 额度/登录墙哨兵（含 HTTP 200 但文本命中哨兵特征） | `429`，type `rate_limit_error` |
+| 上游空响应 / 非 2xx | `502`，type `upstream_error` |
+| 空 `messages` / 非法参数 | `400`，type `invalid_request` |
+| 流式中途出错 | 以尾帧表达（`finish_reason` + `[DONE]`），不裸断连 |
 
 **伪流式**：上游不支持流式时，插件切块定时下发 SSE，模拟打字机（首帧延迟 =
 上游响应时间）。上游支持流式则必须真流式。
 
-**鉴权**：插件校验宿主转发的 `Authorization: Bearer` 或 `x-api-key`；未配置
-key 时仅接受来自 `127.0.0.1` 的请求（本地开发零配置）。
+**鉴权**：插件校验宿主转发的 `Authorization: Bearer`；未配置 key 时仅接受来自
+`127.0.0.1` 的请求（本地开发零配置）。
 
 ## 5. 宿主对客户端的承诺（统一外部接口）
 
 | 项 | 承诺 |
 |---|---|
-| 入口 | 单一地址、单一 key，暴露双协议 + `/v1/models` + `/healthz` |
+| 入口 | 单一地址、单一 key，OpenAI 协议：`POST /v1/chat/completions`、`GET /v1/models`、`GET /healthz` |
 | 模型路由 | `插件名/模型名` 精确路由；`/v1/models` 聚合全部已注册插件的健康目录 |
 | 负载均衡 | 同一模型被多个插件声明时轮询/权重分发，故障自动摘除 |
 | 未知模型 | 宿主按目标插件的 `unknown_model` 策略处理；无匹配插件时 `404 model_not_found` |
@@ -162,15 +163,15 @@ key 时仅接受来自 `127.0.0.1` 的请求（本地开发零配置）。
 ## 7. 行为契约 —— 插件验收清单
 
 插件合并进 `plugins/` 或注册到宿主前逐条验收（来源：2api-Template INVARIANTS，
-按 sidecar 场景裁剪）：
+按 OpenAI 单协议 sidecar 场景裁剪）：
 
 - [ ] `plugin.toml` 通过宿主校验，`auth.keys` 为 env 引用
-- [ ] 双协议四端点 + `/healthz` 齐全，流式/非流式均可用
+- [ ] `POST /v1/chat/completions` 流式/非流式均可用，`GET /v1/models`、`/healthz` 齐全
 - [ ] 模型目录实测真实，附 E2E 报告（哪些模型真可用/失败原因）
 - [ ] 契约归档：插件目录内 `PROTOCOL.md` 含上游端点/头/请求体/响应结构与证据
 - [ ] 错误映射符合第 4 节表格；限流检测基于响应文本（上游 200+哨兵很常见）
 - [ ] 鉴权行为符合第 4 节；CORS 默认关闭
-- [ ] 测试离线全绿：非流式/流式 × 双协议、错误映射、鉴权、未知模型（mock 上游）
+- [ ] 测试离线全绿：流式/非流式、错误映射（429/502/400）、鉴权、未知模型（mock 上游）
 - [ ] 无硬编码密钥；日志不泄露密钥
 - [ ] 宿主侧：路由/聚合/熔断行为有集成测试（mock sidecar）
 
@@ -178,13 +179,14 @@ key 时仅接受来自 `127.0.0.1` 的请求（本地开发零配置）。
 
 - `manifestVersion` / `apiVersion` 语义：**主版本不兼容、次版本向后兼容**。
   宿主支持多版本并存，对不支持的清单拒绝注册并说明原因。
+- 协议演进保持**加法**：未来如需其他入口协议（如 Anthropic 格式），以宿主侧
+  独立转换模块追加，sidecar 契约不变——插件永远只写 OpenAI 协议。
 - 本契约变更走 PR；对存量插件的破坏性变更必须 bump 主版本并给迁移指南。
 - 实验性字段放 `[experimental]` 表内，随时可能移除，不进兼容承诺。
 
 ## 9. 第一个插件：mimo2api
 
 - 形态：`entry.mode = "external"`（现有 docker compose 部署原样保留）
-- 已满足项：双协议（`/v1/chat/completions` 已实现；`/v1/messages` 待补——见
-  mimo2api 仓库 M 系列任务）、账号池、`/healthz`、Upstash 存储、环境变量密钥
-- 待补项：`plugin.toml`、`/v1/messages/count_tokens`、错误映射对齐第 4 节、
-  契约文档 `PROTOCOL.md`
+- 已满足项：`POST /v1/chat/completions`（流式/非流式）、账号池、`/healthz`、
+  Upstash 存储、环境变量密钥
+- 待补项：`plugin.toml`、错误映射对齐第 4 节、契约文档 `PROTOCOL.md`
