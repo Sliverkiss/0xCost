@@ -35,7 +35,9 @@ OpenAI 协议入口。完整契约见 [docs/PLUGIN_CONTRACT.md](docs/PLUGIN_CONT
 
 - **Commit message**：遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)，
   如 `feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`
-- **交流语言**：中文（代码注释、issue、PR、review 均优先使用中文）
+- **Language**: Claude's working output is English — code comments, commit
+  messages, docs, and agent summaries in English. Direct conversation with
+  the maintainer stays in Chinese.
 - 提交前保持变更最小化，一个 commit 聚焦一件事
 
 ## 常用命令
