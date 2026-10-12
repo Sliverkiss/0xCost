@@ -63,7 +63,7 @@ pub struct ChatResult {
 /// (429/5xx cooldown, 401 auth refresh, 451/461 disable) and API error
 /// mapping (TDD ERRMAP-006..008). Retry-After is kept for diagnostics only
 /// — it is never echoed to the client (TDD ERRMAP-011).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamError {
     pub status: u16,
     pub body: String,
