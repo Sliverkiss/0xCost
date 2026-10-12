@@ -17,9 +17,10 @@
 //! - [`headers`] — the android-app impersonation header table.
 //! - [`body`] — login/completion request body serializers (kotlinx order).
 //! - [`client`] — the live reqwest client + R2 watched stream.
+//! - [`sse`] — the JSON-patch SSE interpreter (Go `internal/sse`).
 //!
-//! SSE interpreter, account pool, and the `OxcostPlugin` facade land in
-//! subsequent modules.
+//! Account pool and the `OxcostPlugin` facade land in subsequent
+//! modules.
 
 mod account;
 mod body;
@@ -28,6 +29,7 @@ mod device;
 mod headers;
 pub mod pow;
 pub mod seed;
+mod sse;
 mod store;
 mod timeutil;
 mod wire;
@@ -44,6 +46,7 @@ pub use seed::{
     import_records, park_record_from_account, parse_account_reply, parse_index_reply,
     ImportSummary, SeedError, CONCURRENCY_WARNING,
 };
+pub use sse::{Delta, Interpreter, SearchResult, State, StreamError, Usage};
 pub use store::{LoginRecord, ParkRecord, SqliteStore, StoreError};
 pub use wire::{
     check_env, decode_envelope, parse_mute_until, Config, Envelope, EnvelopeData, SessionInfo,
