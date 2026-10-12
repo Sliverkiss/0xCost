@@ -17,14 +17,57 @@ use oxcost_core::{KeySource, PluginInstance, PluginRegistry};
 /// The sample-echo fixture is **test scaffolding, not a feature** (contract
 /// §11 synthetic-fixture policy): it is registered unconditionally so the
 /// SDK path is exercisable offline and visible in the registration table.
-/// The three real SDK plugins (TokenHarbor, mimo-rust, simple-chat) register
-/// here as they land.
-fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
+///
+/// TokenHarbor (the first real SDK plugin) registers when
+/// `TH_ACCOUNT_1_EMAIL`/`TH_ACCOUNT_1_PASSWORD` are present: its account
+/// store is `TH_STORE_PATH` (default `data/tokenharbor.db` under the
+/// working dir, plugin-private per contract §3). Accounts seed from
+/// `TH_ACCOUNT_N_*` env pairs; quarantined accounts are marked and skipped
+/// — a quarantined or missing account never fails host startup, it shows
+/// up in /healthz instead.
+async fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
     let mut registry = oxcost_sdk::Registry::new();
     let sample = Arc::new(oxcost_sdk::SampleEcho::new(&[]));
     if let Err(e) = registry.register(Arc::clone(&sample) as _) {
         tracing::error!("sample-echo rejected: {e}");
     }
+
+    if std::env::var("TH_ACCOUNT_1_EMAIL").is_ok() && std::env::var("TH_ACCOUNT_1_PASSWORD").is_ok()
+    {
+        let path = std::path::PathBuf::from(
+            std::env::var("TH_STORE_PATH").unwrap_or_else(|_| "data/tokenharbor.db".into()),
+        );
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                tracing::error!("tokenharbor: cannot create store dir {}", parent.display());
+            }
+        }
+        let store = match oxcost_plugin_tokenharbor::store::Store::open(&path) {
+            Ok(store) => Arc::new(store),
+            Err(e) => {
+                tracing::error!("tokenharbor: store open failed: {e}");
+                return registry.drain();
+            }
+        };
+        let seeded = oxcost_plugin_tokenharbor::TokenHarbor::seed_accounts_from_env(&store);
+        if seeded.is_empty() {
+            tracing::warn!("tokenharbor: no accounts seeded — skipping registration");
+        } else {
+            let client = Arc::new(oxcost_plugin_tokenharbor::client::Client::new_live());
+            let auth_base = oxcost_plugin_tokenharbor::auth::AUTH_BASE.to_string();
+            match oxcost_plugin_tokenharbor::TokenHarbor::connect(store, client, auth_base).await {
+                Ok(plugin) => {
+                    if let Err(e) = registry.register(Arc::new(plugin) as _) {
+                        tracing::error!("tokenharbor rejected: {e}");
+                    } else {
+                        tracing::info!("tokenharbor registered (accounts: {seeded:?})");
+                    }
+                }
+                Err(e) => tracing::error!("tokenharbor construct failed: {e}"),
+            }
+        }
+    }
+
     registry.drain()
 }
 
@@ -69,7 +112,7 @@ fn main() {
         // SDK plugins (§10): validated by the SDK registry, then folded
         // into the host registry as contract-shape manifests so the
         // lifecycle/registration table treats both forms uniformly.
-        let sdk_plugins = register_sdk_plugins();
+        let sdk_plugins = register_sdk_plugins().await;
         for plugin in &sdk_plugins {
             let manifest = plugin.manifest().to_contract_manifest();
             if let Err(e) = registry.insert(manifest) {
