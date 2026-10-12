@@ -12,9 +12,19 @@ OxCost 是一个 AI gateway 聚合网关框架：一个入口，聚合多个上�
 
 ## 技术栈
 
-- **Go**（规划中，项目尚处早期，代码结构待定）
-- 新增 Go 代码时遵循标准 Go 项目布局（如 `cmd/`、`internal/`、`pkg/`），
-  使用 `gofmt` 标准格式，导出符号需有 doc comment
+- **Rust**（stable，axum + tokio，workspace 多 crate）
+- 常用命令：`cargo build` / `cargo test` / `cargo clippy -- -D warnings` / `cargo fmt --check`
+- 文件 < 800 行；测试离线全绿（mock 上游，真实上游仅发布前冒烟）
+
+## 架构一句话
+
+插件宿主框架：每个 `*-2api` 项目作为 sidecar 插件接入，宿主统一对外提供
+OpenAI 协议入口。完整契约见 [docs/PLUGIN_CONTRACT.md](docs/PLUGIN_CONTRACT.md)。
+
+## 运行环境
+
+- **纯本地开发**：代码与提交只在本机 `/root/oxcost`，不推 GitHub 远程
+- 构建前 `source ~/.cargo/env`
 
 ## 协议
 
