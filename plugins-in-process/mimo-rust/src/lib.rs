@@ -19,6 +19,7 @@
 
 pub mod login;
 pub mod models;
+pub mod openai;
 pub mod pool;
 pub mod sse;
 pub mod store;
