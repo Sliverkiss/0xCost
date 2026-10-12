@@ -81,7 +81,7 @@ async fn mount(server: &wiremock::MockServer, status: u16, body: String) {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(body),
         )
-        .mount(&server)
+        .mount(server)
         .await;
 }
 
