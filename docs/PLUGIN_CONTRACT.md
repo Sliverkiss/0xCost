@@ -98,6 +98,22 @@ models = [                       # 声明提供的模型（必须实测真实存
 ]
 unknown_model = "pass"           # pass=未声明模型也透传上游 | fallback="mimo/mimo-v2.6-pro" | reject
 
+[capabilities]                   # 插件提供的能力组（缺省只有 chat；分层见 §4）
+chat = true                      # /v1/chat/completions（默认能力）
+# embeddings = true              # /v1/embeddings
+# images = true                  # /v1/images/generations（及 edits/variations）
+# audio_speech = true            # /v1/audio/speech（TTS）
+# audio_transcription = true     # /v1/audio/transcriptions（STT，multipart）
+# audio_translations = true      # /v1/audio/translations（译为英文，multipart）
+# video = true                   # /v1/videos（异步任务：提交→轮询→取结果，Sora 模式）
+# moderations = true             # /v1/moderations（内容安全分类）
+# responses = true               # /v1/responses（实验性：OpenAI 旗舰接口，含 web_search/
+                                 #   file_search 等托管工具——web search 无独立端点，
+                                 #   就是 responses 里的内置工具）
+# files = true                   # /v1/files CRUD（实验性；batches 的前置）
+# batches = true                 # /v1/batches（实验性：异步批量，依赖 files）
+# realtime = true                # /v1/realtime/sessions + WebSocket（实验性：语音实时）
+
 [auth]
 keys = "env:MIMO2API_API_KEYS"   # 密钥引用。只允许 env: 前缀；禁止任何字面量密钥
 
@@ -129,9 +145,27 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 
 | 端点 | 要求 |
 |---|---|
-| `POST /v1/chat/completions` | `stream: true/false` 均支持；SSE 帧符合 OpenAI 规范 |
+| `POST /v1/chat/completions` | 【chat·核心】`stream: true/false` 均支持；SSE 帧符合 OpenAI 规范 |
+| `POST /v1/embeddings` | 【embeddings·核心】OpenAI 规范 |
+| `POST /v1/images/generations` 等 | 【images·核心】OpenAI 规范（generations/edits/variations 按需实现） |
+| `POST /v1/audio/speech` | 【audio_speech·核心】TTS，返回音频流 |
+| `POST /v1/audio/transcriptions` | 【audio_transcription·核心】STT，multipart 上传 |
+| `POST /v1/audio/translations` | 【audio_translations·核心】音频译为英文，multipart 上传 |
+| `POST /v1/videos` + `GET /v1/videos/{id}` | 【video·核心】异步任务：提交返回任务 id，轮询状态，完成后取结果（Sora 模式） |
+| `POST /v1/moderations` | 【moderations·核心】内容安全分类，OpenAI 规范 |
+| `POST /v1/responses` | 【responses·实验性】OpenAI Responses API（含 web_search/file_search 等托管工具与引用标注；参考 openresponses.org 互操作规范） |
+| `POST /v1/files` 等 | 【files·实验性】文件 CRUD（目的域：batches/大文件 STT） |
+| `POST /v1/batches` + `GET /v1/batches/{id}` | 【batches·实验性】异步批量任务，依赖 files 能力 |
+| `POST /v1/realtime/sessions` | 【realtime·实验性】语音实时会话（WebSocket 透传） |
 | `GET /v1/models` | 返回与 `plugin.toml` 声明一致的真实目录 |
 | `GET /healthz` | `200 {"status":"ok"}` 为健康 |
+
+**能力分层与裁剪规则**：能力分**核心**（稳定 OpenAI 标准，契约完整承诺）与
+**实验性**（接口仍在演进，仅要求「透传语义 + 目录真实 + 透传上游错误」，
+不承诺行为兼容；`[experimental]` 能力可能随契约大版本调整）。`[capabilities]`
+未声明的能力，对应端点宿主**不路由**（返回 `404`），插件可不实现；声明了就
+必须实现该能力组全部验收项。多模态请求（如 chat 里的 `image_url` 内容分片）
+不属于独立能力，仍归 `chat`。`batches` 依赖 `files`，宿主校验依赖关系。
 
 **错误语义**（宿主依赖此映射对外统一报错，错误体一律 OpenAI 格式
 `{"error": {"message": ..., "type": ..., "code": ...}}`，插件不得透传上游哨兵文本）：
@@ -156,6 +190,7 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 | 入口 | 单一地址、单一 key，OpenAI 协议：`POST /v1/chat/completions`、`GET /v1/models`、`GET /healthz` |
 | 模型映射 | 宿主支持请求模型名的**别名/通配符映射**（`*`、`前缀*`、`*后缀`），可绑定目标插件；映射发生在路由解析之前，映射后的名字按下一行规则路由 |
 | 模型路由 | `插件名/模型名` 精确路由；`/v1/models` 聚合全部已注册插件的健康目录 |
+| 能力路由 | 宿主按 `/v1/<能力>/...` 端点族转发到声明了该能力的插件（核心+实验性能力同规则）；同一能力多插件时同样适用负载均衡与熔断；无人声明时 `404` |
 | 负载均衡 | 同一模型被多个插件声明时分发，策略三选一：**round-robin**（轮询）/ **fill-first**（填满优先）/ **failover**（优先首选插件，故障才转移）；支持请求级粘性（preferred 插件）；故障自动摘除 |
 | 未知模型 | 宿主按目标插件的 `unknown_model` 策略处理；无匹配插件时 `404 model_not_found` |
 | 熔断 | **插件级**：连续失败达阈值进入冷却，期间该插件模型从目录隐藏，冷却后半开探测 |
@@ -195,7 +230,7 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 按 OpenAI 单协议 sidecar 场景裁剪）：
 
 - [ ] `plugin.toml` 通过宿主校验，`auth.keys` 为 env 引用
-- [ ] `POST /v1/chat/completions` 流式/非流式均可用，`GET /v1/models`、`/healthz` 齐全
+- [ ] 声明的每个能力组端点按 §4 语义可用（核心能力完整验收，实验性能力按实验标准），`GET /v1/models`、`/healthz` 齐全；未声明的端点不实现
 - [ ] 模型目录实测真实，附 E2E 报告（哪些模型真可用/失败原因）
 - [ ] 契约归档：插件目录内 `PROTOCOL.md` 含上游端点/头/请求体/响应结构与证据
 - [ ] 错误映射符合第 4 节表格；限流检测基于响应文本（上游 200+哨兵很常见）
