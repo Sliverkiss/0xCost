@@ -18,6 +18,7 @@
 //! (capability flags false); the `OxcostPlugin` implementation lands once
 //! the modules above are in place.
 
+pub mod chat;
 pub mod errmap;
 pub mod login;
 pub mod models;
