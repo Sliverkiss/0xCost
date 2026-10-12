@@ -1,0 +1,15 @@
+[package]
+name = "oxcost-sdk"
+description = "In-process plugin SDK: the OxcostPlugin trait, code-declared manifests, and the explicit plugin registry (contract §10 host-sdk form)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+oxcost-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
