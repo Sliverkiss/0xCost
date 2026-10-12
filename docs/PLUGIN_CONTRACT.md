@@ -107,9 +107,10 @@ chat = true                      # /v1/chat/completions（默认能力）
 # audio_translations = true      # /v1/audio/translations（译为英文，multipart）
 # video = true                   # /v1/videos（异步任务：提交→轮询→取结果，Sora 模式）
 # moderations = true             # /v1/moderations（内容安全分类）
-# responses = true               # /v1/responses（实验性：OpenAI 旗舰接口，含 web_search/
-                                 #   file_search 等托管工具——web search 无独立端点，
-                                 #   就是 responses 里的内置工具）
+# responses = true               # /v1/responses（实验性：OpenAI 旗舰接口，含托管工具）
+# web_search = true              # chat 内搜索（核心）：web_search_options / web_search_status
+                                 #   / 模型名 :online 后缀 三种开关；结果以 OpenAI 标准
+                                 #   annotations(url_citation) + 扩展 citations 字段回传
 # files = true                   # /v1/files CRUD（实验性；batches 的前置）
 # batches = true                 # /v1/batches（实验性：异步批量，依赖 files）
 # realtime = true                # /v1/realtime/sessions + WebSocket（实验性：语音实时）
@@ -146,6 +147,7 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 | 端点 | 要求 |
 |---|---|
 | `POST /v1/chat/completions` | 【chat·核心】`stream: true/false` 均支持；SSE 帧符合 OpenAI 规范 |
+| `POST /v1/chat/completions`（search） | 【web_search·核心】同端点的能力增强：接受 `web_search_options` / `web_search_status`(disabled\|auto\|enabled) / 模型名 `:online` 后缀；命中搜索的结果以消息 `annotations`(url_citation) + `citations` 数组回传 |
 | `POST /v1/embeddings` | 【embeddings·核心】OpenAI 规范 |
 | `POST /v1/images/generations` 等 | 【images·核心】OpenAI 规范（generations/edits/variations 按需实现） |
 | `POST /v1/audio/speech` | 【audio_speech·核心】TTS，返回音频流 |
