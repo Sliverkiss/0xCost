@@ -315,6 +315,14 @@ impl SqliteStore {
         )?;
         Ok(())
     }
+
+    /// Test seam: hold the raw connection (pool tests drop tables to trip
+    /// the latch).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn conn_for_tests(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().expect("store mutex poisoned")
+    }
 }
 
 fn save_locked(conn: &mut Connection, acct: &Account) -> Result<(), StoreError> {

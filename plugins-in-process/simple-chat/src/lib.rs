@@ -27,6 +27,9 @@ mod body;
 mod client;
 mod device;
 mod headers;
+mod lease;
+mod manager;
+mod pool;
 pub mod pow;
 pub mod seed;
 mod sse;
@@ -42,6 +45,9 @@ pub use headers::{
     base_headers, APP_BUNDLE_ID, APP_CLIENT_LOCALE, APP_CLIENT_VERSION, APP_DEVICE_MODEL,
     APP_TIMEZONE_OFF, APP_USER_AGENT,
 };
+pub use lease::{AccountStatus, Lease};
+pub use manager::AccountManager;
+pub use pool::{Pool, PoolConfig, PoolError, DEFAULT_MAX_INFLIGHT};
 pub use seed::{
     import_records, park_record_from_account, parse_account_reply, parse_index_reply,
     ImportSummary, SeedError, CONCURRENCY_WARNING,
