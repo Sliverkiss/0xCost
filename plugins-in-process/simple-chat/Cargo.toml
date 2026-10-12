@@ -1,0 +1,33 @@
+[package]
+name = "oxcost-plugin-simple-chat"
+description = "OxCost host-sdk plugin: simple-chat (deepseek-flash web chat, reasoning + opt-in web search)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+oxcost-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = "0.7"
+futures-util = "0.3.34"
+tracing = { workspace = true }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls", "multipart"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["std"] }
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+# [[bin]]                       # seed CLI lands with the store module:
+# name = "sc-seed"              # Upstash read-only import + fresh registration.
+# path = "src/bin/sc_seed.rs"
