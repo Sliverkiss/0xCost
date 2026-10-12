@@ -5,8 +5,13 @@
 //! All timestamps are RFC3339 UTC strings — the format Go writes
 //! (`time.RFC3339` in `applyParkRecord`) and the only format the SQLite
 //! schema accepts (PORT_DESIGN §2.1).
+//!
+//! The JSON form uses Go's exact field tags (`omitempty` on everything
+//! after `region`), so Upstash records (PC-41) round-trip losslessly.
 
 use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
 
 /// Park states (`pool.go` BanState). Banned/muted/risk are the only
 /// persisted kinds; `None` renders empty and clears the persisted fields.
@@ -57,7 +62,8 @@ pub enum AccountError {
 
 /// One upstream account. Field order/shape mirrors the Go JSON record so a
 /// seed import of Upstash data (PC-41) round-trips losslessly.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Account {
     pub mobile: String,
     pub email: String,
@@ -65,16 +71,23 @@ pub struct Account {
     /// Empty means "cn" (the only real region; unknown values reject).
     pub region: String,
     /// Explicit device identity; empty = mint deterministically at boot.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub device_id: String,
     /// `""` (android default) or `"web"` (browser-harvested Shumei id).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub channel: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub park_kind: String,
     /// RFC3339 UTC, or empty (unknown recovery).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub park_until: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub park_reason: String,
     /// RFC3339 UTC, or empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub parked_at: String,
     /// Last login token, write-through; never replayed at boot.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub session_token: String,
 }
 
@@ -193,6 +206,57 @@ impl Account {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn json_round_trip_go_shaped_record() {
+        // Byte-shaped like a real Upstash record (PC-41): omitempty fields
+        // present, absent fields omitted, Go tag order.
+        let raw = r#"{
+            "mobile": "13800001111",
+            "email": "",
+            "password": "hunter2",
+            "region": "",
+            "device_id": "B-shumei+abc",
+            "channel": "web",
+            "park_kind": "muted",
+            "park_until": "2026-10-13T00:00:00Z",
+            "park_reason": "biz 10005: muted upstream",
+            "parked_at": "2026-10-12T00:00:00Z"
+        }"#;
+        let a: Account = serde_json::from_str(raw).expect("parse fixture");
+        assert_eq!(a.mobile, "13800001111");
+        assert_eq!(a.channel, "web");
+        assert_eq!(a.park_kind, "muted");
+        assert_eq!(a.device_id, "B-shumei+abc");
+        assert!(a.session_token.is_empty());
+        // Serialize omits only empty fields; non-empty ones all come back.
+        let s = serde_json::to_string(&a).unwrap();
+        let b: Account = serde_json::from_str(&s).unwrap();
+        assert_eq!(a, b);
+        assert!(s.contains("\"park_reason\":\"biz 10005: muted upstream\""));
+        // An empty-region account serializes without the omitempty tail.
+        let bare = Account {
+            mobile: "138".into(),
+            password: "p".into(),
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&bare).unwrap();
+        assert!(!s.contains("park_kind"));
+        assert!(!s.contains("device_id"));
+        assert!(!s.contains("channel"));
+        assert!(!s.contains("region") || s.contains("\"region\":\"\""));
+    }
+
+    #[test]
+    fn json_accepts_missing_fields_and_unknown_ignored() {
+        // Go's decoder defaults missing fields to zero values; unknown keys
+        // are ignored. Ours must match (Upstash records evolve).
+        let a: Account =
+            serde_json::from_str(r#"{"mobile":"138","password":"p","future_field":42}"#).unwrap();
+        assert_eq!(a.mobile, "138");
+        assert_eq!(a.password, "p");
+        assert!(a.park_kind.is_empty());
+    }
 
     #[test]
     fn identity_prefers_mobile() {

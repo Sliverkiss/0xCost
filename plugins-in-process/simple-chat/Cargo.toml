@@ -15,6 +15,7 @@ tokio-util = "0.7"
 futures-util = "0.3.34"
 tracing = { workspace = true }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls", "multipart"] }
+clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 aes = "0.8"
 cbc = { version = "0.1", features = ["std"] }
@@ -28,6 +29,6 @@ rand = "0.8"
 [dev-dependencies]
 tempfile = "3"
 
-# [[bin]]                       # seed CLI lands with the store module:
-# name = "sc-seed"              # Upstash read-only import + fresh registration.
-# path = "src/bin/sc_seed.rs"
+[[bin]]
+name = "sc-seed"
+path = "src/bin/sc_seed.rs"

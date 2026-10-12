@@ -10,15 +10,22 @@
 //! - [`device`] — deterministic device identity minting (Go `region.go`).
 //! - [`store`] — plugin-private SQLite backing (R3 latch, generation
 //!   fencing, expired-park stripping at load).
+//! - [`seed`] — PC-41 Upstash import parsing (read-only; the `sc-seed`
+//!   maintenance CLI wraps it).
 //!
 //! Upstream wire client, SSE interpreter, account pool, and the
 //! `OxcostPlugin` facade land in subsequent modules.
 
 mod account;
 mod device;
+pub mod seed;
 mod store;
 mod timeutil;
 
 pub use account::{Account, AccountError, BanState};
 pub use device::{DeviceProfile, DEVICE_ID_NAMESPACE};
+pub use seed::{
+    import_records, park_record_from_account, parse_account_reply, parse_index_reply,
+    ImportSummary, SeedError, CONCURRENCY_WARNING,
+};
 pub use store::{LoginRecord, ParkRecord, SqliteStore, StoreError};
