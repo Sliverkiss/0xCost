@@ -26,6 +26,12 @@ use oxcost_core::{KeySource, PluginInstance, PluginRegistry};
 /// `TH_ACCOUNT_N_*` env pairs; quarantined accounts are marked and skipped
 /// — a quarantined or missing account never fails host startup, it shows
 /// up in /healthz instead.
+///
+/// mimo-rust (the Go mimo2api port) registers when
+/// `MIMO_ACCOUNT_1_PHONE` is present: store at `MIMO_RUST_DB_PATH`
+/// (default `mimo-rust.db`), accounts from `MIMO_ACCOUNT_N_*` +
+/// `MIMO_RUST_SESSION_N_*` (live Upstash row shape —
+/// scripts/live-seed-mimo.sh).
 async fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
     let mut registry = oxcost_sdk::Registry::new();
     let sample = Arc::new(oxcost_sdk::SampleEcho::new(&[]));
@@ -66,6 +72,26 @@ async fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
                 }
                 Err(e) => tracing::error!("tokenharbor construct failed: {e}"),
             }
+        }
+    }
+
+    // mimo-rust (SDK port of the Go mimo2api): registers when
+    // `MIMO_ACCOUNT_1_PHONE` is present — account rows seed from
+    // `MIMO_ACCOUNT_N_*` (phone/password) plus `MIMO_RUST_SESSION_N_*`
+    // (cookie/ph/pass_token/user_id/device from a live Upstash row; see
+    // scripts/live-seed-mimo.sh). No env → no registration, mirroring the
+    // tokenharbor gate.
+    if std::env::var("MIMO_ACCOUNT_1_PHONE").is_ok() {
+        let cfg = mimo_rust::config::Config::from_env(&|k| std::env::var(k).ok());
+        match mimo_rust::plugin::MimoPlugin::new(cfg) {
+            Ok(plugin) => {
+                if let Err(e) = registry.register(Arc::new(plugin) as _) {
+                    tracing::error!("mimo-rust rejected: {e}");
+                } else {
+                    tracing::info!("mimo-rust registered");
+                }
+            }
+            Err(e) => tracing::error!("mimo-rust construct failed: {e}"),
         }
     }
 

@@ -1302,6 +1302,7 @@ dependencies = [
  "axum",
  "futures-util",
  "http-body-util",
+ "mimo-rust",
  "oxcost-contract",
  "oxcost-core",
  "oxcost-plugin-tokenharbor",

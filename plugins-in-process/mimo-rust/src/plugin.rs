@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::errmap::MappedError;
 use crate::models::SERVED_MODELS;
 use crate::pool::Pool;
+use crate::seed;
 use crate::store::{self, Store};
 
 /// The in-process mimo2api plugin.
@@ -43,6 +44,11 @@ impl MimoPlugin {
         // namespace is for gateway knobs, not credentials).
         let seeded = store::seed_from_env(&store, &|k| std::env::var(k).ok())
             .map_err(|e| format!("seed accounts: {e}"))?;
+        // Session-bearing rows (R1-W2a live seeding): MIMO_RUST_SESSION_n_*
+        // carries the Upstash row's cookie/ph/pass_token/user_id/device
+        // onto the seeded accounts. No vars → no-op.
+        seed::seed_session_from_env(&store, &|k| std::env::var(k).ok())
+            .map_err(|e| format!("seed sessions: {e}"))?;
         let rows = store
             .load_accounts()
             .map_err(|e| format!("load accounts: {e}"))?;
