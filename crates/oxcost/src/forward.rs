@@ -54,16 +54,18 @@ pub enum HostError {
 
 impl IntoResponse for HostError {
     fn into_response(self) -> Response {
+        // §4 (revised M3): type strings match OpenAI's actual spellings —
+        // 4xx request/auth/model classes are `invalid_request_error`.
         let (status, body) = match self {
             HostError::InvalidRequest(msg) => (
                 StatusCode::BAD_REQUEST,
-                openai_error(&msg, "invalid_request", "invalid_request"),
+                openai_error(&msg, "invalid_request_error", "invalid_request"),
             ),
             HostError::ModelNotFound(model) => (
                 StatusCode::NOT_FOUND,
                 openai_error(
                     &format!("model `{model}` not found on any registered plugin"),
-                    "invalid_request",
+                    "invalid_request_error",
                     "model_not_found",
                 ),
             ),
@@ -75,7 +77,7 @@ impl IntoResponse for HostError {
                 StatusCode::UNAUTHORIZED,
                 openai_error(
                     "missing or invalid API key",
-                    "invalid_request",
+                    "invalid_request_error",
                     "invalid_api_key",
                 ),
             ),
@@ -310,5 +312,29 @@ mod tests {
         assert_eq!(e["error"]["type"], "upstream_error");
         assert_eq!(e["error"]["code"], "upstream_error");
         assert!(e["error"]["param"].is_null());
+    }
+
+    #[test]
+    fn host_error_type_strings_match_openai() {
+        // §4 (revised M3): 4xx request/auth/model classes spell
+        // `invalid_request_error`, matching OpenAI's actual strings.
+        use http_body_util::BodyExt;
+        async fn error_body(e: HostError) -> Value {
+            let response = e.into_response();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let body = runtime.block_on(error_body(HostError::InvalidRequest("bad".into())));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        let body = runtime.block_on(error_body(HostError::ModelNotFound("m".into())));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "model_not_found");
+        let body = runtime.block_on(error_body(HostError::Unauthorized));
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_api_key");
+        let body = runtime.block_on(error_body(HostError::Upstream("u".into())));
+        assert_eq!(body["error"]["type"], "upstream_error");
     }
 }

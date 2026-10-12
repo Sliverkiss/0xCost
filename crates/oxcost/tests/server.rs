@@ -247,7 +247,7 @@ async fn unknown_model_returns_404_openai_body() {
     let (status, body, _) = send(&app, chat_request("mock/does-not-exist")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "model_not_found");
-    assert_eq!(body["error"]["type"], "invalid_request");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
