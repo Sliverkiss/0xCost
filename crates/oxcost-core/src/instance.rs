@@ -367,7 +367,10 @@ keys = "env:MIMO2API_API_KEYS"
 
     mod sdk {
         use super::*;
-        use oxcost_sdk::{ChatOutcome, ChatRequest, HealthStatus, ModelDescriptor, PluginError, RequestContext, SampleEcho, SdkManifest};
+        use oxcost_sdk::{
+            ChatOutcome, ChatRequest, HealthStatus, ModelDescriptor, RequestContext, SampleEcho,
+            SdkManifest,
+        };
 
         /// Unhealthy stub plugin for state tests.
         struct UnhealthyEcho(SampleEcho);
@@ -379,11 +382,7 @@ keys = "env:MIMO2API_API_KEYS"
             fn models(&self) -> Vec<ModelDescriptor> {
                 self.0.models()
             }
-            fn chat(
-                &self,
-                req: ChatRequest,
-                ctx: RequestContext,
-            ) -> oxcost_sdk::ChatFuture<'_> {
+            fn chat(&self, req: ChatRequest, ctx: RequestContext) -> oxcost_sdk::ChatFuture<'_> {
                 self.0.chat(req, ctx)
             }
             fn health(&self) -> HealthStatus {
@@ -405,7 +404,9 @@ keys = "env:MIMO2API_API_KEYS"
                 }
             );
             assert_eq!(inst.route("sample-echo/ghost"), RouteDecision::Reject);
-            assert!(inst.capabilities().contains(oxcost_contract::Capability::Chat));
+            assert!(inst
+                .capabilities()
+                .contains(oxcost_contract::Capability::Chat));
             assert_eq!(inst.advertised_models(), ["sample-echo/echo-1"]);
             // No endpoint/key for the in-process form.
             assert_eq!(inst.endpoint(), "");
@@ -421,7 +422,10 @@ keys = "env:MIMO2API_API_KEYS"
 
             let un = PluginInstance::from_sdk_plugin(Arc::new(UnhealthyEcho(SampleEcho::new(&[]))));
             *un.state_handle().lock().unwrap() = PluginState::Serving;
-            assert!(un.is_servable(), "health() is read at probe time, not by routing");
+            assert!(
+                un.is_servable(),
+                "health() is read at probe time, not by routing"
+            );
         }
 
         #[test]

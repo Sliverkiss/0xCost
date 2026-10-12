@@ -67,9 +67,15 @@ fn invalid_manifest_reports_specific_validation_error() {
         .arg(&dir)
         .env("RUST_LOG", "off")
         .assert()
-        // Load failures are reported, not fatal: exit 0 with an empty table.
+        // Load failures are reported, not fatal: exit 0; the invalid plugin
+        // is rejected (stderr) and absent from the table — the built-in SDK
+        // fixture (§10 sample-echo) still shows as registered.
         .success()
-        .stdout(predicate::str::contains("(no plugins registered)"))
+        .stdout(predicate::str::contains(
+            "OxCost host — plugin registration table",
+        ))
+        .stdout(predicate::str::contains("dev.oxcost.sample-echo"))
+        .stdout(predicate::str::contains("dev.oxcost.badplugin").not())
         .stderr(predicate::str::contains("rejected plugin `badplugin`"))
         .stderr(predicate::str::contains(
             "duplicate model `badplugin/m` in routing.models",

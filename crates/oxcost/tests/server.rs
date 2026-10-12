@@ -519,3 +519,222 @@ async fn non_serving_plugin_not_routed() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "model_not_found");
 }
+
+// ---- SDK-plugin path (contract §10, M3) ----
+
+use oxcost::state::FailedPlugin;
+use oxcost_core::PluginInstance as CorePluginInstance;
+use oxcost_sdk::SampleEcho as SdkSampleEcho;
+
+/// One SDK instance (the sample-echo fixture) as a state map.
+fn sdk_instances() -> BTreeMap<String, Arc<CorePluginInstance>> {
+    let mut instances = BTreeMap::new();
+    instances.insert(
+        "dev.oxcost.sample-echo".into(),
+        Arc::new(CorePluginInstance::from_sdk_plugin(Arc::new(
+            SdkSampleEcho::new(&[]),
+        ))),
+    );
+    instances
+}
+
+#[tokio::test]
+async fn sdk_plugin_visible_in_models_catalog() {
+    let state = state_with(sdk_instances(), HostConfig::dev_default());
+    probe_all(&state).await;
+    assert_eq!(state.instance_list()[0].state(), PluginState::Serving);
+
+    let app = app_router(state);
+    let req = Request::builder()
+        .uri("/v1/models")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["sample-echo/echo-1"]);
+    assert_eq!(body["data"][0]["owned_by"], "sample-echo");
+}
+
+#[tokio::test]
+async fn sdk_plugin_chat_round_trip_json() {
+    let state = state_with(sdk_instances(), HostConfig::dev_default());
+    probe_all(&state).await;
+
+    let app = app_router(state);
+    let (status, body, ct) = send(&app, chat_request("sample-echo/echo-1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.unwrap_or_default().starts_with("application/json"));
+    // Model rewritten to the unprefixed id; canned reply relayed verbatim.
+    assert_eq!(body["model"], "echo-1");
+    assert_eq!(body["choices"][0]["message"]["content"], "echo: hi");
+    assert_eq!(body["oxcost_sample"], true);
+}
+
+#[tokio::test]
+async fn sdk_plugin_chat_round_trip_stream() {
+    let state = state_with(sdk_instances(), HostConfig::dev_default());
+    probe_all(&state).await;
+
+    let app = app_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"model": "sample-echo/echo-1", "messages": [{"role":"user","content":"yo"}], "stream": true})
+                .to_string(),
+        ))
+        .unwrap();
+    let response = tower::ServiceExt::oneshot(app, req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .starts_with("text/event-stream"));
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("\"content\":\"echo: yo\""));
+    assert!(text.ends_with("data: [DONE]\n\n"));
+}
+
+#[tokio::test]
+async fn sdk_plugin_health_reflected_in_healthz() {
+    let state = Arc::new(AppState::new(
+        sdk_instances(),
+        HostConfig::dev_default(),
+        vec![FailedPlugin {
+            plugin: "dev.oxcost.broken-sdk".into(),
+            reason: "synthetic failure for the table".into(),
+        }],
+    ));
+    probe_all(&state).await;
+
+    let app = app_router(state);
+    let req = Request::builder()
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+    // SDK plugin probed via the in-process health() call → Serving.
+    let sdk_entry = body["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "dev.oxcost.sample-echo")
+        .expect("sdk plugin in healthz");
+    assert_eq!(sdk_entry["state"], "Serving");
+    assert_eq!(sdk_entry["routable"], true);
+}
+
+#[tokio::test]
+async fn sdk_plugin_unknown_model_404_and_auth_401() {
+    // Unknown model → 404 model_not_found, same namespace rules as sidecars.
+    let state = state_with(sdk_instances(), HostConfig::dev_default());
+    probe_all(&state).await;
+    let app = app_router(state);
+    let (status, body, _) = send(&app, chat_request("sample-echo/ghost")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "model_not_found");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+
+    // A model belonging to no plugin at all → 404 as well.
+    let state = state_with(sdk_instances(), HostConfig::dev_default());
+    probe_all(&state).await;
+    let app = app_router(state);
+    let (status, _, _) = send(&app, chat_request("elsewhere/m")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Host auth enforced on the SDK path too.
+    let mut config = HostConfig::dev_default();
+    config.api_keys = vec!["host-secret".into()];
+    let state = state_with(sdk_instances(), config);
+    probe_all(&state).await;
+    let app = app_router(state);
+    let (status, body, _) = send(&app, chat_request("sample-echo/echo-1")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "invalid_api_key");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+
+    // With the right key the SDK path serves.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header(header::AUTHORIZATION, "Bearer host-secret")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"model": "sample-echo/echo-1", "messages": [{"role":"user","content":"k"}]})
+                .to_string(),
+        ))
+        .unwrap();
+    let (status, body, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["model"], "echo-1");
+}
+
+#[tokio::test]
+async fn sdk_plugin_error_maps_onto_openai_body() {
+    // The failing variant exercises the §4 error mapping over the SDK path.
+    let mut instances = BTreeMap::new();
+    instances.insert(
+        "dev.oxcost.sample-echo".into(),
+        Arc::new(CorePluginInstance::from_sdk_plugin(Arc::new(
+            SdkSampleEcho::failing(),
+        ))),
+    );
+    let state = state_with(instances, HostConfig::dev_default());
+    probe_all(&state).await;
+
+    let app = app_router(state);
+    let (status, body, _) = send(&app, chat_request("sample-echo/echo-1")).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["type"], "upstream_error");
+    assert_eq!(body["error"]["message"], "sample-echo: canned failure");
+}
+
+#[tokio::test]
+async fn sidecar_and_sdk_catalogs_merge_in_one_namespace() {
+    // One sidecar (mock upstream) + one SDK plugin, merged catalog.
+    let (port, _) = spawn_mock_plugin().await;
+    let mut instances = one_instance(port, KeySource::None);
+    instances.extend(sdk_instances());
+    let state = state_with(instances, HostConfig::dev_default());
+    probe_all(&state).await;
+
+    let app = app_router(state);
+    let req = Request::builder()
+        .uri("/v1/models")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec!["mock/mock-a", "mock/mock-b", "sample-echo/echo-1"]
+    );
+
+    // Both forms route: sidecar…
+    let (status, body, _) = send(&app, chat_request("mock/mock-a")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["choices"][0]["message"]["content"], "mock says hi");
+    // …and SDK.
+    let (status, body, _) = send(&app, chat_request("sample-echo/echo-1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["choices"][0]["message"]["content"], "echo: hi");
+}

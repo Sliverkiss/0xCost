@@ -591,6 +591,7 @@ dependencies = [
  "http-body-util",
  "oxcost-contract",
  "oxcost-core",
+ "oxcost-sdk",
  "predicates",
  "reqwest",
  "serde_json",

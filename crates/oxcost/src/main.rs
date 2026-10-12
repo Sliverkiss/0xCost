@@ -1,6 +1,7 @@
-//! OxCost host binary (M2): CLI, manifest loading, env auth resolution,
-//! startup probing, and axum serving of the contract §5 external surface.
-//! Assembly only — all logic lives in the library modules.
+//! OxCost host binary (M2/M3): CLI, manifest loading, env auth resolution,
+//! SDK plugin registration, startup probing, and axum serving of the
+//! contract §5 external surface. Assembly only — all logic lives in the
+//! library modules.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,6 +10,23 @@ use oxcost::loader::{load_plugins, print_registration_table, Cli, LoadOutcome};
 use oxcost::server;
 use oxcost::state::{AppState, FailedPlugin, HostConfig};
 use oxcost_core::{KeySource, PluginInstance, PluginRegistry};
+
+/// Register the built-in SDK plugins (contract §10). Explicit, called from
+/// main — no inventory/linkme collection magic.
+///
+/// The sample-echo fixture is **test scaffolding, not a feature** (contract
+/// §11 synthetic-fixture policy): it is registered unconditionally so the
+/// SDK path is exercisable offline and visible in the registration table.
+/// The three real SDK plugins (TokenHarbor, mimo-rust, simple-chat) register
+/// here as they land.
+fn register_sdk_plugins() -> Vec<Arc<dyn oxcost_sdk::OxcostPlugin>> {
+    let mut registry = oxcost_sdk::Registry::new();
+    let sample = Arc::new(oxcost_sdk::SampleEcho::new(&[]));
+    if let Err(e) = registry.register(Arc::clone(&sample) as _) {
+        tracing::error!("sample-echo rejected: {e}");
+    }
+    registry.drain()
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -47,13 +65,39 @@ fn main() {
                 eprintln!("oxcost: rejected plugin `{plugin}`: {reason}");
             }
         }
+
+        // SDK plugins (§10): validated by the SDK registry, then folded
+        // into the host registry as contract-shape manifests so the
+        // lifecycle/registration table treats both forms uniformly.
+        let sdk_plugins = register_sdk_plugins();
+        for plugin in &sdk_plugins {
+            let manifest = plugin.manifest().to_contract_manifest();
+            if let Err(e) = registry.insert(manifest) {
+                eprintln!(
+                    "oxcost: rejected SDK plugin `{}`: {e}",
+                    plugin.manifest().id
+                );
+            }
+        }
         print_registration_table(&registry);
 
-        // Build runtime instances for successfully registered plugins,
-        // resolving env: auth references (failures stay out of routing).
+        // Build runtime instances for successfully registered plugins:
+        // sidecars resolve env: auth references, SDK plugins dispatch
+        // in-process. Failures stay out of routing and surface in /healthz.
         let mut instances = BTreeMap::new();
         let mut failed = Vec::new();
         for entry in registry.list() {
+            let sdk_match = sdk_plugins
+                .iter()
+                .find(|p| p.manifest().id == entry.manifest.id);
+            if let Some(plugin) = sdk_match {
+                let id = entry.manifest.id.clone();
+                instances.insert(
+                    id,
+                    Arc::new(PluginInstance::from_sdk_plugin(Arc::clone(plugin))),
+                );
+                continue;
+            }
             match oxcost_contract::resolve_auth(&entry.manifest, |name: &str| {
                 std::env::var(name).ok()
             }) {

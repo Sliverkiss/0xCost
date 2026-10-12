@@ -93,20 +93,30 @@ async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// Health-probe every instance at startup: Registered → Probing → (Serving |
 /// still Probing on failure). A probe failure leaves the plugin registered
 /// but not Serving — excluded from routing until a later probe succeeds
-/// (background re-probing loop arrives in M3).
+/// (background re-probing loop arrives with the lifecycle loop milestone).
+///
+/// Probe form follows the transport handle: SDK plugins answer the
+/// in-process `health()` trait call; sidecars get an HTTP GET (§6).
 pub async fn probe_all(state: &AppState) {
     for inst in state.instance_list() {
         advance_state(&inst, |s| s.start_probing());
-        let url = inst
-            .manifest()
-            .health
-            .as_ref()
-            .map(|h| inst.url_for(&h.path));
-        let healthy = match url {
-            Some(url) => probe(&url).await,
-            // remote mode has no /healthz; the contract's lightweight chat
-            // probe arrives with remote-mode forwarding support.
-            None => false,
+        let healthy = match inst.handle() {
+            oxcost_core::PluginHandle::Sdk(plugin) => {
+                plugin.health() == oxcost_sdk::HealthStatus::Ok
+            }
+            oxcost_core::PluginHandle::Sidecar { .. } => {
+                let url = inst
+                    .manifest()
+                    .health
+                    .as_ref()
+                    .map(|h| inst.url_for(&h.path));
+                match url {
+                    Some(url) => probe(&url).await,
+                    // remote mode has no /healthz; the contract's lightweight
+                    // chat probe arrives with remote-mode support.
+                    None => false,
+                }
+            }
         };
         if healthy {
             advance_state(&inst, |s| s.probe_succeeded());
