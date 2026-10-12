@@ -84,6 +84,12 @@ impl PluginRegistry {
         self.plugins.values().collect()
     }
 
+    /// Mutable variant of [`Self::list`] (same ordering). Used by the host
+    /// to apply config-file enabled overrides after validation.
+    pub fn list_mut(&mut self) -> Vec<&mut PluginEntry> {
+        self.plugins.values_mut().collect()
+    }
+
     /// Entries visible to routing and `/v1/models`: not Disabled/Removed.
     /// This is the §6 listing effect of the enable/disable switch.
     pub fn list_routable(&self) -> Vec<&PluginEntry> {
