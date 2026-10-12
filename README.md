@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="logo.jpg" alt="OxCost — AI Aggregator Gateway" width="420">
+<img src="logo.jpg" alt="OxCost — AI Aggregator Gateway" width="12000">
 
 # OxCost
 
