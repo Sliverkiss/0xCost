@@ -1150,6 +1150,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
+ "bytes",
  "cbc",
  "clap",
  "futures-util",
