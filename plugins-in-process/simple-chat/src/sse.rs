@@ -75,6 +75,9 @@ impl StreamError {
 /// One structured search hit from the upstream SEARCH fragment's results
 /// array (web-search-research.md): url/title/snippet plus citation keying
 /// (cite_index) and provenance (query_indexes).
+///
+/// Serialization mirrors Go's JSON tags exactly (omitempty on the tail
+/// fields) — the citations array on the wire is the pinned contract.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct SearchResult {
     #[serde(default)]
@@ -95,6 +98,46 @@ pub struct SearchResult {
     pub query_indexes: Vec<i64>,
     #[serde(default)]
     pub provider: Option<String>,
+}
+
+impl serde::Serialize for SearchResult {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        // 8 unconditional fields + conditional tail fields.
+        let mut len = 8;
+        if !self.site_name.is_empty() {
+            len += 1;
+        }
+        if !self.site_icon.is_empty() {
+            len += 1;
+        }
+        if self.published_at != 0.0 {
+            len += 1;
+        }
+        if !self.query_indexes.is_empty() {
+            len += 1;
+        }
+        if self.provider.is_some() {
+            len += 1;
+        }
+        let mut st = s.serialize_struct("SearchResult", len)?;
+        st.serialize_field("url", &self.url)?;
+        st.serialize_field("title", &self.title)?;
+        st.serialize_field("snippet", &self.snippet)?;
+        st.serialize_field("site_name", &self.site_name)?;
+        st.serialize_field("site_icon", &self.site_icon)?;
+        st.serialize_field("cite_index", &self.cite_index)?;
+        if self.published_at != 0.0 {
+            st.serialize_field("published_at", &self.published_at)?;
+        }
+        if !self.query_indexes.is_empty() {
+            st.serialize_field("query_indexes", &self.query_indexes)?;
+        }
+        if let Some(p) = &self.provider {
+            st.serialize_field("provider", p)?;
+        }
+        st.end()
+    }
 }
 
 /// The accumulated interpreter state (Go `State`).

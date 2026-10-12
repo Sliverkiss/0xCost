@@ -18,17 +18,25 @@
 //! - [`body`] — login/completion request body serializers (kotlinx order).
 //! - [`client`] — the live reqwest client + R2 watched stream.
 //! - [`sse`] — the JSON-patch SSE interpreter (Go `internal/sse`).
+//! - [`openai`] — request parsing/sanitize/merge + switch decoding (Go
+//!   `internal/openai`, parsing half).
+//! - [`image_fetch`] — image extraction with the SSRF-guarded fetch.
+//! - [`oai_response`] — OpenAI response emission (Go `response.go`).
+//! - [`errmap`] — the §6 error table → contract §4 wire errors.
 //!
-//! Account pool and the `OxcostPlugin` facade land in subsequent
-//! modules.
+//! The `OxcostPlugin` facade lands in a subsequent module.
 
 mod account;
 mod body;
 mod client;
 mod device;
+mod errmap;
 mod headers;
+mod image_fetch;
 mod lease;
 mod manager;
+mod oai_response;
+mod openai;
 mod pool;
 pub mod pow;
 pub mod seed;
@@ -41,12 +49,22 @@ pub use account::{Account, AccountError, BanState};
 pub use body::{completion_body, login_body, normalize_mobile, CompletionRequest};
 pub use client::{Client, WatchedStream};
 pub use device::{DeviceProfile, DEVICE_ID_NAMESPACE};
+pub use errmap::WireError;
 pub use headers::{
     base_headers, APP_BUNDLE_ID, APP_CLIENT_LOCALE, APP_CLIENT_VERSION, APP_DEVICE_MODEL,
     APP_TIMEZONE_OFF, APP_USER_AGENT,
 };
+pub use image_fetch::{extract_images, is_non_public, Image, ImageFetchError};
 pub use lease::{AccountStatus, Lease};
 pub use manager::AccountManager;
+pub use oai_response::{
+    completion_response, error_body, final_chunk, models_response, reasoning_stream_chunk,
+    sse_done_frame, sse_frame, stream_chunk, web_search_response,
+};
+pub use openai::{
+    flatten_messages, image_ext_by_mime, parse_request, parse_search_switch, parse_thinking_switch,
+    ContentPart, Message, ParseError, PartKind, Request, MODEL_NAME, SYSTEM_MERGE_SEPARATOR,
+};
 pub use pool::{Pool, PoolConfig, PoolError, DEFAULT_MAX_INFLIGHT};
 pub use seed::{
     import_records, park_record_from_account, parse_account_reply, parse_index_reply,
