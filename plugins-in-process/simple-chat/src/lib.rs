@@ -23,11 +23,13 @@
 //! - [`image_fetch`] — image extraction with the SSRF-guarded fetch.
 //! - [`oai_response`] — OpenAI response emission (Go `response.go`).
 //! - [`errmap`] — the §6 error table → contract §4 wire errors.
-//!
-//! The `OxcostPlugin` facade lands in a subsequent module.
+//! - [`chat_flow`] — the chat pipeline + retry ladder + delivery (Go
+//!   `server.go`'s handler core).
+//! - [`plugin`] — the `OxcostPlugin` facade (manifest, chat, health).
 
 mod account;
 mod body;
+mod chat_flow;
 mod client;
 mod device;
 mod errmap;
@@ -37,6 +39,7 @@ mod lease;
 mod manager;
 mod oai_response;
 mod openai;
+mod plugin;
 mod pool;
 pub mod pow;
 pub mod seed;
@@ -47,6 +50,7 @@ mod wire;
 
 pub use account::{Account, AccountError, BanState};
 pub use body::{completion_body, login_body, normalize_mobile, CompletionRequest};
+pub use chat_flow::{run_chat, ChatJob, DEFAULT_MAX_PROMPT_CHARS, MAX_ATTEMPTS};
 pub use client::{Client, WatchedStream};
 pub use device::{DeviceProfile, DEVICE_ID_NAMESPACE};
 pub use errmap::WireError;
@@ -64,6 +68,10 @@ pub use oai_response::{
 pub use openai::{
     flatten_messages, image_ext_by_mime, parse_request, parse_search_switch, parse_thinking_switch,
     ContentPart, Message, ParseError, PartKind, Request, MODEL_NAME, SYSTEM_MERGE_SEPARATOR,
+};
+pub use plugin::{
+    PluginBuildError, SimpleChatConfig, SimpleChatPlugin, ENV_DB_PATH, ENV_MAX_INFLIGHT,
+    ENV_MAX_PROMPT_CHARS, ENV_QUEUE_WAIT_SECS,
 };
 pub use pool::{Pool, PoolConfig, PoolError, DEFAULT_MAX_INFLIGHT};
 pub use seed::{
