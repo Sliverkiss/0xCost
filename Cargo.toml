@@ -8,6 +8,7 @@ members = [
     "crates/oxcost-sdk",
     "plugins-in-process/tokenharbor",
     "plugins-in-process/mimo-rust",
+    "plugins-in-process/simple-chat",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ oxcost-contract = { path = "crates/oxcost-contract" }
 oxcost-core = { path = "crates/oxcost-core" }
 oxcost-protocol = { path = "crates/oxcost-protocol" }
 oxcost-sdk = { path = "crates/oxcost-sdk" }
+oxcost-plugin-simple-chat = { path = "plugins-in-process/simple-chat" }
 
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
