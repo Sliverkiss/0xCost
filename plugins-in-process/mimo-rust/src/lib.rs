@@ -18,5 +18,6 @@
 //! the modules above are in place.
 
 pub mod models;
+pub mod pool;
 pub mod sse;
 pub mod thinking;
