@@ -11,6 +11,7 @@ oxcost-contract = { workspace = true }
 oxcost-core = { workspace = true }
 oxcost-sdk = { workspace = true }
 oxcost-plugin-tokenharbor = { path = "../../plugins-in-process/tokenharbor" }
+mimo-rust = { path = "../../plugins-in-process/mimo-rust" }
 axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

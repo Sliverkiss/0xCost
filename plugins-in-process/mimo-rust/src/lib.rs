@@ -27,6 +27,7 @@ pub mod models;
 pub mod openai;
 pub mod plugin;
 pub mod pool;
+pub mod seed;
 pub mod sse;
 pub mod store;
 pub mod thinking;
