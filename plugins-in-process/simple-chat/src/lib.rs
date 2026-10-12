@@ -12,12 +12,14 @@
 //!   fencing, expired-park stripping at load).
 //! - [`seed`] — PC-41 Upstash import parsing (read-only; the `sc-seed`
 //!   maintenance CLI wraps it).
+//! - [`pow`] — HashV1 proof-of-work (Keccak-f rounds 1..23).
 //!
 //! Upstream wire client, SSE interpreter, account pool, and the
 //! `OxcostPlugin` facade land in subsequent modules.
 
 mod account;
 mod device;
+pub mod pow;
 pub mod seed;
 mod store;
 mod timeutil;
