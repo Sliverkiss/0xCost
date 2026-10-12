@@ -92,11 +92,12 @@ timeout_secs = 5
 
 [routing]
 enabled = true                   # 可选，默认 true；false = 注册但停用（见 §6 开关语义）
-models = [                       # 声明提供的模型（必须实测真实存在）
-  "mimo/mimo-v2.6-pro",
-  "mimo/mimo-v2.6-flash",
+models = [                       # 声明提供的模型（必须实测真实存在；
+                                 #   「插件名/模型名」前缀 = name = id 尾段）
+  "mimo2api/mimo-v2.6-pro",
+  "mimo2api/mimo-v2.6-flash",
 ]
-unknown_model = "pass"           # pass=未声明模型也透传上游 | fallback="mimo/mimo-v2.6-pro" | reject
+unknown_model = "pass"           # pass=未声明模型也透传上游 | fallback="mimo2api/mimo-v2.6-pro" | reject
 
 [capabilities]                   # 插件提供的能力组（缺省只有 chat；分层见 §4）
 chat = true                      # /v1/chat/completions（默认能力）
