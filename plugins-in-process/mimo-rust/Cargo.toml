@@ -10,7 +10,7 @@ oxcost-contract = { path = "../../crates/oxcost-contract" }
 oxcost-sdk = { path = "../../crates/oxcost-sdk" }
 
 md-5 = "0.10"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
