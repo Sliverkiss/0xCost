@@ -144,6 +144,19 @@ pub enum PipelineError {
     /// The channel refuses this model id (web-surface-reverse §11.1):
     /// 400 — the request cannot succeed as written.
     UpstreamModelRejected { upstream_message: String },
+    /// Our own budget/lease-TTL deadline (Go requestTimeoutError, ADR
+    /// 0019/0036): 504 with a message naming the knob that fired — the
+    /// account was serving correctly, so no pool penalty and no retry.
+    /// `budget_ms` is the deadline that actually bit (lease TTL when
+    /// shorter or request budget unset), `where` names the phase.
+    ChatTimeout {
+        budget_ms: u64,
+        where_phase: &'static str,
+        /// True when the silence window (LEASE_TTL) was the bound that
+        /// fired, not the wall-clock request budget — the message must
+        /// name the right knob or an operator turns the wrong dial.
+        lease: bool,
+    },
     /// Transient platform throttle that outlived the retry (SDD §7.1):
     /// 503 + a short Retry-After, not a 502.
     UpstreamBusy { upstream_message: String },
@@ -190,8 +203,15 @@ impl From<&UpstreamChatError> for PipelineError {
             UpstreamChatError::IdleStall => PipelineError::UpstreamFailure {
                 detail: "upstream stream stalled (no SSE event within idle timeout)".into(),
             },
-            UpstreamChatError::SilentUpstream { window } => PipelineError::UpstreamFailure {
-                detail: format!("upstream sent no bytes within the silence window ({window:?})"),
+            // Our own patience, not the account's (ADR 0036): the silence
+            // window fired before any upstream byte — 504 naming the
+            // knob, no pool penalty. The lease bound is the silence
+            // window, so `lease: true` unless a request budget was
+            // configured shorter than it.
+            UpstreamChatError::SilentUpstream { window } => PipelineError::ChatTimeout {
+                budget_ms: window.as_millis() as u64,
+                where_phase: "waiting for its first byte",
+                lease: true,
             },
         }
     }
@@ -227,6 +247,32 @@ pub fn upstream_too_long_message() -> String {
      models, counted on the composed query text — a system prompt or injected \
      tool-protocol prompt uses the same budget)"
         .to_string()
+}
+
+/// chat_timeout message (Go requestTimeoutError.Error, errors.go:237-245):
+/// names the knob the operator has to turn. Naming only the bound that
+/// actually fired matters: on the shipped default (REQUEST_TIMEOUT_MS=0)
+/// the bound is the silence window, and pointing at a disabled knob
+/// sends an operator to the wrong environment variable (ADR 0036). The
+/// knob names are the Go deployment's (MIMO2API_*); the port's env
+/// contract (config module) documents the mapping.
+fn chat_timeout_message(budget_ms: u64, where_phase: &str, lease: bool) -> String {
+    let knob = if lease {
+        "MIMO2API_LEASE_TTL_S"
+    } else {
+        "MIMO2API_REQUEST_TIMEOUT_MS"
+    };
+    let where_phase = if where_phase.is_empty() {
+        "waiting for its first byte"
+    } else {
+        where_phase
+    };
+    let budget_secs = budget_ms.div_ceil(1000); // Go time.Duration.Round(s)
+    format!(
+        "the upstream stayed silent for the gateway's {budget_secs}s {where_phase}; \
+         the gateway gave up on the request (raise {knob} if the platform is simply slow). \
+         Retry, or send fewer messages per request"
+    )
 }
 
 /// queryTooLong message (Go queryTooLongError.Error): names the number
@@ -405,6 +451,19 @@ pub fn map_error(err: &PipelineError) -> MappedError {
                 format!("upstream error {}", ue.status),
             ),
         },
+        // 3.19: our own budget/lease-TTL deadline (Go requestTimeoutError,
+        // errors.go:220-245): 504 api_error chat_timeout, message naming
+        // the knob that fired — no account penalty, no retry.
+        PipelineError::ChatTimeout {
+            budget_ms,
+            where_phase,
+            lease,
+        } => MappedError::new(
+            504,
+            "api_error",
+            "chat_timeout",
+            chat_timeout_message(*budget_ms, where_phase, *lease),
+        ),
         PipelineError::UpstreamFailure { detail } => {
             if upstream_too_long(detail) {
                 return MappedError::new(
@@ -427,346 +486,5 @@ pub fn map_error(err: &PipelineError) -> MappedError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn typ(e: &MappedError) -> &str {
-        &e.body.error.typ
-    }
-
-    fn code(e: &MappedError) -> &str {
-        e.body.error.code.as_deref().unwrap_or("")
-    }
-
-    fn body_of(e: &MappedError) -> serde_json::Value {
-        serde_json::to_value(&e.body).unwrap()
-    }
-
-    // 3.1: no accounts → 503 api_error no_accounts.
-    #[test]
-    fn row_no_accounts() {
-        let m = map_error(&PipelineError::NoAccounts);
-        assert_eq!(m.status, 503);
-        assert_eq!(typ(&m), "api_error");
-        assert_eq!(code(&m), "no_accounts");
-        assert!(m.retry_after.is_none());
-    }
-
-    // 3.2: parked → 429 rate_limit_error pool_parked + Retry-After.
-    #[test]
-    fn row_pool_parked() {
-        let m = map_error(&PipelineError::PoolParked {
-            retry_after_seconds: 30,
-        });
-        assert_eq!(m.status, 429);
-        assert_eq!(typ(&m), "rate_limit_error");
-        assert_eq!(code(&m), "pool_parked");
-        assert_eq!(m.retry_after, Some(30));
-    }
-
-    // 3.3: queue wait → 429 rate_limit_error pool_busy + Retry-After.
-    #[test]
-    fn row_pool_busy() {
-        let m = map_error(&PipelineError::PoolBusy {
-            retry_after_seconds: 12,
-        });
-        assert_eq!(m.status, 429);
-        assert_eq!(typ(&m), "rate_limit_error");
-        assert_eq!(code(&m), "pool_busy");
-        assert_eq!(m.retry_after, Some(12));
-    }
-
-    // 3.4: unknown model → 404 invalid_request_error model_not_found.
-    #[test]
-    fn row_model_not_found() {
-        let m = map_error(&PipelineError::ModelNotFound {
-            requested: "gpt-4o".into(),
-        });
-        assert_eq!(m.status, 404);
-        assert_eq!(typ(&m), "invalid_request_error");
-        assert_eq!(code(&m), "model_not_found");
-        assert!(m.body.error.message.contains("gpt-4o"));
-    }
-
-    // 3.5: no user message → 400 no_user_message.
-    #[test]
-    fn row_no_user_message() {
-        let m = map_error(&PipelineError::NoUserMessage);
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "no_user_message");
-    }
-
-    // 3.6: replay cap → 400 too_many_turns.
-    #[test]
-    fn row_too_many_turns() {
-        let m = map_error(&PipelineError::TooManyTurns { max: 50 });
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "too_many_turns");
-        assert!(m.body.error.message.contains("50"));
-    }
-
-    // 3.7: malformed body → 400 malformed_request_body.
-    #[test]
-    fn row_malformed_request() {
-        let m = map_error(&PipelineError::MalformedRequest);
-        assert_eq!(m.status, 400);
-        assert_eq!(typ(&m), "invalid_request_error");
-        assert_eq!(code(&m), "malformed_request_body");
-    }
-
-    // 3.8/3.9: effort and search_context_size → param naming the field.
-    #[test]
-    fn rows_param_names_the_field() {
-        let m = map_error(&PipelineError::UnsupportedReasoningEffort);
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "unsupported_reasoning_effort");
-        assert_eq!(m.body.error.param.as_deref(), Some("reasoning_effort"));
-
-        let m = map_error(&PipelineError::UnsupportedSearchContextSize);
-        assert_eq!(code(&m), "unsupported_search_context_size");
-        assert_eq!(
-            m.body.error.param.as_deref(),
-            Some("web_search_options.search_context_size")
-        );
-    }
-
-    // 3.10: unsupported search status → 400 unsupported_search_status.
-    #[test]
-    fn row_unsupported_search_status() {
-        let m = map_error(&PipelineError::UnsupportedSearchStatus);
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "unsupported_search_status");
-    }
-
-    // 3.11: image url refusal (v1: decode refusal).
-    #[test]
-    fn row_image_url() {
-        let m = map_error(&PipelineError::ImageUrl {
-            reason: "image parts are not supported by this model".into(),
-        });
-        assert_eq!(m.status, 400);
-        assert_eq!(typ(&m), "invalid_request_error");
-        assert_eq!(code(&m), "unsupported_image_url");
-    }
-
-    // 3.12: content filter → verbatim reason + message (ADR 0033).
-    #[test]
-    fn row_content_filter() {
-        let m = map_error(&PipelineError::ContentFilter {
-            reason: "sensitive_query".into(),
-            message: "您的查询包含敏感内容".into(),
-        });
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "content_filter");
-        assert!(m.body.error.message.contains("sensitive_query"));
-        assert!(m.body.error.message.contains("您的查询包含敏感内容"));
-    }
-
-    // 3.13: client-side too long → context_too_long + numbers + param.
-    #[test]
-    fn row_query_too_long() {
-        let m = map_error(&PipelineError::QueryTooLong {
-            limit: 102400,
-            actual: 110000,
-            model: "mimo-v2.6-pro".into(),
-            overhead: 200,
-        });
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "context_too_long");
-        assert_eq!(m.body.error.param.as_deref(), Some("messages"));
-        let msg = &m.body.error.message;
-        assert!(msg.contains("110000"));
-        assert!(msg.contains("102400"));
-        assert!(msg.contains("mimo-v2.6-pro"));
-        assert!(msg.contains("200 chars are the injected/system preamble"));
-        // Zero overhead: no preamble suffix.
-        let m = map_error(&PipelineError::QueryTooLong {
-            limit: 102400,
-            actual: 110000,
-            model: "mimo-v2.6-pro".into(),
-            overhead: 0,
-        });
-        assert!(!m.body.error.message.contains("preamble"));
-    }
-
-    // 3.14: channel model refusal → 400 model_not_available_on_channel,
-    // upstream wording appended verbatim.
-    #[test]
-    fn row_upstream_model_rejected() {
-        let m = map_error(&PipelineError::UpstreamModelRejected {
-            upstream_message: "模型不存在".into(),
-        });
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "model_not_available_on_channel");
-        assert!(m.body.error.message.contains("模型不存在"));
-        // Empty upstream message: sentence stands alone.
-        let m = map_error(&PipelineError::UpstreamModelRejected {
-            upstream_message: String::new(),
-        });
-        assert_eq!(
-            m.body.error.message,
-            "the upstream channel does not serve this model id"
-        );
-    }
-
-    // 3.15: upstream busy surviving retry → 503 + Retry-After 2.
-    #[test]
-    fn row_upstream_busy() {
-        let m = map_error(&PipelineError::UpstreamBusy {
-            upstream_message: "当前访问较为繁忙".into(),
-        });
-        assert_eq!(m.status, 503);
-        assert_eq!(code(&m), "upstream_busy");
-        assert_eq!(m.retry_after, Some(BUSY_RETRY_AFTER_SECONDS));
-        assert!(m.body.error.message.contains("当前访问较为繁忙"));
-    }
-
-    // 3.16: 401 after refresh retry → 401 upstream_auth_expired.
-    #[test]
-    fn row_auth_expired() {
-        let m = map_error(&PipelineError::AuthExpired);
-        assert_eq!(m.status, 401);
-        assert_eq!(typ(&m), "invalid_request_error");
-        assert_eq!(code(&m), "upstream_auth_expired");
-    }
-
-    // 3.17: upstream 429 → 429 rate_limit_error upstream_rate_limited.
-    #[test]
-    fn row_upstream_429() {
-        let m = map_error(&PipelineError::Upstream(UpstreamError {
-            status: 429,
-            body: "limited".into(),
-            retry_after: None,
-        }));
-        assert_eq!(m.status, 429);
-        assert_eq!(typ(&m), "rate_limit_error");
-        assert_eq!(code(&m), "upstream_rate_limited");
-        // The upstream's own Retry-After is NOT echoed (ERRMAP-011).
-        assert!(m.retry_after.is_none());
-    }
-
-    // 3.18: upstream prose "too long" in a 5xx envelope → 400
-    // context_too_long (the client's mistake, the client's status).
-    #[test]
-    fn row_upstream_too_long_translation() {
-        for body in [
-            "Sorry, the text you sent is too long!",
-            "query is too long",
-            "长度不能超过限制",
-            "内容过长",
-            "文本过长",
-            "code context_too_long",
-            "too_long_error",
-        ] {
-            let m = map_error(&PipelineError::Upstream(UpstreamError {
-                status: 502,
-                body: body.into(),
-                retry_after: None,
-            }));
-            assert_eq!(m.status, 400, "body {body:?}");
-            assert_eq!(code(&m), "context_too_long");
-        }
-        // Not too long: stays a 502.
-        let m = map_error(&PipelineError::Upstream(UpstreamError {
-            status: 500,
-            body: "internal error".into(),
-            retry_after: None,
-        }));
-        assert_eq!(m.status, 502);
-        assert_eq!(code(&m), "upstream_failure");
-    }
-
-    // 3.19: upstream 5xx → 502 (pinned deviation: type upstream_error,
-    // code preserved).
-    #[test]
-    fn row_upstream_5xx_deviation() {
-        let m = map_error(&PipelineError::Upstream(UpstreamError {
-            status: 500,
-            body: "boom".into(),
-            retry_after: None,
-        }));
-        assert_eq!(m.status, 502);
-        assert_eq!(typ(&m), "upstream_error");
-        assert_eq!(code(&m), "upstream_failure");
-        assert_eq!(m.body.error.message, "upstream error 500");
-    }
-
-    // 3.20: transport/stall/silence → 502 upstream_error upstream_failure
-    // (deviation from Go's api_error; codes preserved).
-    #[test]
-    fn row_upstream_failure_deviation() {
-        let m = map_error(&PipelineError::UpstreamFailure {
-            detail: "connection reset".into(),
-        });
-        assert_eq!(m.status, 502);
-        assert_eq!(typ(&m), "upstream_error");
-        assert_eq!(code(&m), "upstream_failure");
-        assert_eq!(m.body.error.message, "upstream failure: connection reset");
-        // Mid-stream "too long" error event → same translation.
-        let m = map_error(&PipelineError::UpstreamFailure {
-            detail: "Sorry, the text you sent is too long!".into(),
-        });
-        assert_eq!(m.status, 400);
-        assert_eq!(code(&m), "context_too_long");
-    }
-
-    // 3.21: the JSON body always carries all four keys (OSTD-013).
-    #[test]
-    fn body_always_carries_four_keys() {
-        let m = map_error(&PipelineError::NoAccounts);
-        let v = body_of(&m);
-        let e = &v["error"];
-        for k in ["message", "type", "param", "code"] {
-            assert!(e.get(k).is_some(), "key {k} missing");
-        }
-        assert!(e["param"].is_null());
-        assert!(e["code"].is_null() || e["code"].is_string());
-    }
-
-    // 3.22: UpstreamChatError → PipelineError conversion (retry ladder
-    // output feeds map_error directly).
-    #[test]
-    fn upstream_chat_error_conversion() {
-        use crate::sse::InBandError::*;
-        let cases: Vec<(UpstreamChatError, u16, &str)> = vec![
-            (
-                UpstreamChatError::Transport("conn refused".into()),
-                502,
-                "upstream_failure",
-            ),
-            (UpstreamChatError::IdleStall, 502, "upstream_failure"),
-            (UpstreamChatError::EmptyResponse, 502, "upstream_failure"),
-            (
-                UpstreamChatError::InBand(Busy("繁忙".into())),
-                503,
-                "upstream_busy",
-            ),
-            (
-                UpstreamChatError::InBand(ModelRejected("模型名称错误".into())),
-                400,
-                "model_not_available_on_channel",
-            ),
-            (
-                UpstreamChatError::InBand(ContentFilter {
-                    reason: "sensitive_query".into(),
-                    message: "m".into(),
-                }),
-                400,
-                "content_filter",
-            ),
-        ];
-        for (err, status, want_code) in cases {
-            let p = PipelineError::from(&err);
-            let m = map_error(&p);
-            assert_eq!(m.status, status, "{err:?}");
-            assert_eq!(code(&m), want_code, "{err:?}");
-        }
-    }
-
-    #[test]
-    fn with_upstream_appends_verbatim() {
-        assert_eq!(with_upstream("ours", "theirs"), "ours: theirs");
-        assert_eq!(with_upstream("ours", "  "), "ours");
-        assert_eq!(with_upstream("ours theirs", "theirs"), "ours theirs");
-    }
-}
+#[path = "errmap_tests.rs"]
+mod tests;
