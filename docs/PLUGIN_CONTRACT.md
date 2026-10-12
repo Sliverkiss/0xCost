@@ -116,8 +116,9 @@ chat = true                      # /v1/chat/completions（默认能力）
 # batches = true                 # /v1/batches（实验性：异步批量，依赖 files）
 # realtime = true                # /v1/realtime/sessions + WebSocket（实验性：语音实时）
 
-[auth]
-keys = "env:MIMO2API_API_KEYS"   # 密钥引用。只允许 env: 前缀；禁止任何字面量密钥
+[auth]                           # external/remote 必填；host-spawn 可整体省略
+keys = "env:MIMO2API_API_KEYS"   # 密钥引用。只允许 env: 前缀；禁止任何字面量密钥；
+                                 #   host-spawn 模式由宿主自动生成注入（见 §4 鉴权）
 
 [limits]                         # 可选；不填则继承宿主默认
 max_inflight = 8                 # 单插件并发上限
@@ -131,7 +132,8 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 - `id` 全局唯一，格式 `^[a-z][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+$`
 - `manifestVersion` 与 `apiVersion` 在宿主支持列表内（宿主启动时打印支持矩阵）
 - `routing.models` 非空且无重复；插件名前缀必须与 `id` 尾段一致
-- `auth.keys` 必须以 `env:` 开头；清单中出现疑似密钥字面量（`sk-` 等）直接拒绝
+- `auth.keys` 出现时必须以 `env:` 开头；清单中出现疑似密钥字面量（`sk-` 等）直接拒绝；
+  `host-spawn` 模式可整体省略 `[auth]`（宿主自动生成密钥注入）
 - `entry.mode = external`：宿主不管理进程生命周期，仅做健康检查与路由
 - `entry.mode = remote`：`entry.url` 必填（http/https）；免 `/healthz`，宿主以
   轻量 chat 探测代替健康检查
@@ -183,8 +185,17 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 **伪流式**：上游不支持流式时，插件切块定时下发 SSE，模拟打字机（首帧延迟 =
 上游响应时间）。上游支持流式则必须真流式。
 
-**鉴权**：插件校验宿主转发的 `Authorization: Bearer`；未配置 key 时仅接受来自
-`127.0.0.1` 的请求（本地开发零配置）。
+**鉴权（双层归一）**：
+- **客户端 → 宿主**：单一 key（宿主配置），对外永远只有这一把，插件 key 池
+  对客户端不可见。
+- **宿主 → 插件**：用**插件自己的密钥**调插件，不透传客户端 key（客户端 key
+  是宿主层的，与插件域无关）。密钥来源按形态分：
+  - `host-spawn`：宿主**自动生成**随机密钥，spawn 时经 env 注入插件进程——
+    清单可整体省略 `[auth]`，运营零手工；
+  - `external` / `remote`：清单 `env:` 引用解析注入（已是独立部署，key 在其
+    自有配置中）。
+- 插件侧：校验 `Authorization: Bearer`；未配置 key 时仅接受来自 `127.0.0.1`
+  的请求（本地开发零配置）。
 
 ## 5. 宿主对客户端的承诺（统一外部接口）
 
@@ -262,7 +273,27 @@ repository = "https://github.com/Sliverkiss/mimo2api"
 - **不重写**：语言无关契约的 design intent——成熟网关零改造接入；Rust 用于
   新写插件（可复用 `oxcost-protocol` crate），不用于重写存量
 
-## 10. 插件仓库与隐私边界
+## 10. 插件形态与演进路线（性能完美形态）
+
+契约接口对四种插件形态**完全一致**，插件可跨形态迁移：
+
+| 形态 | 进程 | 开销 | 适用 |
+|---|---|---|---|
+| `host-spawn` | 宿主拉起的 sidecar | ~10-20MB RSS/个；localhost 一跳 ~0.2ms | 任意语言插件，默认形态 |
+| `external` | 独立部署的 sidecar | 同上（宿主不管理进程） | 存量 2api（mimo2api） |
+| `remote` | 无进程，纯转发 | 零本地开销 | 外部 OpenAI 兼容端点 |
+| `host-sdk`（路线图） | 编译进宿主 | 零进程、零跳 | **可信且开源**的轻量 Rust 插件 |
+
+- **host-sdk 实现时机**：首个真实 Rust 插件出现时（M 系列），不在骨架期预建
+  第二套运行时（避免过度设计）。
+- **host-sdk 的两个绑定代价**（sidecar 模式不存在）：进程内代码随宿主 AGPL
+  **必须开源**——隐私优先的敏感插件应继续用 sidecar；崩溃域共享，一个插件
+  panic 影响宿主。因此形态选择是**分插件而治**：可信开源插件走 host-sdk，
+  敏感/异构插件走 sidecar，存量走 external/remote。
+- localhost 进程边界的延迟（~0.2ms）相对上游真实耗时（500ms-60s）占比
+  ~0.01%，隔离收益（崩溃域/安全域/许可证域）远大于开销。
+
+## 11. 插件仓库与隐私边界
 
 1. **宿主仓库保持纯净**：公开宿主仓库只含框架代码与合成示例 fixture
    （`plugins/example-*`），不含任何真实插件实现。
