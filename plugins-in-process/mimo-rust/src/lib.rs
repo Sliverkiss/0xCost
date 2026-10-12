@@ -23,3 +23,4 @@ pub mod pool;
 pub mod sse;
 pub mod store;
 pub mod thinking;
+pub mod turnplan;
