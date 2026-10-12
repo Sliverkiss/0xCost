@@ -243,6 +243,10 @@ fn build_manifest(snapshot: &store::CatalogSnapshot) -> SdkManifest {
     }
     SdkManifest {
         unknown_model: UnknownModelPolicy::Pass,
+        // §6 routing switch: OFF until a browser-verified account is seeded
+        // (the headless-signup account is quarantined upstream — see
+        // th-recon2/VERDICT.md). Flip to true when live accounts exist.
+        enabled: false,
         ..SdkManifest::new(PLUGIN_ID)
             .version(env!("CARGO_PKG_VERSION"))
             .models(ids)
