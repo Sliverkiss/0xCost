@@ -59,7 +59,7 @@ func TestFileBackendSaveCreatesAndRoundTrips(t *testing.T) {
 	}
 
 	acct := Account{ID: "acc-1", Phone: "13800000001", Enabled: true, PassToken: "pt-1"}
-	if err := store.ReplaceAll(context.Background(), []Account{acct}); err != nil {
+	if err := store.Put(acct); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -93,19 +93,6 @@ func TestFileBackendSaveCreatesAndRoundTrips(t *testing.T) {
 	}
 	if a, _ := again.Get("acc-1"); a.PassToken != "pt-2" {
 		t.Errorf("update did not persist: %+v", a)
-	}
-}
-
-// ReplaceAll validates before writing, so a duplicate-id import cannot land.
-func TestReplaceAllRejectsDuplicates(t *testing.T) {
-	store, err := LoadBackend(context.Background(), NewFileBackend(filepath.Join(t.TempDir(), "a.json")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = store.ReplaceAll(context.Background(), []Account{{ID: "dup", Enabled: true}, {ID: "dup", Enabled: true}})
-	var dup *ErrDuplicateID
-	if !errors.As(err, &dup) {
-		t.Fatalf("err = %v, want ErrDuplicateID", err)
 	}
 }
 

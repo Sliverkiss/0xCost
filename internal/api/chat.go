@@ -216,9 +216,9 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		lease = l
-		// Backstop for the slot: every explicit path below releases, and this
+		// Backstop for the release: every explicit path below releases, and this
 		// catches a future early return (or a panic) that forgets to. Release is
-		// idempotent, so it costs nothing on the normal path (ADR 0019).
+		// an idempotent no-op, so it costs nothing on the normal path (ADR 0019).
 		defer lease.Release()
 		fp, ferr := adapter.PlanFullReplay(p.msgs, s.replayCap)
 		if ferr != nil {
@@ -461,8 +461,8 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 		// Per-turn bound (ADR 0036): the lease TTL is a **silence** window — a
 		// turn is cut for going quiet, not for taking long: a search that keeps
 		// fetching pages runs until it answers, while a wedged turn dies on
-		// time. This is request liveness, not account capacity — the in-flight
-		// slots it used to feed are gone (owner ruling 2026-10-14). The
+		// time. This is request liveness, not account capacity — there is no
+		// in-flight accounting anymore (owner ruling 2026-10-14). The
 		// operator's wall clock (MIMO2API_REQUEST_TIMEOUT_MS) rides on ctx, not
 		// here.
 		turnCtx, cancelTurn := context.WithCancel(ctx)
@@ -522,8 +522,8 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			if err := encodeJSON(&body, comp); err != nil {
 				return err
 			}
-			// … and hand the slot back BEFORE writing to the client: the slot is
-			// capacity for upstream work, not for a slow client (ADR 0019).
+			// … and release the lease BEFORE writing to the client: the
+			// upstream work is done; a slow client must not hold it (ADR 0019).
 			p.finishTurn(lease, lastDialogID)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -544,9 +544,10 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 // than the upstream failing or the client leaving (ADR 0019).
 //
 // The distinction is load-bearing: a client that hung up must not be answered, a
-// platform-side failure must cool the account, and our own deadline must do
-// neither — the account did nothing wrong and a retry would only spend another
-// upstream call on a request we already gave up on.
+// platform-side failure is the upstream's own business (no cooldown machinery
+// exists to act on it), and our own deadline means the account did nothing
+// wrong — a retry would only spend another upstream call on a request we
+// already gave up on.
 // Every deadline in this stack is ours: the request budget, the per-turn lease
 // TTL, and the upstream client timeout (which is derived from the TTL). So a
 // context deadline at this point means our own clock expired — the *request's*

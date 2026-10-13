@@ -37,19 +37,17 @@ const (
 	// request. **0 = no wall clock, and that is the default** (ADR 0036): a wall
 	// clock is not a liveness test, silence is. A turn that keeps talking is
 	// bounded by the client's own patience; one that goes quiet longer than the
-	// lease silence window is cut, and its slot is reaped. Set this only when
+	// lease silence window is cut. Set this only when
 	// something in front of the gateway needs a hard ceiling to relay — a CDN
 	// reading a silent origin response for ~100s will cut it before we can name
 	// the cause.
 	DefaultRequestTimeout = 0
 	DefaultSSEIdleTimeout = 180 * time.Second
-	// DefaultLeaseTTL is the upstream **silence** window for one turn, and the
-	// moving expiry of the in-flight slot that turn holds (ADR 0019, amended by
-	// ADR 0036). Every byte the upstream sends resets it, so a long search that
-	// keeps fetching pages is never cut for taking long — only for going quiet.
-	// A slot is capacity, not stickiness: the window is what stops a wedged
-	// connection from pinning an account for the 30 minutes the HTTP client used
-	// to allow.
+	// DefaultLeaseTTL is the upstream **silence** window for one turn (ADR 0019,
+	// amended by ADR 0036). Every byte the upstream sends resets it, so a long
+	// search that keeps fetching pages is never cut for taking long — only for
+	// going quiet. The window is what stops a wedged connection from holding a
+	// request for the 30 minutes the HTTP client used to allow.
 	DefaultLeaseTTL = 120 * time.Second
 	// DefaultRenewInterval is the session-renew job's cadence (owner ruling
 	// 2026-10: hourly scheduled renewal instead of request-path renewal): the
@@ -322,7 +320,6 @@ func (c *Config) ImageAllowPrivate() bool      { return c.imageAllowPrivate }
 // PoolStatsWindow is the risk-control correlation window (SDD §4.5.2).
 func (c *Config) PoolStatsWindow() time.Duration { return c.poolStatsWindow }
 func (c *Config) ProbeInterval() time.Duration   { return c.probeInterval }
-func (c *Config) LogLevel() string               { return c.logLevel }
 
 // Debug reports whether the operator asked for the verbose tracing level.
 // Anything other than "debug" (case-insensitive) keeps the default quiet
@@ -367,19 +364,6 @@ func ParseAPIKeys(s string) []string {
 		}
 	}
 	return out
-}
-
-// getenvEnum parses one of a fixed set of values (case-insensitive); a value
-// outside the set is a startup error rather than a silent fallback, so a typo
-// can never quietly change policy.
-func getenvEnum(name, def string, allowed ...string) (string, error) {
-	v := strings.ToLower(getenv(name, def))
-	for _, a := range allowed {
-		if v == strings.ToLower(a) {
-			return v, nil
-		}
-	}
-	return "", fmt.Errorf("%s=%q is not one of %v", name, v, allowed)
 }
 
 func getenv(name, def string) string {
@@ -434,11 +418,6 @@ func getenvMillis(name string, def time.Duration) (time.Duration, error) {
 func getenvSeconds(name string, def time.Duration) (time.Duration, error) {
 	n, err := getenvInt(name, int(def/time.Second))
 	return time.Duration(n) * time.Second, err
-}
-
-func getenvHours(name string, def time.Duration) (time.Duration, error) {
-	n, err := getenvInt(name, int(def/time.Hour))
-	return time.Duration(n) * time.Hour, err
 }
 
 // getenvMinutes parses a whole-number of minutes; used for the renew-job

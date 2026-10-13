@@ -6,12 +6,10 @@ import (
 )
 
 // TurnPlan is the sequence of user queries to send upstream for one client
-// request, per SDD §5.3:
-//   - Sticky hit: only the delta messages after the stored frontier.
-//   - No session (the only mode now): full chain replay, one upstream call per user
-//     message, chained via previousDialogueId. System messages splice into the
-//     first user query as a preamble (API-017); they are never dropped.
-//     Assistant history is not re-sent (accepted trade-off, SDD §5.3B).
+// request (SDD §5.3). There is only one mode: full chain replay — one upstream
+// call per user message, chained via previousDialogueId. System messages
+// splice into the first user query as a preamble (API-017); they are never
+// dropped. Assistant history is not re-sent (accepted trade-off, SDD §5.3B).
 type TurnPlan struct {
 	Queries []string
 	// Media[i] are the image URLs that belong to Queries[i] (IMG-006): an image
@@ -89,55 +87,4 @@ func PlanFullReplay(msgs []Msg, maxTurns int) (*TurnPlan, error) {
 		plan.Media = append(plan.Media, t.media)
 	}
 	return plan, nil
-}
-
-// PlanDelta builds the sticky-hit turn plan: only the user messages after the
-// stored frontier (storedMsgCount = non-system message count at the time the
-// entry was stored). System messages appearing in the delta tail splice into
-// the first delta user query. Returns ErrNoUserMessage when there is nothing
-// new to send.
-func PlanDelta(msgs []Msg, storedMsgCount int) (*TurnPlan, error) {
-	if storedMsgCount < 0 {
-		return nil, ErrNoUserMessage{}
-	}
-	// Walk the FULL list (not a system-filtered copy) so that a system message
-	// the client appends after the stored frontier is carried into the delta:
-	// filtering system messages out first made the tail system-free by
-	// construction, silently dropping them and making the splice below dead
-	// code. Non-system messages still advance the frontier, so the frontier
-	// arithmetic the caller stores (CountNonSystem) is unchanged.
-	var systemParts []string
-	var queries []string
-	var media [][]MediaRef
-	seen := 0
-	for _, m := range msgs {
-		if m.Role == "system" {
-			if seen >= storedMsgCount {
-				if t := strings.TrimSpace(m.Content); t != "" {
-					systemParts = append(systemParts, t)
-				}
-			}
-			continue
-		}
-		seen++
-		if seen <= storedMsgCount {
-			continue
-		}
-		if m.Role != "user" || (m.Content == "" && len(m.Media) == 0) {
-			continue
-		}
-		q := m.Content
-		if len(queries) == 0 && len(systemParts) > 0 {
-			q = strings.Join(systemParts, "\n\n") + "\n\n---\n\n" + q
-		}
-		if q == "" {
-			q = DefaultImageOnlyQuery
-		}
-		queries = append(queries, q)
-		media = append(media, m.Media)
-	}
-	if len(queries) == 0 {
-		return nil, ErrNoUserMessage{}
-	}
-	return &TurnPlan{Queries: queries, Media: media}, nil
 }

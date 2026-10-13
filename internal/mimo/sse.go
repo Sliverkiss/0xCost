@@ -72,7 +72,7 @@ func UpstreamMessage(err error) string {
 //
 // Everything else keeps the historical behaviour (a failed turn, no retry).
 var (
-	// ErrUpstreamBusy is a transient upstream throttle: retry with backoff.
+	// ErrUpstreamBusy is a transient upstream throttle: retry immediately.
 	ErrUpstreamBusy = errors.New("upstream busy")
 	// ErrUpstreamModelRejected is a model this channel refuses: never retry.
 	ErrUpstreamModelRejected = errors.New("upstream rejected the model name")
@@ -427,21 +427,4 @@ func truncateForLog(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
-}
-
-// flexBool accepts the boolean forms the upstream mixes: true/false, the
-// strings "true"/"false"/"True"/"False", and 0/1. Anything else is false.
-type flexBool bool
-
-func (b *flexBool) UnmarshalJSON(raw []byte) error {
-	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-	switch strings.ToLower(s) {
-	case "true", "1":
-		*b = true
-	case "false", "0", "null", "":
-		*b = false
-	default:
-		*b = false
-	}
-	return nil
 }

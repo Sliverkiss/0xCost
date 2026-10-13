@@ -126,7 +126,7 @@ func TestEnvOverrides(t *testing.T) {
 		{"refresh", c.RenewInterval(), 90 * time.Minute},
 		{"tz", c.Timezone(), "UTC"},
 		{"ua", c.UserAgent(), "ua-test"},
-		{"log", c.LogLevel(), "debug"},
+		{"debug", c.Debug(), true},
 		{"replay", c.ReplayCap(), 3},
 		{"probe", c.ProbeInterval(), 11 * time.Second},
 		{"otpAuto", c.OTPAuto(), false},
@@ -272,13 +272,7 @@ func TestLogLevelDebugAccessor(t *testing.T) {
 		if got := cfg.Debug(); got != tc.want {
 			t.Errorf("Debug() with level %q = %v, want %v", tc.level, got, tc.want)
 		}
-		wantLevel := strings.TrimSpace(tc.level)
-		if wantLevel == "" {
-			wantLevel = DefaultLogLevel // empty env falls back to the default
-		}
-		if got := cfg.LogLevel(); got != wantLevel {
-			t.Errorf("LogLevel() = %q, want %q", got, wantLevel)
-		}
+
 	}
 }
 

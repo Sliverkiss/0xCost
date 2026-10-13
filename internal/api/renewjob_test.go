@@ -197,7 +197,7 @@ func TestRenewJobTransientFailureRetriesNextTick(t *testing.T) {
 	live := jobAccount("acc-job-a", testutil.TestPH, testutil.TestCookie, "V1:rt-a")
 	s, _ := newRenewJobStack(t, live)
 	// Every renewal is refused with a 500: transient by classification
-	// (IsDeadCredential says no).
+	// (renewalFailureClass says no).
 	s.passport.SetServiceLoginResponse(`&&&START&&&{"code":500,"description":"busy"}`)
 
 	stop := startJob(s, 0)

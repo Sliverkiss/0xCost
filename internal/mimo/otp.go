@@ -269,7 +269,7 @@ func codeCheck(m map[string]any, what string) error {
 	return nil
 }
 
-// StartOTP opens a new-device verification session and sends the OTP code
+// startOTP opens a new-device verification session and sends the OTP code
 // (SDD §2.2 amendment, steps 1-4):
 //  1. walk the notificationUrl chain — a plain identity entry, or (from a
 //     non-mainland egress IP) the cross-region consent page followed by the
@@ -279,14 +279,10 @@ func codeCheck(m map[string]any, what string) error {
 //  4. POST /identity/auth/send{Phone,Email}Ticket — X-Requested-With:
 //     XMLHttpRequest is MANDATORY (without it email send always fails
 //     66108, 2026-09-23 packet capture).
-func (c *Client) StartOTP(ctx context.Context, notificationURL, sid string, seedJar map[string]string) (*OTPChallenge, error) {
-	return c.startOTP(ctx, notificationURL, sid, seedJar, !c.disableCrossRegionAgree)
-}
-
-// startOTP is StartOTP with the cross-region consent decision threaded
-// explicitly: startVerification performs the consent POST only when
-// agreeConsent is true. Login/LoginWithConsent pass their effective decision
-// here (consent.go).
+//
+// The cross-region consent decision is threaded explicitly: startVerification
+// performs the consent POST only when agreeConsent is true. Login/
+// LoginWithConsent pass their effective decision here (consent.go).
 func (c *Client) startOTP(ctx context.Context, notificationURL, sid string, seedJar map[string]string, agreeConsent bool) (*OTPChallenge, error) {
 	tgt, err := c.startVerification(ctx, notificationURL, sid, seedJar, agreeConsent)
 	if err != nil {

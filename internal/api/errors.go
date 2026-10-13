@@ -16,7 +16,7 @@ import (
 )
 
 // encodeJSON writes v as a JSON response body. Plain io.Writer: the chat path
-// encodes into a buffer first so the in-flight slot can go back before anything
+// encodes into a buffer first so the lease can be released before anything
 // is written to the client (ADR 0019).
 func encodeJSON(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
@@ -192,8 +192,8 @@ func upstreamTooLongMessage() string {
 // stream failures take the SSE error-frame path instead (TDD API-021,
 // ERRMAP-012).
 // requestTimeoutError: the gateway's own deadline fired (ADR 0019). It is not an
-// upstream failure and not the account's fault, so it neither cools the account
-// nor retries — the caller gets a 504 naming the knob that governs it.
+// upstream failure and not the account's fault, so it neither retries nor
+// touches pool state — the caller gets a 504 naming the knob that governs it.
 type requestTimeoutError struct {
 	Budget time.Duration
 	Where  string

@@ -12,40 +12,6 @@ import (
 // (TDD §6.2 floors; each assertion pins observable behaviour.)
 // ============================================================================
 
-// CountNonSystem is the replay-guard frontier counter (SDD §4.2, STICKY-003):
-// only non-system messages count, and that count is what PlanDelta consumes.
-func TestCountNonSystem(t *testing.T) {
-	cases := []struct {
-		name string
-		msgs []Msg
-		want int
-	}{
-		{"nil", nil, 0},
-		{"system only", []Msg{{Role: "system", Content: "s"}}, 0},
-		{"no system", []Msg{{Role: "user", Content: "q"}, {Role: "assistant", Content: "a"}}, 2},
-		{"mixed", []Msg{
-			{Role: "system", Content: "s"},
-			{Role: "user", Content: "q"},
-			{Role: "assistant", Content: "a"},
-			{Role: "system", Content: "s2"},
-		}, 2},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := CountNonSystem(tc.msgs); got != tc.want {
-				t.Errorf("CountNonSystem = %d, want %d", got, tc.want)
-			}
-		})
-	}
-
-	// The counter is exactly the frontier PlanDelta expects: with a stored
-	// count equal to CountNonSystem, there is nothing new to send.
-	msgs := []Msg{{Role: "system", Content: "s"}, {Role: "user", Content: "q"}}
-	if _, err := PlanDelta(msgs, CountNonSystem(msgs)); err == nil {
-		t.Error("frontier == CountNonSystem must leave no delta to send")
-	}
-}
-
 // ErrNoUserMessage / ErrTooManyTurns must render actionable messages and be
 // reachable via errors.As (the API layer maps them to 400s).
 func TestTurnPlanErrors(t *testing.T) {
@@ -76,43 +42,6 @@ func TestTurnPlanErrors(t *testing.T) {
 		got := err.Error()
 		if !strings.Contains(got, "3 user turns") || !strings.Contains(got, "cap of 2") {
 			t.Errorf("Error() = %q, must name the turn count and the cap", got)
-		}
-	})
-}
-
-// PlanDelta edge branches: negative frontier, empty/assistant-only tails, and
-// empty user content are all rejected rather than emitting a bogus query.
-func TestPlanDeltaEdgeBranches(t *testing.T) {
-	t.Run("negative frontier", func(t *testing.T) {
-		if _, err := PlanDelta([]Msg{{Role: "user", Content: "q"}}, -1); err == nil {
-			t.Error("negative frontier must be rejected")
-		}
-	})
-	t.Run("assistant-only tail", func(t *testing.T) {
-		msgs := []Msg{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}}
-		if _, err := PlanDelta(msgs, 1); err == nil {
-			t.Error("tail with no user message must be rejected")
-		}
-	})
-	t.Run("empty user content skipped", func(t *testing.T) {
-		msgs := []Msg{{Role: "user", Content: "q1"}, {Role: "user", Content: ""}}
-		if _, err := PlanDelta(msgs, 1); err == nil {
-			t.Error("empty trailing user message must be rejected, not sent")
-		}
-	})
-	t.Run("multiple delta turns preserved in order", func(t *testing.T) {
-		msgs := []Msg{
-			{Role: "user", Content: "q1"},
-			{Role: "assistant", Content: "a1"},
-			{Role: "user", Content: "q2"},
-			{Role: "user", Content: "q3"},
-		}
-		plan, err := PlanDelta(msgs, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(plan.Queries) != 2 || plan.Queries[0] != "q2" || plan.Queries[1] != "q3" {
-			t.Errorf("queries = %+v, want [q2 q3]", plan.Queries)
 		}
 	})
 }
@@ -232,113 +161,5 @@ func TestSplitterByteAtATime(t *testing.T) {
 		if strings.Contains(p.Text, "<") || strings.Contains(p.Text, "\x00") {
 			t.Errorf("leaked marker byte in %q", p.Text)
 		}
-	}
-}
-
-// STICKY-DELTA-SYS-001: a system message the client appends AFTER the stored
-// frontier must ride along in the delta turn — the documented contract of
-// PlanDelta ("system messages appearing in the delta tail splice into the
-// first delta user query"). Filtering system messages out before slicing made
-// that branch unreachable and silently dropped the message.
-func TestPlanDeltaCarriesTrailingSystemMessage(t *testing.T) {
-	t.Run("appended after the frontier", func(t *testing.T) {
-		msgs := []Msg{
-			{Role: "system", Content: "original rules"},
-			{Role: "user", Content: "q1"},
-			{Role: "assistant", Content: "a1"},
-			{Role: "system", Content: "new constraint: answer in French"},
-			{Role: "user", Content: "q2"},
-		}
-		// Frontier: system + q1 + a1 → 2 non-system messages stored.
-		plan, err := PlanDelta(msgs, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(plan.Queries) != 1 {
-			t.Fatalf("queries = %+v, want exactly the delta turn", plan.Queries)
-		}
-		if !strings.Contains(plan.Queries[0], "new constraint: answer in French") {
-			t.Errorf("query = %q, want the trailing system message spliced in", plan.Queries[0])
-		}
-		if !strings.Contains(plan.Queries[0], "q2") {
-			t.Errorf("query = %q, want it to end with the new user message", plan.Queries[0])
-		}
-		if strings.Contains(plan.Queries[0], "original rules") {
-			t.Errorf("query = %q, must not replay the pre-frontier system message", plan.Queries[0])
-		}
-	})
-	t.Run("pre-frontier system message does not shift the frontier", func(t *testing.T) {
-		msgs := []Msg{
-			{Role: "system", Content: "s"},
-			{Role: "user", Content: "q1"},
-			{Role: "assistant", Content: "a1"},
-			{Role: "user", Content: "q2"},
-		}
-		plan, err := PlanDelta(msgs, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(plan.Queries) != 1 || plan.Queries[0] != "q2" {
-			t.Errorf("queries = %+v, want exactly [q2] with no system prefix", plan.Queries)
-		}
-	})
-}
-
-// FrontierHash / SystemPreamble (SDD §4.3.1): the canonical, untruncated
-// inputs session identity and frontier verification are built on.
-func TestFrontierHashCanonical(t *testing.T) {
-	base := []Msg{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}}
-	if got := FrontierHash(base); len(got) != 32 {
-		t.Errorf("FrontierHash = %q, want 32 hex chars", got)
-	}
-	if FrontierHash(nil) != "" || FrontierHash([]Msg{{Role: "system", Content: "s"}}) != "" {
-		t.Error("an empty (or system-only) history must hash to the empty string")
-	}
-	// System messages do not participate, so a preamble change cannot alter the
-	// frontier's identity.
-	withSystem := append([]Msg{{Role: "system", Content: "you are terse"}}, base...)
-	if FrontierHash(withSystem) != FrontierHash(base) {
-		t.Error("the system preamble changed the frontier hash")
-	}
-	// Deterministic across calls.
-	if FrontierHash(base) != FrontierHash(base) {
-		t.Error("FrontierHash is not deterministic")
-	}
-	// An edited early turn changes the hash — the property the old 5-message
-	// window lacked (SESS-012).
-	grown := append(append([]Msg{}, base...), Msg{Role: "user", Content: "q2"})
-	edited := append([]Msg{{Role: "user", Content: "EDITED"}}, grown[1:]...)
-	if FrontierHash(edited) == FrontierHash(grown) {
-		t.Error("an edited early turn did not change the frontier hash")
-	}
-	// Length-prefixing keeps field boundaries unambiguous.
-	if FrontierHash([]Msg{{Role: "user", Content: "ab"}, {Role: "user", Content: "c"}}) ==
-		FrontierHash([]Msg{{Role: "user", Content: "a"}, {Role: "user", Content: "bc"}}) {
-		t.Error("content boundaries are not respected in the frontier hash")
-	}
-	// Unicode content is hashed as-is (no rune truncation).
-	long := strings.Repeat("长", 500)
-	if FrontierHash([]Msg{{Role: "user", Content: long}}) == FrontierHash([]Msg{{Role: "user", Content: strings.Repeat("长", 250)}}) {
-		t.Error("long content collided with a prefix of itself")
-	}
-}
-
-func TestSystemPreambleCanonical(t *testing.T) {
-	if got := SystemPreamble(nil); got != "" {
-		t.Errorf("SystemPreamble(nil) = %q, want empty", got)
-	}
-	if got := SystemPreamble([]Msg{{Role: "user", Content: "hi"}}); got != "" {
-		t.Errorf("SystemPreamble without a system message = %q, want empty", got)
-	}
-	one := SystemPreamble([]Msg{{Role: "system", Content: "be terse"}})
-	two := SystemPreamble([]Msg{{Role: "system", Content: "be terse"}, {Role: "system", Content: "and kind"}})
-	if one == "" || two == "" || one == two {
-		t.Errorf("preambles = %q / %q, want distinct non-empty values", one, two)
-	}
-	if SystemPreamble([]Msg{{Role: "system", Content: "be terse"}}) != one {
-		t.Error("SystemPreamble is not deterministic")
-	}
-	if !strings.Contains(one, "be terse") {
-		t.Errorf("preamble %q does not carry the system text", one)
 	}
 }

@@ -117,7 +117,8 @@ func TestRenewSweepOnlyInvalid(t *testing.T) {
 	}
 	// Unknown cookie: Validate fails with an auth error (needs renewal).
 	err := client.Validate(context.Background(), `userId=999; serviceToken=st-bogus`)
-	if !IsAuthExpiredErr(err) {
+	var authIf interface{ IsAuthExpired() bool }
+	if !errors.As(err, &authIf) {
 		t.Fatalf("invalid session: err = %v, want auth-expired", err)
 	}
 }
@@ -133,7 +134,8 @@ func TestRenewValidationBusinessCode(t *testing.T) {
 	defer up.Close()
 	client := New(Options{Base: up.URL})
 	err := client.Validate(context.Background(), "userId=1; serviceToken=x")
-	if !IsAuthExpiredErr(err) {
+	var authIf interface{ IsAuthExpired() bool }
+	if !errors.As(err, &authIf) {
 		t.Fatalf("err = %v, want auth-expired (business code non-zero)", err)
 	}
 }
@@ -169,7 +171,8 @@ func TestValidateTransportError(t *testing.T) {
 	if err == nil {
 		t.Fatal("dead server must error")
 	}
-	if IsAuthExpiredErr(err) {
+	var notAuthIf interface{ IsAuthExpired() bool }
+	if errors.As(err, &notAuthIf) {
 		t.Errorf("transport error misclassified as auth-expired: %v", err)
 	}
 }

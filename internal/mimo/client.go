@@ -455,12 +455,6 @@ func (authError) IsAuthExpired() bool { return true }
 // AuthError wraps err as an auth-expired signal.
 func AuthError(err error) error { return authError{err} }
 
-// IsAuthExpiredErr reports whether err signals a dead upstream session.
-func IsAuthExpiredErr(err error) bool {
-	var ae interface{ IsAuthExpired() bool }
-	return errors.As(err, &ae) && ae.IsAuthExpired()
-}
-
 // Chat performs one upstream chat turn (SDD §2.4). The msgId is minted
 // here and is fresh on every call — upstream dedupes by msgId, so retries
 // re-enter Chat rather than resend (SDD §2.4). No retry logic lives here:

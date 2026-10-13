@@ -326,7 +326,8 @@ func TestChat401AuthExpired(t *testing.T) {
 	_, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
 		Query: "hi", Model: "mimo-128k",
 	})
-	if !IsAuthExpiredErr(err) {
+	var authExpiredIf interface{ IsAuthExpired() bool }
+	if !errors.As(err, &authExpiredIf) {
 		t.Fatalf("err = %v, want auth-expired", err)
 	}
 	var ue *UpstreamError
@@ -350,7 +351,8 @@ func TestChatNon200UpstreamError(t *testing.T) {
 	if !errors.As(err, &ue) || ue.StatusCode != 429 {
 		t.Fatalf("err = %v, want UpstreamError 429", err)
 	}
-	if IsAuthExpiredErr(err) {
+	var notAuthIf interface{ IsAuthExpired() bool }
+	if errors.As(err, &notAuthIf) {
 		t.Error("429 must not be auth-expired")
 	}
 }

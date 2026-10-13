@@ -53,20 +53,11 @@ services:
       # finishes a human gate (ADR 0013).
       - MIMO2API_RENEW_INTERVAL=${MIMO2API_RENEW_INTERVAL:-60}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
-      # ADR 0019: a real client-facing budget, the per-turn/slot TTL, and the
-      # conservative slot policy. Pinned so a default change cannot silently
-      # alter when capacity goes back to the pool.
+      # ADR 0019: a real client-facing budget and the per-turn silence window.
+      # Pinned so a default change cannot silently alter when a slow request
+      # is cut.
       - MIMO2API_REQUEST_TIMEOUT_MS=${MIMO2API_REQUEST_TIMEOUT_MS:-120000}
       - MIMO2API_LEASE_TTL_S=${MIMO2API_LEASE_TTL_S:-120}
-      - MIMO2API_SLOT_HOLD=${MIMO2API_SLOT_HOLD:-last-byte}
-      # 0 = per-channel caps (50k fastchat / 102,400 others); a positive value is the
-      # operator override for a client that sends more context than the Studio's
-      # own UI would (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
-      - MIMO2API_MAX_QUERY_CHARS=${MIMO2API_MAX_QUERY_CHARS:-0}      # Chat serves both transports on one pipeline (ADR 0034, superseding ADR 0017):
-      # no field or `stream:false` gives one JSON body, `stream:true` gives OpenAI SSE
-      # chunks. Nothing is written before the upstream's first delta — that is what keeps
-      # account failover working; after that point a failure arrives in-band as an `error`
-      # frame instead of a status code.
     healthcheck:
       test: ["CMD", "/mimo2api", "healthcheck"] # GET /healthz, exit 0/1
       interval: 30s

@@ -62,7 +62,7 @@ func TestRiskControlRecordsEvent(t *testing.T) {
 func TestRiskControlIsNotPermanent(t *testing.T) {
 	p, _ := poolWithEgress(t, nil)
 	p.ReportRiskControl("a1", "upstream 461", RiskEvent{Status: 461})
-	if p.PermanentOf("a1") {
+	if perm := permanentOf(t, p, "a1"); perm {
 		t.Error("461 was recorded as permanent; permanence needs account-scoped evidence we do not have")
 	}
 }
@@ -72,7 +72,7 @@ func TestRiskControlIsNotPermanent(t *testing.T) {
 func TestDeadPassTokenStaysPermanent(t *testing.T) {
 	p, _ := poolWithEgress(t, nil)
 	p.ReportDisabled("a1", "passToken rejected", true)
-	if !p.PermanentOf("a1") {
+	if perm := permanentOf(t, p, "a1"); !perm {
 		t.Error("a dead passToken must stay permanent")
 	}
 }
@@ -108,7 +108,7 @@ func TestRestricted451FollowsSamePath(t *testing.T) {
 	if len(events) != 1 || events[0].Status != 451 {
 		t.Fatalf("events = %+v, want one 451", events)
 	}
-	if p.PermanentOf("a1") {
+	if perm := permanentOf(t, p, "a1"); perm {
 		t.Error("451 must not be permanent")
 	}
 }
@@ -137,4 +137,16 @@ func TestRiskControlUnknownAccount(t *testing.T) {
 	if len(p.RiskEvents()) != 1 {
 		t.Error("the event was not recorded")
 	}
+}
+
+// permanentOf reads an account's permanent flag through the operator-facing
+// Snapshot the /v1/admin/pool view is built from.
+func permanentOf(t *testing.T, p *Pool, id string) bool {
+	t.Helper()
+	for _, s := range p.Snapshot() {
+		if s.ID == id {
+			return s.Permanent
+		}
+	}
+	return false
 }

@@ -24,7 +24,7 @@ One static binary. One key. Standard OpenAI requests in, standard OpenAI respons
 - 🧠 **Deep thinking** — reasoning returned as `reasoning_content` (streamed as `delta.reasoning_content`)
 - 🖼️ **Image understanding** — `image_url` content parts (http(s) URLs and base64 data URLs)
 - 🔉 **Audio** — `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `GET /v1/audio/voices`
-- 🔄 **Account pool** — round-robin with per-account in-flight caps and leases; upstream failures pass through verbatim (no cooldown/backoff)
+- 🔄 **Account pool** — EWMA-latency selection with round-robin fairness inside the best band; a lease names the account one request talks to. Upstream failures pass through verbatim (no cooldown/backoff)
 - 💾 **Account store: file or Upstash Redis** — the same binary, no volume needed with Redis
 - 🩺 **`GET /healthz`** — plus an operator surface (`/v1/admin/pool`, OTP and consent endpoints)
 - 📦 **Single static binary** — distroless, non-root, no shell, no runtime dependencies
@@ -110,9 +110,8 @@ that block, it does not reach the process.
 | `DS_REDIS_CA_FILE` | unset | CA bundle when the store uses TLS |
 | `MIMO2API_DEFAULT_MODEL` | `mimo-v2.6-pro` | model used when a request omits `model` |
 | `MIMO2API_LOG_LEVEL` | `info` | `debug` also logs upstream error bodies |
-| `MIMO2API_MAX_QUERY_CHARS` | `0` | `0` = the platform's own per-channel ceiling; a positive value overrides it |
 | `MIMO2API_REQUEST_TIMEOUT_MS` | `120000` | client-facing deadline for one turn |
-| `MIMO2API_LEASE_TTL_S` | `120` | how long an account stays leased to one turn |
+| `MIMO2API_LEASE_TTL_S` | `120` | per-turn upstream silence window — a turn that goes quiet longer than this is cut |
 | `MIMO2API_OTP_AUTO` | `false` | never submit a verification code on its own; a human gate stays human |
 
 The full list with defaults lives in `internal/config/config.go`.

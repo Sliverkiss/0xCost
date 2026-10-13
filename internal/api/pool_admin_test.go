@@ -182,19 +182,20 @@ func TestPoolViewMasksIDsStably(t *testing.T) {
 }
 
 // POOLVIEW-006: the fields an operator actually diagnoses with are present.
-// A recorded 429 is diagnostics only (owner ruling 2026-10): the account stays
-// available and the last_error block carries its status and timestamp.
+// A risk-control signal is the one failure class that lands in the last_error
+// block (owner ruling 2026-10: everything else passes through untouched) —
+// and its status and timestamp must be visible next to the disabled state.
 func TestPoolViewCarriesDiagnosticFields(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{APIKeys: []string{"k-test"}})
-	ts.Pool.Report429("acc1")
+	ts.Pool.ReportRiskControl("acc1", "upstream 461 (account restricted)", pool.RiskEvent{Status: 461})
 	_, body, raw := poolView(t, ts, "k-test")
 	rows, _ := body["pool"].([]any)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	row, _ := rows[0].(map[string]any)
-	if row["state"] != string(pool.StateAvailable) {
-		t.Errorf("state = %v, want available (a 429 is diagnostics, not a state change)", row["state"])
+	if row["state"] != string(pool.StateDisabled) {
+		t.Errorf("state = %v, want disabled (a 451/461 fails closed)", row["state"])
 	}
 	if _, present := row["cooldown"]; present {
 		t.Error("the per-account cooldown block is gone with the mechanism; it must not appear")
@@ -206,8 +207,8 @@ func TestPoolViewCarriesDiagnosticFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("last_error is missing: %s", raw)
 	}
-	if int(last["status"].(float64)) != 429 {
-		t.Errorf("last_error status = %v, want 429", last["status"])
+	if int(last["status"].(float64)) != 461 {
+		t.Errorf("last_error status = %v, want 461", last["status"])
 	}
 	if _, ok := last["at"].(string); !ok {
 		t.Errorf("last_error at is missing: %v", last["at"])

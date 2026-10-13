@@ -330,11 +330,3 @@ func healthAddr(cfg *config.Config) string {
 	}
 	return fmt.Sprintf("%s:%d", host, cfg.Port())
 }
-
-// plural returns "y"/"ies" for the swept-entries log line.
-func plural(n int) string {
-	if n == 1 {
-		return "y"
-	}
-	return "ies"
-}

@@ -152,7 +152,7 @@ func TestSTSExchange(t *testing.T) {
 	passport := testutil.NewMockPassport("http://upstream.invalid")
 	defer passport.Close()
 	client := New(Options{Base: "http://upstream.invalid", PassportHosts: []string{passport.Host()}})
-	sess, err := client.stsExchange(context.Background(), passport.URL()+"/sts?sign=t")
+	sess, err := client.stsExchangeWithJar(context.Background(), passport.URL()+"/sts?sign=t", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestLoginSessionFields(t *testing.T) {
 // host is refused (open-redirect guard).
 func TestLocationHostAllowlist(t *testing.T) {
 	client := New(Options{})
-	_, err := client.stsExchange(context.Background(), "https://evil.example/sts?sign=x")
+	_, err := client.stsExchangeWithJar(context.Background(), "https://evil.example/sts?sign=x", nil)
 	if err == nil {
 		t.Fatal("evil host must be refused")
 	}

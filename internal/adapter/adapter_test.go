@@ -320,24 +320,6 @@ func TestPlanFullReplay(t *testing.T) {
 	}
 }
 
-func TestPlanDelta(t *testing.T) {
-	msgs := []Msg{
-		{Role: "user", Content: "q1"},
-		{Role: "assistant", Content: "a1"},
-		{Role: "user", Content: "q2"},
-	}
-	plan, err := PlanDelta(msgs, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Queries) != 1 || plan.Queries[0] != "q2" {
-		t.Fatalf("queries = %+v", plan.Queries)
-	}
-	if _, err := PlanDelta(msgs, 3); err == nil {
-		t.Errorf("no delta beyond frontier must be rejected")
-	}
-}
-
 // ============================================================================
 // Model normalization — TDD API-013 (SDD §2.6, §5.2)
 // ============================================================================

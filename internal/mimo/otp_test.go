@@ -240,11 +240,11 @@ func TestOTPAutoDisabled(t *testing.T) {
 	}
 }
 
-// OTP-010: notificationUrl host NOT allowlisted → StartOTP refuses
+// OTP-010: notificationUrl host NOT allowlisted → startOTP refuses
 // (open-redirect guard).
 func TestOTPNotificationHostGuard(t *testing.T) {
 	client := New(Options{})
-	if _, err := client.StartOTP(context.Background(), "https://evil.example/pass2/redirect?sid=x", "xiaomichatbot", nil); err == nil {
+	if _, err := client.startOTP(context.Background(), "https://evil.example/pass2/redirect?sid=x", "xiaomichatbot", nil, true); err == nil {
 		t.Fatal("evil notificationUrl host must be refused")
 	} else if !strings.Contains(err.Error(), "allowlisted") {
 		t.Errorf("err = %v, want allowlist mention", err)

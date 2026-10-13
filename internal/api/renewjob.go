@@ -12,8 +12,8 @@ package api
 //     (MIMO2API_RENEW_INTERVAL, default 1h);
 //   * every enabled account with a passToken, walked serially in ID order —
 //     no concurrent upstream renewal burst;
-//   * per account: Renew first; a dead credential (IsDeadCredential) runs
-//     one password Login on the same round; anything else is a logged
+//   * per account: Renew first; a dead credential (renewalFailureClass)
+//     runs one password Login on the same round; anything else is a logged
 //     failure;
 //   * no retry storm, no backoff: a failure simply waits for the next tick
 //     (same ruling that removed cooldown/backoff from the pool).
@@ -191,14 +191,6 @@ func (s *Server) renewOne(ctx context.Context, acct accounts.Account) {
 	s.pool.Enable(acct.ID)
 	s.pool.ReportSuccess(acct.ID)
 	s.logger.Printf("[renew-job] %s login-ok", acct.ID)
-}
-
-// IsDeadCredential reports whether a renewal/keepalive error means the stored
-// credential itself is gone (a login is required), as opposed to a transient
-// upstream failure that the next sweep should simply retry.
-func IsDeadCredential(err error) bool {
-	dead, _ := renewalFailureClass(err)
-	return dead
 }
 
 // renewalFailureClass tells a dead credential (needs a login) from a transient

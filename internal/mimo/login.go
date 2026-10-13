@@ -298,15 +298,10 @@ func (c *Client) login(ctx context.Context, phone, password string, agreeConsent
 	return sess, nil
 }
 
-// stsExchange follows a one-time STS location (host must be the aistudio
+// stsExchangeWithJar follows a one-time STS location (host must be the aistudio
 // upstream, account.xiaomi.com, or another allowlisted passport host; TDD
 // LOGIN-008) and assembles the working cookie string (SDD §2.2 step 3 /
-// §2.3 step 3).
-func (c *Client) stsExchange(ctx context.Context, location string) (*Session, error) {
-	return c.stsExchangeWithJar(ctx, location, nil)
-}
-
-// stsExchangeWithJar walks the whole landing chain, seeding it with the
+// §2.3 step 3), walking the whole landing chain, seeding it with the
 // cookies the caller already holds. Live shape (2026-10-09):
 //
 //	/identity/result/check → 302 → /pass/serviceLoginAuth2/end → 302 →
@@ -529,28 +524,4 @@ func (c *Client) Validate(ctx context.Context, cookie string) error {
 	}
 	return nil
 
-}
-
-// FetchLoginContext is the exported diagnostic wrapper around
-// fetchLoginContext for cmd/loginprobe.
-func (c *Client) FetchLoginContext(ctx context.Context) (*LoginContext, error) {
-	return c.fetchLoginContext(ctx)
-}
-
-// HTTPDo is the exported diagnostic wrapper exposing the underlying
-// http.Client.Do for cmd/loginprobe raw-response dumps.
-func (c *Client) HTTPDo(req *http.Request) (*http.Response, error) {
-	return c.http.Do(req)
-}
-
-// HTTPDoManual performs a request WITHOUT following redirects (intermediate
-// Set-Cookie must be captured by the caller); diagnostic wrapper for probes.
-func (c *Client) HTTPDoManual(req *http.Request) (*http.Response, error) {
-	manual := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Timeout: c.http.Timeout,
-	}
-	return manual.Do(req)
 }

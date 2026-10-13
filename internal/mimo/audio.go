@@ -62,14 +62,6 @@ func IsConversationMissing(err error) bool {
 	return strings.Contains(be.Msg, "conversation not exist") || strings.Contains(be.Msg, "会话不存在")
 }
 
-// IsUnknownModel reports the upstream's response to an unknown modelCode
-// (reverse doc §3: an unresolvable model is answered with "modelCode cannot
-// be empty" rather than a model-name error).
-func IsUnknownModel(err error) bool {
-	var be *BizError
-	return errors.As(err, &be) && strings.Contains(be.Msg, "modelCode cannot be empty")
-}
-
 // IsModelRefused reports the upstream refusing a modelCode it was sent: either
 // the explicit refusal ("model: [x] not support") or the misleading message it
 // uses for an id it cannot resolve at all ("modelCode cannot be empty"). Both are

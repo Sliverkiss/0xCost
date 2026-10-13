@@ -46,25 +46,21 @@ func TestRoundRobinFairness(t *testing.T) {
 	}
 }
 
-// PASSFAIL (owner ruling 2026-10): a 429 recorded on the account leaves it
-// available. The only effect of Report429 is the diagnostic last-error
-// fields — it must never remove the account from selection.
-func Test429KeepsAccountAvailable(t *testing.T) {
+// PASSFAIL (owner ruling 2026-10): upstream failures never touch pool state.
+// A pool that has served traffic keeps every account available — there is no
+// code path left that cools an account down.
+func TestFailuresKeepAccountAvailable(t *testing.T) {
 	p, _ := newPool(2, Options{})
-	p.Report429("a1")
-	if st := p.StateOf("a1"); st != StateAvailable {
-		t.Fatalf("state after 429 = %s, want available", st)
-	}
 	for i := 0; i < 5; i++ {
 		l, err := p.Acquire(context.Background())
 		if err != nil {
-			t.Fatalf("acquire %d after 429: %v", i+1, err)
+			t.Fatalf("acquire %d: %v", i+1, err)
 		}
 		l.Release()
 	}
 	s := p.Summarize()
 	if s.Available != 2 || s.Disabled != 0 {
-		t.Errorf("summary after 429s = %+v, want 2 available 0 disabled", s)
+		t.Errorf("summary = %+v, want 2 available 0 disabled", s)
 	}
 }
 
@@ -133,7 +129,9 @@ func TestDisabledStates(t *testing.T) {
 	if st := p.StateOf("a1"); st != StateDisabled {
 		t.Fatalf("451 state = %s, want disabled", st)
 	}
-	_, reason := p.RuntimeState("a1")
+	p.mu.Lock()
+	reason := p.byID["a1"].reason
+	p.mu.Unlock()
 	if reason != "account restricted" {
 		t.Errorf("451 reason = %q", reason)
 	}
@@ -157,7 +155,9 @@ func TestDisabledPersistsAcrossRestart(t *testing.T) {
 	p, _ := newPool(2, Options{})
 	p.ReportDisabled("a2", "account restricted", false)
 
-	_, reason := p.RuntimeState("a2")
+	p.mu.Lock()
+	reason := p.byID["a2"].reason
+	p.mu.Unlock()
 	accts := []accounts.Account{
 		{ID: "a1", Enabled: true},
 		{ID: "a2", Enabled: true, State: "disabled", DisabledReason: reason},
@@ -171,38 +171,6 @@ func TestDisabledPersistsAcrossRestart(t *testing.T) {
 	}
 	if _, err := p2.Acquire(context.Background()); err != nil {
 		t.Errorf("restarted pool must still serve via a1: %v", err)
-	}
-}
-
-// Sticky acquisition: target won when available, fallback otherwise
-// (SDD §4.3).
-func TestAcquireSticky(t *testing.T) {
-	p, _ := newPool(2, Options{})
-	l, ok, err := p.AcquireSticky(context.Background(), "a1")
-	if err != nil || !ok || l.ID != "a1" {
-		t.Fatalf("sticky hit: lease=%v ok=%v err=%v", l, ok, err)
-	}
-	l.Release()
-
-	// Unknown target: fallback to a general acquire.
-	l2, ok2, err := p.AcquireSticky(context.Background(), "ghost")
-	if err != nil || ok2 {
-		t.Fatalf("sticky unknown: lease=%v ok=%v err=%v (want fallback)", l2, ok2, err)
-	}
-	l2.Release()
-
-	// Disabled target: fallback to another account.
-	p.ReportDisabled("a1", "account restricted", false)
-	l3, ok3, err := p.AcquireSticky(context.Background(), "a1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l3.Release()
-	if ok3 {
-		t.Error("disabled sticky target must not be won")
-	}
-	if l3.ID != "a2" {
-		t.Errorf("fallback lease = %s, want a2", l3.ID)
 	}
 }
 

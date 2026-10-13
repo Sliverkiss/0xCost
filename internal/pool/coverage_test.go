@@ -58,11 +58,9 @@ func TestIDs(t *testing.T) {
 }
 
 // Summarize counts each state bucket exactly once (healthz contract). With
-// cooldown gone there are exactly two buckets (owner ruling 2026-10): a 429
-// leaves the account in the available bucket.
+// cooldown gone there are exactly two buckets (owner ruling 2026-10).
 func TestSummarizeStates(t *testing.T) {
 	p, _ := newPool(3, Options{})
-	p.Report429("a1")
 	p.ReportDisabled("a2", "restricted", false)
 	s := p.Summarize()
 	if s.Total != 3 || s.Available != 2 || s.Disabled != 1 {
@@ -76,10 +74,6 @@ func TestUnknownAccountAccessors(t *testing.T) {
 	if st := p.StateOf("ghost"); st != StateDisabled {
 		t.Errorf("StateOf(ghost) = %s, want disabled", st)
 	}
-	st, reason := p.RuntimeState("ghost")
-	if st != StateDisabled || reason != "" {
-		t.Errorf("RuntimeState(ghost) = (%s,%q), want zero", st, reason)
-	}
 }
 
 // Release is defensive: nil receivers, unknown ids, and double-release must be
@@ -89,9 +83,6 @@ func TestReleaseDefensive(t *testing.T) {
 
 	var nilLease *Lease
 	nilLease.Release() // nil receiver: no panic
-	if !nilLease.Released() {
-		t.Error("nil lease must report released")
-	}
 
 	(&Lease{Pool: p, ID: "ghost"}).Release() // unknown id: no-op
 
@@ -99,14 +90,8 @@ func TestReleaseDefensive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.Released() {
-		t.Error("fresh lease must not report released")
-	}
 	l.Release()
 	l.Release() // double release must not block or panic
-	if !l.Released() {
-		t.Error("lease must report released after Release")
-	}
 
 	// Accounting intact: two sequential acquires still succeed.
 	for i := 0; i < 2; i++ {

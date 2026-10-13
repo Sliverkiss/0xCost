@@ -232,20 +232,3 @@ func (s *Store) Remove(id string) error {
 type ErrNotFound struct{ ID string }
 
 func (e *ErrNotFound) Error() string { return fmt.Sprintf("no account with id %q in this store", e.ID) }
-
-// ReplaceAll swaps the whole set (import/seeding) and writes every account
-// through. Used by `-import-redis`, never on the request path.
-func (s *Store) ReplaceAll(ctx context.Context, accounts []Account) error {
-	if err := validate(accounts); err != nil {
-		return fmt.Errorf("accounts: %w", err)
-	}
-	for _, a := range accounts {
-		if err := s.backend.SaveAccount(ctx, a); err != nil {
-			return err
-		}
-	}
-	s.mu.Lock()
-	s.accounts = append([]Account(nil), accounts...)
-	s.mu.Unlock()
-	return nil
-}

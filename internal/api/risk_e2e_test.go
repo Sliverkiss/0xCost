@@ -45,7 +45,13 @@ func TestRiskControl461DisablesAndRecords(t *testing.T) {
 	if got := ts.Pool.StateOf("acc1"); got != pool.StateDisabled {
 		t.Errorf("state = %v, want disabled", got)
 	}
-	if ts.Pool.PermanentOf("acc1") {
+	perm := false
+	for _, s := range ts.Pool.Snapshot() {
+		if s.ID == "acc1" {
+			perm = s.Permanent
+		}
+	}
+	if perm {
 		t.Error("461 must not be permanent: the form of the signal is unverified (REQ-10)")
 	}
 	events := ts.Pool.RiskEvents()

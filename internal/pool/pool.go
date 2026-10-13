@@ -78,10 +78,10 @@ type account struct {
 	disabled  bool
 	permanent bool // dead passToken: never auto-recovers (SDD §4.5.2, TDD RISK-003)
 	reason    string
-	// lastErrorStatus/lastErrorAt record the most recent upstream failure of
-	// any kind: "which error did this account last hit, and when" is the first
-	// question asked when reading a pool. Diagnostics only — they never change
-	// availability.
+	// lastErrorStatus/lastErrorAt record the most recent risk-control signal
+	// (451/461) that disabled this account: "which error hit it, and when" is
+	// the first question asked when reading a pool. Diagnostics only — they
+	// never change availability (ReportRiskControl is the sole writer).
 	lastErrorStatus int
 	lastErrorAt     time.Time
 	ewmaLatency     float64 // seconds, EWMA alpha 0.2 (SDD §4.4)
@@ -152,32 +152,11 @@ type Lease struct {
 	// Egress is the label of the egress this account's traffic must leave
 	// through (SDD §4.8). Every upstream call made for this lease uses it.
 	Egress string
-
-	mu       sync.Mutex
-	released bool
 }
 
-// Release marks the lease done. Idempotent; every path may release (early
-// return, deferred backstop) without double-counting.
-func (l *Lease) Release() {
-	if l == nil || l.Pool == nil {
-		return
-	}
-	l.mu.Lock()
-	l.released = true
-	l.mu.Unlock()
-}
-
-// Released reports whether the lease has already been released. Safe to call
-// on a nil lease.
-func (l *Lease) Released() bool {
-	if l == nil {
-		return true
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.released
-}
+// Release marks the lease done. Idempotent no-op; every path may release
+// (early return, deferred backstop) without double-counting.
+func (l *Lease) Release() {}
 
 // Acquire selects an available account. Selection is score-based with a
 // round-robin rotation inside the best band (SDD §4.4): the score is the
@@ -230,21 +209,6 @@ func (p *Pool) Acquire(ctx context.Context, excludeIDs ...string) (*Lease, error
 	return &Lease{Pool: p, ID: pick.id, Egress: pick.egress}, nil
 }
 
-// AcquireSticky acquires a specific account (sticky-session path, SDD
-// §4.3). When the target is not selectable it falls back to a general
-// Acquire; the bool reports whether the sticky target was won.
-func (p *Pool) AcquireSticky(ctx context.Context, accountID string) (*Lease, bool, error) {
-	p.mu.Lock()
-	a := p.byID[accountID]
-	if a != nil && !a.disabled && a.state == StateAvailable {
-		p.mu.Unlock()
-		return &Lease{Pool: p, ID: a.id, Egress: a.egress}, true, nil
-	}
-	p.mu.Unlock()
-	l, err := p.Acquire(ctx)
-	return l, false, err
-}
-
 // RecordFirstByte feeds first-byte latency into the EWMA selection term
 // (SDD §4.4).
 func (p *Pool) RecordFirstByte(accountID string, elapsed time.Duration) {
@@ -259,19 +223,6 @@ func (p *Pool) RecordFirstByte(accountID string, elapsed time.Duration) {
 // there is no failure state to clear; the call is kept as the pipeline's
 // "this request ended well" hook so callers need not branch on it.
 func (p *Pool) ReportSuccess(accountID string) {}
-
-// Report429 records the upstream's 429 as diagnostics only (owner ruling
-// 2026-10): the account stays available, the signal passes through to the
-// client, and the last-error fields exist so /v1/admin/pool can still show
-// what an account last answered.
-func (p *Pool) Report429(accountID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if a := p.byID[accountID]; a != nil {
-		a.lastErrorStatus = 429
-		a.lastErrorAt = p.now()
-	}
-}
 
 // ReportRiskControl records a risk-control signal (451/461) and disables the
 // account — fail closed, because we cannot yet tell an account-scoped block from
@@ -362,8 +313,9 @@ type AccountSnapshot struct {
 	Permanent     bool   `json:"permanent"`
 	Reason        string `json:"reason,omitempty"`
 	EWMALatencyMS int64  `json:"ewma_latency_ms"`
-	// LastErrorStatus/LastErrorAt record the most recent upstream failure seen
-	// on this account, purely as diagnostics — they never affect availability.
+	// LastErrorStatus/LastErrorAt record the risk-control signal (451/461) that
+	// disabled this account, purely as diagnostics — they never affect
+	// availability. Only disabled rows carry them.
 	LastErrorStatus int       `json:"last_error_status,omitempty"`
 	LastErrorAt     time.Time `json:"last_error_at,omitempty"`
 }
@@ -387,17 +339,6 @@ func (p *Pool) Snapshot() []AccountSnapshot {
 		})
 	}
 	return out
-}
-
-// PermanentOf reports whether an account's disable is permanent (a dead
-// passToken). Risk-control disables are never permanent (RISK-002).
-func (p *Pool) PermanentOf(accountID string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if a := p.byID[accountID]; a != nil {
-		return a.permanent
-	}
-	return false
 }
 
 // EgressOf reports an account's egress label (DefaultEgress when unset).
@@ -441,18 +382,6 @@ func (p *Pool) Enable(accountID string) {
 	a.permanent = false
 	a.reason = ""
 	a.state = StateAvailable
-}
-
-// RuntimeState returns the persisted-form state for the accounts file
-// (SDD §7.5): state and disabled_reason.
-func (p *Pool) RuntimeState(accountID string) (State, string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	a := p.byID[accountID]
-	if a == nil {
-		return StateDisabled, ""
-	}
-	return a.state, a.reason
 }
 
 // Summary is the /healthz pool summary: state counts only, no credentials

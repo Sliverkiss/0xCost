@@ -1,15 +1,12 @@
 package mimo
 
 // Coverage-gap tests for internal/mimo (TDD §6.2 floor: 80%). These pin the
-// exported diagnostics wrappers, the resolution helpers the redirect chain
-// depends on, and the error types' contract (message + errors.Is/As), rather
-// than padding statement counts.
+// resolution helpers the redirect chain depends on and the error types'
+// contract (message + errors.Is/As), rather than padding statement counts.
 
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -45,11 +42,12 @@ func TestErrorTypeContracts(t *testing.T) {
 	if !errors.Is(wrapped, inner) {
 		t.Error("AuthError dropped its cause — errors.Is(inner) must hold")
 	}
-	if !IsAuthExpiredErr(wrapped) {
-		t.Error("IsAuthExpiredErr(AuthError(x)) = false")
+	var authIf interface{ IsAuthExpired() bool }
+	if !errors.As(wrapped, &authIf) {
+		t.Error("AuthError(x) does not advertise auth-expiry")
 	}
-	if IsAuthExpiredErr(inner) {
-		t.Error("IsAuthExpiredErr(plain error) = true")
+	if errors.As(inner, &authIf) {
+		t.Error("plain error advertised auth-expiry")
 	}
 }
 
@@ -151,11 +149,11 @@ func TestCodeCheckTable(t *testing.T) {
 	}
 }
 
-// TestFetchLoginContextParsesProbe: the exported diagnostic wrapper must
-// return the probe's loginUrl parameters (SDD §2.2 step 1).
+// TestFetchLoginContextParsesProbe: the probe's login context must
+// return the loginUrl parameters (SDD §2.2 step 1).
 func TestFetchLoginContextParsesProbe(t *testing.T) {
 	client, passport := otpEnv(t)
-	lc, err := client.FetchLoginContext(context.Background())
+	lc, err := client.fetchLoginContext(context.Background())
 	if err != nil {
 		t.Fatalf("FetchLoginContext: %v", err)
 	}
@@ -169,51 +167,4 @@ func TestFetchLoginContextParsesProbe(t *testing.T) {
 		t.Error("LoginURL empty — the probe's loginUrl was not captured")
 	}
 	_ = passport
-}
-
-// TestHTTPDoFollowsRedirectsAndManualDoesNot: the manual variant is the
-// primitive the consent/landing chain walks depend on — it must surface the
-// intermediate 3xx and its Location/Set-Cookie instead of following it.
-func TestHTTPDoFollowsRedirectsAndManualDoesNot(t *testing.T) {
-	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "landed", Value: "1", Path: "/"})
-		_, _ = w.Write([]byte("final"))
-	}))
-	defer final.Close()
-	mid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "hop", Value: "1", Path: "/"})
-		http.Redirect(w, r, final.URL+"/done", http.StatusFound)
-	}))
-	defer mid.Close()
-
-	c := New(Options{Base: final.URL, PassportHosts: []string{"127.0.0.1"}})
-	ctx := context.Background()
-
-	// Manual: stops at the 302 and exposes Location.
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, mid.URL+"/start", nil)
-	resp, err := c.HTTPDoManual(req)
-	if err != nil {
-		t.Fatalf("HTTPDoManual: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("HTTPDoManual status = %d, want 302", resp.StatusCode)
-	}
-	if loc := resp.Header.Get("Location"); !strings.HasSuffix(loc, "/done") {
-		t.Errorf("HTTPDoManual Location = %q, want the target", loc)
-	}
-	if resp.Header.Get("Set-Cookie") == "" {
-		t.Error("HTTPDoManual lost the intermediate Set-Cookie")
-	}
-
-	// Following: lands on the final body.
-	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, mid.URL+"/start", nil)
-	resp2, err := c.HTTPDo(req2)
-	if err != nil {
-		t.Fatalf("HTTPDo: %v", err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Errorf("HTTPDo status = %d, want 200 after following", resp2.StatusCode)
-	}
 }
