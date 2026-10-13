@@ -17,8 +17,6 @@ func testEnv(t *testing.T, kv map[string]string) {
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", "MIMO2API_QUEUE_WAIT_S",
 		"MIMO2API_X_TIMEZONE", "MIMO2API_USER_AGENT",
 		"MIMO2API_LOG_LEVEL", "MIMO2API_REPLAY_CAP", "MIMO2API_PROBE_INTERVAL_S",
-		"MIMO2API_COOLDOWN_429_S", "MIMO2API_COOLDOWN_5XX_S", "MIMO2API_COOLDOWN_TRANSPORT_S",
-		"MIMO2API_COOLDOWN_CAP_S", "MIMO2API_COOLDOWN_TRANSPORT_CAP_S",
 		"MIMO2API_POOL_STATS_WINDOW_S",
 		"MIMO2API_CATALOG_TTL_S", "MIMO2API_AUDIO_TTS_TIMEOUT_S", "MIMO2API_SPEECH_MAX_CHARS",
 		"MIMO2API_MAX_QUERY_CHARS",
@@ -319,47 +317,8 @@ func TestLogLevelDebugAccessor(t *testing.T) {
 	}
 }
 
-// CONF-007: the cooldown ladders are operator-settable, and the transport class
 // has its own base and cap (SDD §4.5.1) — the defaults are 60/30/15s with a 10m
 // cap for 429/5xx and 5m for transport.
-func TestConfigCooldownLadders(t *testing.T) {
-	testEnv(t, nil) // clears and restores the pool-related environment
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := cfg.CooldownTransport(); got != DefaultCooldownTransport {
-		t.Errorf("default transport cooldown = %v, want %v", got, DefaultCooldownTransport)
-	}
-	if got := cfg.CooldownTransportCap(); got != DefaultCooldownTransportCap {
-		t.Errorf("default transport cap = %v, want %v", got, DefaultCooldownTransportCap)
-	}
-	if got := cfg.PoolStatsWindow(); got != DefaultPoolStatsWindow {
-		t.Errorf("default risk window = %v, want %v", got, DefaultPoolStatsWindow)
-	}
-	testEnv(t, map[string]string{
-		"MIMO2API_COOLDOWN_TRANSPORT_S":     "5",
-		"MIMO2API_COOLDOWN_TRANSPORT_CAP_S": "90",
-		"MIMO2API_COOLDOWN_429_S":           "45",
-	})
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load with overrides: %v", err)
-	}
-	if got := cfg.CooldownTransport(); got != 5*time.Second {
-		t.Errorf("transport cooldown = %v, want 5s", got)
-	}
-	if got := cfg.CooldownTransportCap(); got != 90*time.Second {
-		t.Errorf("transport cap = %v, want 90s", got)
-	}
-	if got := cfg.Cooldown429(); got != 45*time.Second {
-		t.Errorf("429 cooldown = %v, want 45s", got)
-	}
-	testEnv(t, map[string]string{"MIMO2API_COOLDOWN_TRANSPORT_S": "not-a-number"})
-	if _, err := Load(); err == nil {
-		t.Error("Load accepted a non-numeric cooldown; it must fail loudly")
-	}
-}
 
 // CONF-016 (ADR 0018): the listen port resolves as MIMO2API_PORT → the
 // platform's PORT (Belmo/Railway/Heroku convention) → the default 3000. A
@@ -541,8 +500,6 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		"MIMO2API_SPEECH_MAX_CHARS":        "700",
 		"MIMO2API_TTS_VOICE":               "voice-1",
 		"MIMO2API_SEC_CH_UA":               "\"Chromium\"",
-		"MIMO2API_COOLDOWN_5XX_S":          "70",
-		"MIMO2API_COOLDOWN_CAP_S":          "80",
 		"MIMO2API_CROSS_REGION_AGREE":      "false",
 	})
 	c, err := Load()
@@ -568,8 +525,6 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		{"SpeechMaxChars", c.SpeechMaxChars(), 700},
 		{"TTSVoice", c.TTSVoice(), "voice-1"},
 		{"SecChUA", c.SecChUA(), "\"Chromium\""},
-		{"Cooldown5xx", c.Cooldown5xx(), 70 * time.Second},
-		{"CooldownCap", c.CooldownCap(), 80 * time.Second},
 		{"CrossRegionAgree", c.CrossRegionAgree(), false},
 	}
 	for _, tc := range cases {

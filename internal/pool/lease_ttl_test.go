@@ -17,7 +17,7 @@ import (
 // "the request is slow" and "the request is wedged" must not look the same to
 // the reaper — and the same lease IS reclaimed once the activity stops.
 func TestSlotWindowMovesWithActivity(t *testing.T) {
-	p, _ := newPool(1, Options{SlotTTL: 40 * time.Millisecond}, nil, nil)
+	p, _ := newPool(1, Options{SlotTTL: 40 * time.Millisecond})
 	l, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -57,7 +57,7 @@ func TestSlotWindowMovesWithActivity(t *testing.T) {
 // LEASE-TTL-001: a slot held past its TTL is force-released, its in-flight
 // upstream call is aborted through ArmExpiry, and the account is usable again.
 func TestReapExpiredSlotsFreesTheAccount(t *testing.T) {
-	p, _ := newPool(1, Options{SlotTTL: 40 * time.Millisecond}, nil, nil)
+	p, _ := newPool(1, Options{SlotTTL: 40 * time.Millisecond})
 	l, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -103,7 +103,7 @@ func TestReapExpiredSlotsFreesTheAccount(t *testing.T) {
 // LEASE-TTL-002: a normal request releases long before the TTL, and the reaper
 // must never touch a lease that is already back.
 func TestReaperIgnoresReleasedSlots(t *testing.T) {
-	p, _ := newPool(1, Options{SlotTTL: 30 * time.Millisecond}, nil, nil)
+	p, _ := newPool(1, Options{SlotTTL: 30 * time.Millisecond})
 	l, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -124,7 +124,7 @@ func TestReaperIgnoresReleasedSlots(t *testing.T) {
 // LEASE-TTL-003: no TTL configured (TTL=0) means no reaper — the documented
 // off-switch, so a deployment cannot accidentally lose capacity accounting.
 func TestReaperIsOffWithoutTTL(t *testing.T) {
-	p, _ := newPool(1, Options{}, nil, nil)
+	p, _ := newPool(1, Options{})
 	l, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -147,7 +147,7 @@ func TestReapLogsTheAccountAndAge(t *testing.T) {
 	p, _ := newPool(1, Options{
 		SlotTTL: 20 * time.Millisecond,
 		Logf:    func(format string, args ...any) { logs = append(logs, format) },
-	}, nil, nil)
+	})
 	if _, err := p.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestReapLogsTheAccountAndAge(t *testing.T) {
 // LEASE-TTL-005: a lease carries the TTL it was issued with, so changing the
 // configuration cannot retroactively expire (or resurrect) slots already held.
 func TestLeaseCarriesItsOwnTTL(t *testing.T) {
-	p, _ := newPool(1, Options{SlotTTL: 5 * time.Second}, nil, nil)
+	p, _ := newPool(1, Options{SlotTTL: 5 * time.Second})
 	l, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)

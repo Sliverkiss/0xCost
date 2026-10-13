@@ -19,9 +19,7 @@ package live
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -175,32 +173,6 @@ func newHarness(t *testing.T, accountsFilePath string, otpAuto bool) *harness {
 		DisableCrossRegionAgree: !cfg.CrossRegionAgree(),
 	})
 
-	probe := func(ctx context.Context, accountID string) error {
-		acct, ok := store.Get(accountID)
-		if !ok {
-			return fmt.Errorf("account %s not found", accountID)
-		}
-		if acct.Session == nil || acct.Session.Cookie == "" {
-			return pool.AuthError(fmt.Errorf("account %s has no cached session", accountID))
-		}
-		return client.Validate(ctx, acct.Session.Cookie)
-	}
-	renew := func(ctx context.Context, accountID string) error {
-		acct, ok := store.Get(accountID)
-		if !ok {
-			return fmt.Errorf("account %s not found", accountID)
-		}
-		if acct.UserID == "" || acct.PassToken == "" {
-			return fmt.Errorf("account %s has no passToken to renew", accountID)
-		}
-		sess, rerr := client.Renew(ctx, acct.UserID, acct.PassToken)
-		if rerr != nil {
-			return rerr
-		}
-		acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
-		return store.Update(acct)
-	}
-
 	var poolAccts []accounts.Account
 	for _, a := range store.Accounts() {
 		if a.Enabled {
@@ -210,10 +182,7 @@ func newHarness(t *testing.T, accountsFilePath string, otpAuto bool) *harness {
 	p := pool.New(poolAccts, pool.Options{
 		MaxInflight: cfg.MaxInflight(),
 		QueueWait:   cfg.QueueWait(),
-		Cooldown429: cfg.Cooldown429(),
-		Cooldown5xx: cfg.Cooldown5xx(),
-		CooldownCap: cfg.CooldownCap(),
-	}, probe, renew)
+	})
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
 		Pool:         p,

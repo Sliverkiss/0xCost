@@ -40,11 +40,11 @@ reach the upstream rate limiter (each request took ~5 s, so the burst ran at
 roughly 0.2 req/s). Appendix B Q1 therefore stays **open**: the fixed cooldown
 ladder in SDD §4.5 remains untested against a real 429. Answering it needs
 either concurrency (N in-flight requests) or a much longer run — deliberately
-deferred, because tripping the limiter cools the account down for real.
+deferred, because tripping the limiter cools the account down for real. (2026-10: moot — the cooldown ladder was deleted by owner ruling; a real 429 now passes through to the client verbatim, so this question no longer gates anything.)
 
 `UpstreamError` now retains the response headers (`mimo.UpstreamError.Headers`)
 so that a future run can read `Retry-After` / `x-ratelimit-*` straight off the
-429; those headers are still never echoed to API clients (TDD ERRMAP-011).
+429. (2026-10 update: with the cooldown deletion the upstream's own Retry-After IS now forwarded to the client when present; TDD ERRMAP-011 was rewritten to pin the privacy half only.)
 
 ## LIVE-009 — fastchat repeated usage events
 
@@ -192,17 +192,18 @@ Run: `MIMO2API_PORT=18210 MIMO2API_API_KEYS=live-probe
 MIMO2API_ACCOUNTS_FILE=/root/mimo2api/data/accounts.json ./mimo2api` (HEAD `139d796`,
 the four pool waves). Read-only except for one small chat turn.
 
-- `GET /healthz` → `{"status":"ok","accounts":{"total":1,"available":1,"cooldown":0,"disabled":0}}` —
-  the frozen four-aggregate shape is intact.
+- `GET /healthz` → `{"status":"ok","accounts":{"total":1,"available":1,"disabled":0}}` —
+  the frozen three-aggregate shape is intact (cooldown removed with the mechanism, 2026-10).
+
 - `GET /v1/admin/pool` without a key → 401; with the key → 200.
 - Before any request: `{"id":"acct-40f3e6eb","egress":"direct","state":"available",
-  "in_flight":0,"max_in_flight":2,"ewma_latency_ms":0,"failures":{},
+  "in_flight":0,"max_in_flight":2,"ewma_latency_ms":0,
   "credential_age_s":9356}`, `invariant_ok: true`. The real account carries no
   egress label, so it reports `direct` — which is the intended default.
 - One real non-streaming turn (`mimo-v2.6-flash`, `max_tokens: 16`, `"hi"`) →
   200, `chatcmpl-11ab70195f20c4ef…`, content `Hi there! How can I help you today?`.
   The view afterwards: `ewma_latency_ms: 848`, `in_flight: 0`, `state: available`,
-  `failures: {}` — the accounting reflects what the request actually did.
+  (2026-10: the `failures`/`cooldown` fields are gone with the ladder; `last_error` now carries status+at as diagnostics.)
 - Credential scan of the view body: the cookie (`serviceToken=…`), the `ph`, the
   passToken, the phone number and the raw account id are all absent. The id appears
   only as the stable mask `acct-40f3e6eb`, and `credential_age_s` matches the real

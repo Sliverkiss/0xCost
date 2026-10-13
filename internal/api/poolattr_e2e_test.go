@@ -1,9 +1,12 @@
 package api_test
 
-// End-to-end failure attribution (TDD §3.5.2 POOLATTR-012..014, SDD §4.5.1).
+// End-to-end failure attribution (owner ruling 2026-10: no cooldown, no
+// backoff — failures pass through).
 //
-// These drive the real API stack so the classification is asserted where it
-// matters: on the account's counters, not on a helper's return value.
+// These drive the real API stack and assert the pass-through contract where
+// it matters: the upstream's own status reaches the client, and the account's
+// availability is untouched by transport/5xx/429 failures. Only risk control
+// (451/461) and dead credentials still disable an account.
 
 import (
 	"net/http"
@@ -15,14 +18,14 @@ import (
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
-// POOLATTR-012: an SSE idle-stall is a transport failure — it lands on the
-// transport counter and the recorded cooldown cause says so.
+// POOLATTR-012: an SSE idle-stall is passed through as an error and takes no
+// pool action — the account stays available.
 //
 // The window that fires here is the **turn's silence window**, which is the
 // lease window (ADR 0036) — the pipeline passes it to the client, so setting
 // LeaseTTL is what bounds a turn; the client's own IdleTimeout option now only
 // covers calls the chat pipeline does not drive (TTS/ASR).
-func TestStallCoolsAccountAsTransport(t *testing.T) {
+func TestStallPassesThroughAndKeepsAccountAvailable(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
 		LeaseTTL: 150 * time.Millisecond,
 	})
@@ -38,69 +41,48 @@ func TestStallCoolsAccountAsTransport(t *testing.T) {
 	body := testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"})
 	resp, _ := ts.Chat(body, "")
 	if resp != nil {
+		if resp.StatusCode == http.StatusOK {
+			t.Errorf("status = 200: a stall must surface as an error, not a silent success")
+		}
 		_ = resp.Body.Close()
 	}
-
-	f := ts.Pool.FailuresOf("acc1")
-	if f[pool.ClassTransport] == 0 {
-		t.Errorf("transport failures = %d, want >= 1 after a stall (5xx = %d)",
-			f[pool.ClassTransport], f[pool.ClassUpstream5xx])
-	}
-	if f[pool.ClassUpstream5xx] != 0 {
-		t.Errorf("5xx failures = %d, want 0 — a stall must not advance the 5xx ladder", f[pool.ClassUpstream5xx])
-	}
-	class, _, since := ts.Pool.CooldownInfoOf("acc1")
-	if class != pool.ClassTransport {
-		t.Errorf("recorded cooldown class = %q, want %q", class, pool.ClassTransport)
-	}
-	if since.IsZero() {
-		t.Error("cooldown cause recorded without a timestamp")
+	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
+		t.Errorf("state = %v after a stall, want available (pass-through, no cooldown)", st)
 	}
 }
 
-// POOLATTR-013: a 5xx lands on the 5xx ladder, and a stall right after it lands on
-// the transport ladder — neither escalates the other (the end-to-end form of
-// POOLATTR-001).
-func TestFiveXxAndTransportStayOnSeparateLadders(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
-		LeaseTTL: 150 * time.Millisecond,
-	})
+// POOLATTR-013: a 5xx reaches the client as the upstream's own status and the
+// account stays available — no ladder, no state change.
+func TestFiveXxPassesThroughAndKeepsAccountAvailable(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ph := testutil.TestPH
 	ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusInternalServerError})
-	resp, _ := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	if resp != nil {
-		_ = resp.Body.Close()
+	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	f := ts.Pool.FailuresOf("acc1")
-	if f[pool.ClassUpstream5xx] != 1 {
-		t.Errorf("5xx failures = %d, want 1", f[pool.ClassUpstream5xx])
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 passed through verbatim", resp.StatusCode)
 	}
-	if f[pool.ClassTransport] != 0 {
-		t.Errorf("transport failures = %d, want 0 — a 5xx is not a transport failure", f[pool.ClassTransport])
-	}
-	class, status, _ := ts.Pool.CooldownInfoOf("acc1")
-	if class != pool.ClassUpstream5xx || status != http.StatusInternalServerError {
-		t.Errorf("cooldown cause = %s/%d, want upstream-5xx/500", class, status)
+	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
+		t.Errorf("state = %v after a 5xx, want available (pass-through, no cooldown)", st)
 	}
 }
 
-// POOLATTR-014: an audio call now cools the account too — previously a dead
-// connection or a 5xx during TTS/ASR never touched the pool — while a business
-// failure (the task's own audit refusal) still takes no pool action.
-func TestAudioFailureAttribution(t *testing.T) {
-	t.Run("upstream 5xx cools the account", func(t *testing.T) {
+// POOLATTR-014: an audio failure equally passes through — the upstream's 5xx
+// reaches the caller and the account stays available — while a business
+// failure (the task's own audit refusal) also takes no pool action.
+func TestAudioFailurePassesThrough(t *testing.T) {
+	t.Run("upstream 5xx keeps the account available", func(t *testing.T) {
 		ts := audioServer(t, oneAccount(), nil)
 		ts.Upstream.SetAudioHTTPStatus(http.StatusInternalServerError, "boom")
 		resp, body := postJSON(t, ts, "/v1/audio/speech", `{"input":"短句测试。"}`)
 		if resp.StatusCode == http.StatusOK {
 			t.Fatalf("status = 200 body=%s, want an error", body)
 		}
-		f := ts.Pool.FailuresOf("acc1")
-		if f[pool.ClassUpstream5xx] == 0 {
-			t.Errorf("5xx failures = %d, want >= 1 after an audio 5xx", f[pool.ClassUpstream5xx])
-		}
-		if ts.Pool.StateOf("acc1") != pool.StateCooldown {
-			t.Errorf("state = %v, want cooldown after an audio 5xx", ts.Pool.StateOf("acc1"))
+		if ts.Pool.StateOf("acc1") != pool.StateAvailable {
+			t.Errorf("state = %v, want available after an audio 5xx (pass-through)", ts.Pool.StateOf("acc1"))
 		}
 	})
 
@@ -113,11 +95,6 @@ func TestAudioFailureAttribution(t *testing.T) {
 		}
 		if got := ts.Pool.StateOf("acc1"); got != pool.StateAvailable {
 			t.Errorf("state = %v, want available — a task-level failure is not the account's fault", got)
-		}
-		for class, n := range ts.Pool.FailuresOf("acc1") {
-			if n != 0 {
-				t.Errorf("class %s = %d, want 0", class, n)
-			}
 		}
 	})
 }

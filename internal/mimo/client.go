@@ -189,7 +189,7 @@ func proxyTransport(base http.RoundTripper, proxy *url.URL) http.RoundTripper {
 
 // ErrIdleStall: the upstream stream produced no SSE event for the
 // idle-timeout window (SDD §7.3). The API layer aborts the upstream,
-// surfaces an error frame, and applies the 30s-cooldown ladder (§4.4).
+// surfaces an error frame; the failure is then passed through to the client (owner ruling 2026-10: no cooldown).
 var ErrIdleStall = errors.New("upstream stream stalled (no SSE event within idle timeout)")
 
 // ErrSilentUpstream: the upstream accepted the request but sent **nothing at
@@ -202,8 +202,8 @@ var ErrIdleStall = errors.New("upstream stream stalled (no SSE event within idle
 //     simply be slow to search, and nothing is wrong with the account, so this
 //     surfaces as our own 504 and the pool leaves the account alone.
 //   - silence *after* the upstream started answering is a stall — a transport
-//     problem on the platform/account side — and keeps that classification
-//     (POOLATTR-012: it cools the account on the transport ladder).
+//     problem on the platform/account side — which now passes through to the
+//     client like any other failure (POOLATTR-012; owner ruling 2026-10).
 var ErrSilentUpstream = errors.New("upstream sent no bytes within the silence window")
 
 // idleWatchedReader wraps the SSE body with a no-byte watchdog: if nothing
@@ -424,12 +424,12 @@ type ChatResult struct {
 	CitationWarnings []string
 }
 
-// UpstreamError is a non-200 chat response. StatusCode drives pool health
-// (429/5xx cooldown, 401 auth refresh, 451/461 disable) and API error
-// mapping (SDD §7.4, TDD ERRMAP-006..008). Headers are kept for diagnostics
-// only — a Retry-After is never echoed to the client (TDD ERRMAP-011 privacy
-// invariant), but it is what an operator needs in the log and what LIVE-007
-// inspects for a structured 429 deadline.
+// UpstreamError is a non-200 chat response. StatusCode drives API error
+// mapping (SDD §7.4, TDD ERRMAP-006..008): 429/5xx pass through to the client
+// as answered (owner ruling 2026-10), 401 triggers the auth refresh, 451/461
+// disable the account. Headers travel with the answer — the upstream's own
+// Retry-After is forwarded to the client when it sent one, and it is what
+// LIVE-007 inspects for a structured 429 deadline.
 type UpstreamError struct {
 	StatusCode int
 	Body       string

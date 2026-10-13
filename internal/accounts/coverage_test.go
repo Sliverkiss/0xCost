@@ -42,7 +42,7 @@ func TestGet(t *testing.T) {
 		if !ok {
 			t.Fatal("acc-2 not found")
 		}
-		if got.State != "cooldown" || got.CooldownUntil != 1700000123 || got.PassToken != "rt-2" {
+		if got.State != "disabled" || got.PassToken != "rt-2" {
 			t.Errorf("account = %+v", got)
 		}
 	})

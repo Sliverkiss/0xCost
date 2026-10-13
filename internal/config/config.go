@@ -128,14 +128,6 @@ const (
 	// (only the "low" level decodes at all): 40 MP ≈ 160 MB of RGBA, far above any
 	// real chat image and far below what a 16 MiB request can describe.
 	DefaultMaxImagePixels = 40_000_000
-	DefaultCooldown429    = 60 * time.Second
-	DefaultCooldown5xx    = 30 * time.Second
-	DefaultCooldownCap    = 10 * time.Minute
-	// DefaultCooldownTransport: the transport class has its own ladder (SDD
-	// §4.5.1) — a dead connection or a stall is less likely to be the account's
-	// fault than an upstream 5xx, so it cools for less and escalates less far.
-	DefaultCooldownTransport    = 15 * time.Second
-	DefaultCooldownTransportCap = 5 * time.Minute
 	// DefaultPoolStatsWindow: the window inside which risk-control signals are
 	// correlated across accounts on one egress (SDD §4.5.2).
 	DefaultPoolStatsWindow = 5 * time.Minute
@@ -174,12 +166,7 @@ type Config struct {
 	maxImageBytes        int
 	maxImagePixels       int
 	imageAllowPrivate    bool
-	cooldown429          time.Duration
-	cooldownTransport    time.Duration
-	cooldownTransportCap time.Duration
 	poolStatsWindow      time.Duration
-	cooldown5xx          time.Duration
-	cooldownCap          time.Duration
 	probeInterval        time.Duration
 	logLevel             string
 	otpAuto              bool
@@ -221,11 +208,6 @@ func Load() (*Config, error) {
 		speechMaxChars:       DefaultSpeechMaxChars,
 		ttsVoice:             getenv("MIMO2API_TTS_VOICE", ""),
 		replayCap:            DefaultReplayCap,
-		cooldown429:          DefaultCooldown429,
-		cooldown5xx:          DefaultCooldown5xx,
-		cooldownTransport:    DefaultCooldownTransport,
-		cooldownCap:          DefaultCooldownCap,
-		cooldownTransportCap: DefaultCooldownTransportCap,
 		probeInterval:        DefaultProbeInterval,
 		// Default OFF: starting a new-device challenge sends a real SMS to the
 		// account owner, and a human has to enter the code anyway, so the
@@ -293,21 +275,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.probeInterval, err = getenvSeconds("MIMO2API_PROBE_INTERVAL_S", DefaultProbeInterval); err != nil {
-		return nil, err
-	}
-	if c.cooldown429, err = getenvSeconds("MIMO2API_COOLDOWN_429_S", DefaultCooldown429); err != nil {
-		return nil, err
-	}
-	if c.cooldown5xx, err = getenvSeconds("MIMO2API_COOLDOWN_5XX_S", DefaultCooldown5xx); err != nil {
-		return nil, err
-	}
-	if c.cooldownTransport, err = getenvSeconds("MIMO2API_COOLDOWN_TRANSPORT_S", DefaultCooldownTransport); err != nil {
-		return nil, err
-	}
-	if c.cooldownCap, err = getenvSeconds("MIMO2API_COOLDOWN_CAP_S", DefaultCooldownCap); err != nil {
-		return nil, err
-	}
-	if c.cooldownTransportCap, err = getenvSeconds("MIMO2API_COOLDOWN_TRANSPORT_CAP_S", DefaultCooldownTransportCap); err != nil {
 		return nil, err
 	}
 	if c.poolStatsWindow, err = getenvSeconds("MIMO2API_POOL_STATS_WINDOW_S", DefaultPoolStatsWindow); err != nil {
@@ -424,13 +391,6 @@ func (c *Config) MaxImages() int                   { return c.maxImages }
 func (c *Config) MaxImageBytes() int               { return c.maxImageBytes }
 func (c *Config) MaxImagePixels() int              { return c.maxImagePixels }
 func (c *Config) ImageAllowPrivate() bool          { return c.imageAllowPrivate }
-func (c *Config) Cooldown429() time.Duration       { return c.cooldown429 }
-func (c *Config) Cooldown5xx() time.Duration       { return c.cooldown5xx }
-func (c *Config) CooldownCap() time.Duration       { return c.cooldownCap }
-func (c *Config) CooldownTransport() time.Duration { return c.cooldownTransport }
-func (c *Config) CooldownTransportCap() time.Duration {
-	return c.cooldownTransportCap
-}
 
 // PoolStatsWindow is the risk-control correlation window (SDD §4.5.2).
 func (c *Config) PoolStatsWindow() time.Duration { return c.poolStatsWindow }

@@ -65,7 +65,7 @@ func newRecoveryStack(t *testing.T, auth2 string, otpAuto bool) *recoveryStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := pool.New([]accounts.Account{acct}, pool.Options{}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{})
 	client := mimo.New(mimo.Options{
 		Base:           up.URL(),
 		PassportHosts:  []string{passport.Host()},

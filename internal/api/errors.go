@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,7 +249,6 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 	var uv *unknownVoiceError
 	var deadline *requestTimeoutError
 	var (
-		parked  *pool.ErrParked
 		busy    *pool.ErrBusy
 		nf      *adapter.ErrModelNotFound
 		nouser  adapter.ErrNoUserMessage
@@ -262,10 +262,6 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// Our own budget/TTL (ADR 0019): a gateway-side timeout, with numbers,
 		// and no account penalty — the account was serving correctly.
 		writeError(w, http.StatusGatewayTimeout, "api_error", "chat_timeout", deadline.Error(), 0)
-	case errors.As(err, &parked):
-		// All accounts cooling down (SDD §7.4, TDD ERRMAP-003).
-		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "pool_parked",
-			"all accounts are cooling down; retry later", parked.RetryAfterSeconds())
 	case errors.As(err, &busy):
 		// Queue wait exceeded (SDD §7.4, TDD ERRMAP-004).
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "pool_busy",
@@ -378,11 +374,21 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		if s.debug && s.logger != nil {
 			s.logger.Printf("upstream %d: %s", upErr.StatusCode, truncateForLog(upErr.Body, 400))
 		}
+		// PASSFAIL: the upstream's own Retry-After travels with its answer when
+		// it sent one (owner ruling 2026-10 — failures pass through; this is the
+		// upstream's deadline, not a locally invented one).
+		retryAfter := 0
+		if secs := upErr.Headers.Get("Retry-After"); secs != "" {
+			if n, perr := strconv.Atoi(strings.TrimSpace(secs)); perr == nil && n > 0 {
+				retryAfter = n
+			}
+		}
 		switch {
 		case upErr.StatusCode == http.StatusTooManyRequests:
-			// Upstream 429 surfaced (SDD §7.4, TDD ERRMAP-006).
+			// Upstream 429 surfaced verbatim (SDD §7.4, TDD ERRMAP-006): the
+			// upstream's own body wording and deadline, and no account penalty.
 			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "upstream_rate_limited",
-				"upstream rate limited the account", 0)
+				withUpstream("upstream rate limited the account", err), retryAfter)
 		case upstreamTooLong(upErr.Body):
 			// The upstream refused the request as too long (ADR 0015): its own
 			// wording is prose ("Sorry, the text you sent is too long!") in a 5xx
@@ -392,9 +398,10 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 				upstreamTooLongMessage(), 0)
 		default:
 			// Upstream 5xx and everything else upstream-shaped (SDD §7.4,
-			// TDD ERRMAP-008).
-			writeError(w, http.StatusBadGateway, "api_error", "upstream_failure",
-				fmt.Sprintf("upstream error %d", upErr.StatusCode), 0)
+			// TDD ERRMAP-008): the upstream's own status passes through, with its
+			// body wording attached when it carried one.
+			writeError(w, upErr.StatusCode, "api_error", "upstream_failure",
+				withUpstream(fmt.Sprintf("upstream error %d", upErr.StatusCode), err), retryAfter)
 		}
 	default:
 		if upstreamTooLong(err.Error()) {

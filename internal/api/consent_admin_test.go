@@ -50,7 +50,7 @@ func newConsentAdminStack(t *testing.T, acct accounts.Account) *consentAdminStac
 		t.Fatal(err)
 	}
 
-	p := pool.New([]accounts.Account{acct}, pool.Options{}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{})
 	client := mimo.New(mimo.Options{
 		Base:                    up.URL(),
 		PassportHosts:           []string{passport.Host()},

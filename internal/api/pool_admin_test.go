@@ -53,8 +53,6 @@ func TestPoolViewAccountingInvariant(t *testing.T) {
 		{ID: "acc2", PH: "ph-2", Cookie: testutil.TestCookie},
 	}
 	ts := testserver.NewTestServer(t, two, &testserver.TestServerOptions{APIKeys: []string{"k-test"}})
-	// acc1 cools (a scripted 5xx), acc2 stays available.
-	ts.Upstream.Script("ph-1", testutil.ScriptStep{StatusCode: 500})
 	_ = ts.Pool
 	ts.Pool.ReportDisabled("acc2", "dead passToken", true)
 
@@ -64,8 +62,11 @@ func TestPoolViewAccountingInvariant(t *testing.T) {
 	}
 	accounts, _ := body["accounts"].(map[string]any)
 	total := int(accounts["total"].(float64))
-	if got := int(accounts["available"].(float64)) + int(accounts["cooldown"].(float64)) + int(accounts["disabled"].(float64)); got != total {
+	if got := int(accounts["available"].(float64)) + int(accounts["disabled"].(float64)); got != total {
 		t.Errorf("states add to %d, want total %d", got, total)
+	}
+	if _, present := accounts["cooldown"]; present {
+		t.Error("the cooldown aggregate is gone with the mechanism (owner ruling 2026-10); it must not appear")
 	}
 	if ok, _ := body["invariant_ok"].(bool); !ok {
 		t.Error("invariant_ok = false")
@@ -74,8 +75,7 @@ func TestPoolViewAccountingInvariant(t *testing.T) {
 	// satisfy the invariant while telling the operator nothing.
 	sum := ts.Pool.Summarize()
 	if total != sum.Total || int(accounts["disabled"].(float64)) != sum.Disabled ||
-		int(accounts["available"].(float64)) != sum.Available ||
-		int(accounts["cooldown"].(float64)) != sum.Cooldown {
+		int(accounts["available"].(float64)) != sum.Available {
 		t.Errorf("summary %v does not mirror the pool %+v", accounts, sum)
 	}
 	if int(accounts["disabled"].(float64)) != 1 {
@@ -97,7 +97,6 @@ func TestHealthzShapeUnchanged(t *testing.T) {
 		Accounts struct {
 			Total     *int `json:"total"`
 			Available *int `json:"available"`
-			Cooldown  *int `json:"cooldown"`
 			Disabled  *int `json:"disabled"`
 		} `json:"accounts"`
 	}
@@ -108,8 +107,8 @@ func TestHealthzShapeUnchanged(t *testing.T) {
 		t.Errorf("status = %q, want ok", body.Status)
 	}
 	if body.Accounts.Total == nil || body.Accounts.Available == nil ||
-		body.Accounts.Cooldown == nil || body.Accounts.Disabled == nil {
-		t.Errorf("healthz lost one of the four aggregates: %s", raw)
+		body.Accounts.Disabled == nil {
+		t.Errorf("healthz lost one of the three aggregates: %s", raw)
 	}
 	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
 		t.Errorf("healthz is not JSON: %s", raw)
@@ -183,41 +182,35 @@ func TestPoolViewMasksIDsStably(t *testing.T) {
 }
 
 // POOLVIEW-006: the fields an operator actually diagnoses with are present.
+// A recorded 429 is diagnostics only (owner ruling 2026-10): the account stays
+// available and the last_error block carries its status and timestamp.
 func TestPoolViewCarriesDiagnosticFields(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{APIKeys: []string{"k-test"}})
-	ts.Pool.ReportFailure("acc1", pool.ClassUpstream5xx, 503)
+	ts.Pool.Report429("acc1")
 	_, body, raw := poolView(t, ts, "k-test")
 	rows, _ := body["pool"].([]any)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
 	row, _ := rows[0].(map[string]any)
-	if row["state"] != string(pool.StateCooldown) {
-		t.Errorf("state = %v, want cooldown", row["state"])
+	if row["state"] != string(pool.StateAvailable) {
+		t.Errorf("state = %v, want available (a 429 is diagnostics, not a state change)", row["state"])
 	}
-	cd, ok := row["cooldown"].(map[string]any)
-	if !ok {
-		t.Fatalf("the cooldown block is missing: %s", raw)
+	if _, present := row["cooldown"]; present {
+		t.Error("the per-account cooldown block is gone with the mechanism; it must not appear")
 	}
-	if cd["class"] != string(pool.ClassUpstream5xx) {
-		t.Errorf("cooldown class = %v, want %v", cd["class"], pool.ClassUpstream5xx)
-	}
-	if int(cd["status"].(float64)) != 503 {
-		t.Errorf("cooldown status = %v, want 503", cd["status"])
-	}
-	if _, ok := cd["since"].(string); !ok {
-		t.Errorf("cooldown since is missing: %v", cd["since"])
-	}
-	failures, _ := row["failures"].(map[string]any)
-	if failures == nil || int(failures[string(pool.ClassUpstream5xx)].(float64)) != 1 {
-		t.Errorf("per-class counters missing or wrong: %v", row["failures"])
+	if _, present := row["failures"]; present {
+		t.Error("the per-class failure counters are gone with the ladder; they must not appear")
 	}
 	last, ok := row["last_error"].(map[string]any)
 	if !ok {
 		t.Fatalf("last_error is missing: %s", raw)
 	}
-	if last["class"] != string(pool.ClassUpstream5xx) {
-		t.Errorf("last_error class = %v", last["class"])
+	if int(last["status"].(float64)) != 429 {
+		t.Errorf("last_error status = %v, want 429", last["status"])
+	}
+	if _, ok := last["at"].(string); !ok {
+		t.Errorf("last_error at is missing: %v", last["at"])
 	}
 	if row["egress"] != pool.DefaultEgress {
 		t.Errorf("egress = %v, want %v", row["egress"], pool.DefaultEgress)

@@ -61,7 +61,7 @@ func newRelearnBurstStack(t *testing.T) *relearnBurstStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := pool.New([]accounts.Account{acct}, pool.Options{}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{})
 	client := mimo.New(mimo.Options{Base: up.URL})
 	srv := New(Options{Pool: p, Accounts: store, Client: client})
 	return &relearnBurstStack{srv: srv, fetches: fetches}

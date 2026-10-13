@@ -3,9 +3,9 @@
 Format per the sweep brief: location with file:line, evidence, proposed fix.
 Entries here are findings whose fix exceeded the ~20-line budget or whose
 correct behaviour needed a product decision, so they were recorded instead of
-changed. Fixed findings live in git history (`6f53f8e` and later); the two
-entries below were later fixed with the boss's approval and are kept as the
-audit trail, annotated with their fix SHAs.
+changed. Fixed findings live in git history (`6f53f8e` and later); the entries
+below were later fixed with the boss's approval and are kept as the audit
+trail, annotated with their fix SHAs.
 
 ## 1. handleOTPSubmit: concurrent submits race the challenge claim — FIXED
 
@@ -86,3 +86,42 @@ so the leases of earlier attempts release at function exit — after their
 explicit releases. Safe because `Lease.Release` is idempotent
 (`l.released` flag, internal/pool/pool.go). Recorded here so the next sweep
 does not re-litigate it.
+
+## 4. Local cooldown amplified upstream transient signals into long
+unavailability — REMOVED by owner ruling
+
+**Ruling** (owner, 2026-10, verbatim): “我们不主动加冷却退避，影响到操作了。
+清理掉这些代码，改成透传，这个冷却是不应该的。” — and again: “我们不要冷却啊，
+不需要你给我加退避，不要自作主张，该砍的就给我砍了”
+
+**What the mechanism did** (pre-removal): every upstream 429, 5xx, or transport
+failure was recorded per-class on an exponential-backoff ladder
+(`internal/pool/pool.go`: 60s→10m for 429, 30s→10m for 5xx, 15s→5m for
+transport, doubling per consecutive failure). A cooling account was removed
+from selection entirely; when all accounts were cooling the pool answered its
+own synthetic 429 `pool_parked` with a locally-invented Retry-After. The chat
+pipeline additionally retried an upstream 5xx once on a different account,
+masking the failure from the client.
+
+**The problem**: a transient upstream signal — one 429, one 502 — became
+minutes of account unavailability *we* invented. The upstream recovered in
+seconds; our ladder kept the account benched and, with few accounts, turned a
+blip into a client-visible outage (`pool_parked`) with a Retry-After we made
+up out of a config default, not anything the upstream said. The retry-on-
+another-account did the same at the request level: it hid the failure and
+doubled the upstream load during exactly the pressure that caused it.
+
+**The removal** (this sweep): the entire ladder/cooldown/parked machinery is
+deleted — no compat layer, no feature flag, no config knob
+(`MIMO2API_COOLDOWN_*` env vars are gone too). Accounts now have exactly two
+states, available / disabled; the only paths to disabled are risk-control
+(451/461, fail-closed with evidence) and dead credentials. Upstream failures
+pass through verbatim: status, body, and the upstream's own Retry-After when
+it sent one. `ReportSuccess` stays as a no-op pipeline hook; `Report429`
+records diagnostics only (last-error status/time for `/v1/admin/pool`).
+ErrBusy (concurrency slots) is untouched — it is a capacity signal, not
+backoff. `/healthz` and `/v1/admin/pool` report the two-state aggregates.
+Tests: the ladder/parked cases were deleted or rewritten as pass-through
+assertions (`passfail_test.go` PASSFAIL-001..004: upstream 429 → client 429
+with the upstream's body and Retry-After, account still available, no
+parking on repeated 429s).

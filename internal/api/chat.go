@@ -345,9 +345,9 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case isUpstream429(err):
-			// No retry for this request; cooldown ladder (SDD §7.1, TDD
-			// ERRMAP-006).
-			s.pool.Report429(lease.ID)
+			// No retry for this request; the upstream's own 429 passes through
+			// verbatim and the account stays available (owner ruling 2026-10:
+			// no cooldown, no backoff — SDD §7.1, TDD ERRMAP-006).
 			lease.Release()
 			p.fail(w, err)
 			return
@@ -429,23 +429,14 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			continue
 
 		default:
-			// A break after the first delta cannot be retried: the client
-			// already has part of an answer. The attribution still runs — a
-			// transport failure is evidence about the account.
-			if committed {
-				s.reportFailure(lease.ID, err)
-				lease.Release()
-				p.fail(w, err)
-				return
-			}
-			// Upstream sick: 1 retry on another account, cooled down on the
-			// ladder of its own class — a transport failure no longer advances
-			// the 5xx ladder (SDD §4.5.1, TDD POOLATTR-001).
-			s.reportFailure(lease.ID, err)
+			// PASSFAIL (owner ruling 2026-10): an upstream failure — 5xx,
+			// transport, stall — is passed through to the client as answered,
+			// with no account penalty and no retry. A committed stream already
+			// carries its answer in-band; a break after the first delta cannot
+			// be retried either way.
 			lease.Release()
-			excluded = append(excluded, lease.ID)
-			attempts++
-			continue
+			p.fail(w, err)
+			return
 		}
 	}
 

@@ -3,7 +3,6 @@ package api_test
 import (
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,39 +90,6 @@ func TestERRMAPMalformedAndNoUser(t *testing.T) {
 	}
 }
 
-// ERRMAP-003: all accounts cooling → 429 pool_parked + Retry-After = ceil
-// (nearest recovery − now).
-func TestERRMAPPoolParked(t *testing.T) {
-	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	// Park both: 429 ladder base is 60s, second hit doubles to 120s.
-	for _, ph := range []string{testutil.TestPH, testutil.TestPH2} {
-		ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
-	}
-	for i := 0; i < 2; i++ {
-		resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		readErr(t, resp) // drain; the 429s park the accounts
-	}
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	status, _, typ, code := readErr(t, resp)
-	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_parked" {
-		t.Fatalf("got %d %q %q", status, typ, code)
-	}
-	ra := resp.Header.Get("Retry-After")
-	if ra == "" {
-		t.Fatal("missing Retry-After header")
-	}
-	n, err := strconv.Atoi(ra)
-	if err != nil || n < 1 {
-		t.Errorf("Retry-After = %q", ra)
-	}
-}
-
 // ERRMAP-004: all slots busy, queue wait exceeded → 429 pool_busy +
 // Retry-After (SDD §7.4 row 4).
 func TestERRMAPPoolBusy(t *testing.T) {
@@ -167,8 +133,9 @@ func TestERRMAPNoAccounts(t *testing.T) {
 	}
 }
 
-// ERRMAP-006: upstream 429 surfaced → 429 rate_limit_error /
-// upstream_rate_limited, and the account parks (cooldown, no retry).
+// ERRMAP-006: upstream 429 surfaced verbatim → 429 rate_limit_error /
+// upstream_rate_limited, exactly one upstream hit (no retry), and the serving
+// account stays available (owner ruling 2026-10: pass-through, no cooldown).
 func TestERRMAPUpstream429(t *testing.T) {
 	ts := testserver.NewTestServer(t, twoAccounts(), nil)
 	// Script BOTH identities: selection is round-robin, either may serve.
@@ -186,10 +153,12 @@ func TestERRMAPUpstream429(t *testing.T) {
 	if n := ts.Upstream.ChatHits(); n != 1 {
 		t.Errorf("upstream hits = %d, want 1 (no 429 retry)", n)
 	}
-	// The serving account parked.
-	st1, st2 := ts.Pool.StateOf("acc1"), ts.Pool.StateOf("acc2")
-	if st1 != pool.StateCooldown && st2 != pool.StateCooldown {
-		t.Errorf("neither account cooled: %v/%v", st1, st2)
+	// The serving account stays available — the 429 passes through untouched.
+	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
+		t.Errorf("acc1 state = %v, want available after a passed-through 429", st)
+	}
+	if st := ts.Pool.StateOf("acc2"); st != pool.StateAvailable {
+		t.Errorf("acc2 state = %v, want available after a passed-through 429", st)
 	}
 }
 
@@ -211,13 +180,14 @@ func TestERRMAPUpstreamAuthExpired(t *testing.T) {
 	}
 }
 
-// ERRMAP-008: upstream 5xx pre-first-byte → 502 api_error / upstream_failure
-// on failure; the 1 allowed retry lands on a different account (SDD
-// §7.1/§7.2), so a healthy second account recovers the request.
+// ERRMAP-008: upstream 5xx → the upstream's own status passes through to the
+// client as an api_error / upstream_failure (owner ruling 2026-10: no retry on
+// another account, no cooldown). Exactly one upstream hit.
 func TestERRMAPUpstream5xx(t *testing.T) {
 	ts := testserver.NewTestServer(t, twoAccounts(), nil)
+	// Script BOTH identities: with the retry gone, selection is round-robin and
+	// either may serve — the answer must be the same either way.
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
-	// acc2 also fails → both sick → client sees the mapped 502.
 	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	if err != nil {
@@ -227,37 +197,14 @@ func TestERRMAPUpstream5xx(t *testing.T) {
 	if status != http.StatusBadGateway || typ != "api_error" || code != "upstream_failure" {
 		t.Fatalf("got %d %q %q", status, typ, code)
 	}
-	// Both accounts were tried exactly once (original + 1 retry, §7.2).
-	phs := map[string]int{}
-	for _, r := range ts.Upstream.Requests() {
-		phs[r.PH]++
+	// No retry: exactly one upstream hit for the request.
+	if n := ts.Upstream.ChatHits(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1 (no 5xx retry; pass-through)", n)
 	}
-	if phs[testutil.TestPH] != 1 || phs[testutil.TestPH2] != 1 {
-		t.Errorf("per-account hits = %v, want 1 each (retry switch)", phs)
-	}
-	if ts.Pool.StateOf("acc1") != pool.StateCooldown {
-		t.Errorf("acc1 state = %v, want cooldown after 5xx", ts.Pool.StateOf("acc1"))
-	}
-}
-
-// ERRMAP-008 (recovery half): one sick account + one healthy → the retry
-// recovers; the client never sees the 502.
-func TestERRMAPUpstream5xxRetryRecovers(t *testing.T) {
-	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	// Round-robin serves acc2 first (cursor starts at band index 1), so the
-	// 502 script goes on the second identity; the retry lands on acc1.
-	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d body=%s, want 200 via retry switch", resp.StatusCode, b)
-	}
-	if ts.Pool.StateOf("acc2") != pool.StateCooldown {
-		t.Errorf("acc2 state = %v, want cooldown after 5xx", ts.Pool.StateOf("acc2"))
+	// The failure never touches account availability.
+	if ts.Pool.StateOf("acc1") != pool.StateAvailable || ts.Pool.StateOf("acc2") != pool.StateAvailable {
+		t.Errorf("states = %v/%v, want both available after a passed-through 5xx",
+			ts.Pool.StateOf("acc1"), ts.Pool.StateOf("acc2"))
 	}
 }
 
@@ -307,35 +254,11 @@ func TestERRMAPContextTooLong(t *testing.T) {
 	}
 }
 
-// ERRMAP-011: Retry-After privacy invariant — across all 429 rows the
-// Retry-After reflects only local recovery deadlines, and no response body
-// or header ever carries phone/userId/cookie/passToken.
+// ERRMAP-011: Retry-After privacy invariant — across the 429 rows the
+// Retry-After reflects only the answer that was already given (pool capacity
+// or the upstream's own header), and no response body or header ever carries
+// phone/userId/cookie/passToken.
 func TestERRMAPRetryAfterPrivacy(t *testing.T) {
-	// Parked row.
-	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	for _, ph := range []string{testutil.TestPH, testutil.TestPH2} {
-		ts.Upstream.Script(ph, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
-	}
-	for i := 0; i < 2; i++ {
-		resp, _ := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-		readErr(t, resp)
-	}
-	resp, _ := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	status, _, typ, code := readErr(t, resp)
-	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_parked" {
-		t.Fatalf("parked row: got %d %q %q", status, typ, code)
-	}
-	ra := resp.Header.Get("Retry-After")
-	n, err := strconv.Atoi(ra)
-	if err != nil {
-		t.Fatalf("Retry-After not numeric: %q", ra)
-	}
-	// Nearest recovery is within the 60s/120s ladder; header seconds are
-	// ceil(nearest recovery − now).
-	if n < 1 || n > 120 {
-		t.Errorf("Retry-After = %d, want 1..120", n)
-	}
-
 	// Busy row.
 	ts2 := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
 		MaxInflight: 1,
@@ -372,7 +295,7 @@ func TestERRMAPRetryAfterPrivacy(t *testing.T) {
 		t.Errorf("429 body leaks identity: %q", msg3)
 	}
 	for _, hdr := range []string{"Retry-After", "Content-Type", "X-Mimo-Warnings"} {
-		if v := resp.Header.Get(hdr); strings.Contains(v, "st-mock") || strings.Contains(v, "123456") {
+		if v := resp3.Header.Get(hdr); strings.Contains(v, "st-mock") || strings.Contains(v, "123456") {
 			t.Errorf("header %s leaks identity: %q", hdr, v)
 		}
 	}

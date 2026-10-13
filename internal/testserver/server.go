@@ -73,8 +73,6 @@ type TestServerOptions struct {
 	// test that wants to observe keepalives shortens it instead of waiting 15s.
 	KeepaliveInterval time.Duration
 	Now               func() time.Time
-	Probe             pool.ProbeFunc
-	Renew             pool.RenewFunc
 	Debug             bool      // MIMO2API_LOG_LEVEL=debug equivalent
 	LogSink           io.Writer // nil = discard-free default logger; set to capture trace lines
 	// Egress maps an egress label to a proxy, exactly as the real startup does
@@ -148,7 +146,7 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Now:         nowFn,
 		SlotTTL:     opts.LeaseTTL, // reaper TTL (ADR 0019)
 		Logf:        logf,
-	}, opts.Probe, opts.Renew)
+	})
 
 	client := mimo.New(mimo.Options{
 		Egress:      opts.Egress,

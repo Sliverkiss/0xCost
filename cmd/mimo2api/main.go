@@ -181,38 +181,8 @@ func run() error {
 		DisableCrossRegionAgree: !cfg.CrossRegionAgree(),
 	})
 
-	// Pool with the real probe (session check → available, SDD §4.5) and
-	// renewer (STS refresh on auth-expired probes, SDD §2.3).
-	probe := func(ctx context.Context, accountID string) error {
-		acct, ok := store.Get(accountID)
-		if !ok {
-			return fmt.Errorf("account %s not found", accountID)
-		}
-		if acct.Session == nil || acct.Session.Cookie == "" {
-			return pool.AuthError(fmt.Errorf("account %s has no cached session", accountID))
-		}
-		return client.For(acct.Egress).Validate(ctx, acct.Session.Cookie)
-	}
-	renew := func(ctx context.Context, accountID string) error {
-		acct, ok := store.Get(accountID)
-		if !ok {
-			return fmt.Errorf("account %s not found", accountID)
-		}
-		if acct.UserID == "" || acct.PassToken == "" {
-			return fmt.Errorf("account %s has no passToken to renew", accountID)
-		}
-		sess, rerr := client.For(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
-		if rerr != nil {
-			return rerr
-		}
-		acct.Device = mimo.MergeDevice(acct.Device, sess.Device)
-		acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
-		if uerr := store.Update(acct); uerr != nil {
-			log.Printf("accounts: persist renewal for %s: %v", accountID, uerr)
-		}
-		return nil
-	}
-
+	// Pool (owner ruling 2026-10): two states only — available / disabled. There
+	// is no probe sweeper and no cooldown: failures pass through to the client.
 	accts := store.Accounts()
 	var poolAccts []accounts.Account
 	for _, a := range accts {
@@ -221,15 +191,8 @@ func run() error {
 		}
 	}
 	p := pool.New(poolAccts, pool.Options{
-		MaxInflight:       cfg.MaxInflight(),
-		QueueWait:         cfg.QueueWait(),
-		Cooldown429:       cfg.Cooldown429(),
-		Cooldown5xx:       cfg.Cooldown5xx(),
-		CooldownTransport: cfg.CooldownTransport(),
-		CooldownCap:       cfg.CooldownCap(),
-		// Transport cools for less and escalates less far: it is the class least
-		// likely to be the account's fault (SDD §4.5.1).
-		CooldownTransportCap: cfg.CooldownTransportCap(),
+		MaxInflight: cfg.MaxInflight(),
+		QueueWait:   cfg.QueueWait(),
 		// Risk-control signals are correlated across accounts on one egress
 		// inside this window (SDD §4.5.2).
 		RiskWindow: cfg.PoolStatsWindow(),
@@ -237,7 +200,7 @@ func run() error {
 		// and a request that outlives its TTL must not pin the account it leased.
 		SlotTTL: cfg.LeaseTTL(),
 		Logf:    log.Printf,
-	}, probe, renew)
+	})
 
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
@@ -279,8 +242,9 @@ func run() error {
 	srv.RefreshModelRedirects(warmCtx)
 	cancelWarm()
 
-	// Background janitors (SDD §3): recovery probes every probeInterval, plus
-	// the STS keepalive sweep (§2.3).
+	// Background janitors (SDD §3): the STS keepalive sweep (§2.3) and the model
+	// catalog refresher. The probe sweeper is gone with cooldown (owner ruling
+	// 2026-10): disabled accounts come back only via operator action.
 	ctx, stopJanitors := context.WithCancel(context.Background())
 	janitorDone := make(chan struct{})
 	go func() {
@@ -298,9 +262,6 @@ func run() error {
 			case <-ctx.Done():
 				return
 			case <-probeTick.C:
-				if n := p.ProbeSweep(ctx); n > 0 {
-					log.Printf("pool: recovered %d account(s)", n)
-				}
 				// Keep the superseded-id map current: an upstream that retires a
 				// model mid-flight must not start failing requests that used to
 				// work (TTL-guarded inside).

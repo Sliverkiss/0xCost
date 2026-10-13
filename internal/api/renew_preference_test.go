@@ -53,7 +53,7 @@ func newRenewStack(t *testing.T, userID, passToken string) *renewStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := pool.New([]accounts.Account{acct}, pool.Options{}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{})
 	client := mimo.New(mimo.Options{
 		Base:          up.URL(),
 		PassportHosts: []string{passport.Host()},

@@ -352,13 +352,14 @@ func TestStreamMidStreamErrorInBand(t *testing.T) {
 	lastFrameIsDone(t, frames)
 }
 
-// STREAM-016: a failure before the first delta is still pre-response, so the
-// request fails over to another account and the client sees one clean stream —
-// never a partial stream followed by a retry.
+// STREAM-016 (rewritten for the pass-through ruling, 2026-10): a failure
+// before the first byte is answered as a plain HTTP error with the upstream's
+// own status — no failover to another account, no cooldown. The failover this
+// case used to pin masked upstream failures from the client.
 func TestStreamPreFirstByteFailover(t *testing.T) {
 	ts := testserver.NewTestServer(t, twoAccounts(), nil)
 	// Round-robin serves acc2 first (the cursor starts on the second identity),
-	// so the 502 goes there and the retry lands on acc1 with a live fixture.
+	// so the 502 goes there; with pass-through the client sees it as answered.
 	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
 
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", true, [2]string{"user", "hi"}), "")
@@ -366,24 +367,15 @@ func TestStreamPreFirstByteFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusBadGateway {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d body=%s, want 200 via failover", resp.StatusCode, raw)
+		t.Fatalf("status = %d body=%s, want the upstream's 502 passed through", resp.StatusCode, raw)
 	}
-	frames := readStreamFrames(t, resp)
-	if got := contentOf(frames); got != "Hello world" {
-		t.Errorf("content = %q, want the full answer from the second account", got)
+	if n := ts.Upstream.ChatHits(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1 (no failover: failures pass through)", n)
 	}
-	lastFrameIsDone(t, frames)
-	phs := map[string]int{}
-	for _, r := range ts.Upstream.Requests() {
-		phs[r.PH]++
-	}
-	if phs[testutil.TestPH] != 1 || phs[testutil.TestPH2] != 1 {
-		t.Errorf("per-account hits = %v, want one attempt each (the failed one wrote nothing)", phs)
-	}
-	if ts.Pool.StateOf("acc2") != pool.StateCooldown {
-		t.Errorf("acc2 state = %v, want cooldown (a real transport failure is still evidence)", ts.Pool.StateOf("acc2"))
+	if ts.Pool.StateOf("acc2") != pool.StateAvailable {
+		t.Errorf("acc2 state = %v, want available (a 502 takes no pool action)", ts.Pool.StateOf("acc2"))
 	}
 }
 

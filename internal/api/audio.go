@@ -100,9 +100,10 @@ func (s *Server) botConfigFor(ctx context.Context, accountID, cookie, ph string)
 
 // withAccount runs fn with an account lease and resolved credentials, applying
 // the same account policy as the chat pipeline: an expired session is refreshed
-// and the call retried once, a dead account is reported to the pool, and a 429
-// feeds the cooldown ladder (SDD §7.1). Non-account failures (bad voice, bad
-// input) are returned untouched for the caller to map.
+// and the call retried once, and a dead account is reported to the pool. Any
+// other upstream failure passes through untouched (owner ruling 2026-10: no
+// cooldown, no backoff). Non-account failures (bad voice, bad input) are
+// returned for the caller to map.
 func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID string) error) error {
 	lease, err := s.pool.Acquire(ctx)
 	if err != nil {
@@ -146,18 +147,11 @@ func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID 
 		})
 	case isAccountDead(err):
 		s.pool.ReportDisabled(lease.ID, err.Error(), isPermanentDead(err))
-	case isUpstream429(err):
-		s.pool.Report429(lease.ID)
 	default:
-		// Upstream sick during an audio call: transport failures and 5xx cool the
-		// account on their own class ladder. Until this existed, a dead
-		// connection or a 5xx in a TTS/ASR call never cooled the account at all
-		// (SDD §4.5.1). Business errors (e.g. an audit refusal) are not
-		// transport and carry no 5xx, so they stay action-free — they say
-		// nothing about the account's health.
-		if isTransportErr(err) || isUpstream5xx(err) {
-			s.reportFailure(lease.ID, err)
-		}
+		// PASSFAIL (owner ruling 2026-10): an upstream failure during an audio
+		// call — transport, 5xx or a 429 — passes through to the caller
+		// untouched and takes no pool action. Business errors (e.g. an audit
+		// refusal) equally say nothing about the account's health.
 	}
 	return err
 }

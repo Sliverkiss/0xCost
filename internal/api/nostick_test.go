@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/testserver"
 	"github.com/yg/mimo2api/internal/testutil"
 )
@@ -150,10 +151,7 @@ func TestDisconnectBeforeResponseReleasesTheLease(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if class, _, _ := ts.Pool.CooldownInfoOf(acct[0].ID); class != "" {
-		t.Errorf("client disconnect cooled the account down: class %q", class)
-	}
-	if n := len(ts.Pool.Snapshot()[0].Failures); n != 0 {
-		t.Errorf("client disconnect recorded failures: %v", ts.Pool.Snapshot()[0].Failures)
+	if st := ts.Pool.StateOf(acct[0].ID); st != pool.StateAvailable {
+		t.Errorf("client disconnect changed the account state: %v, want available", st)
 	}
 }

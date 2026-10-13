@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/yg/mimo2api/internal/adapter"
+	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/testserver"
 	"github.com/yg/mimo2api/internal/testutil"
 )
@@ -199,16 +200,12 @@ func TestIMG004NonImageURLRejected(t *testing.T) {
 		t.Errorf("body = %s, want unsupported_image_type", raw)
 	}
 	// No account was punished for the client's bad URL: the slot came back and
-	// nothing was recorded against the account.
+	// the account is still available.
 	if got := ts.Pool.InFlight(); got != 0 {
 		t.Errorf("in-flight = %d after the refusal, want 0 (the slot must be back)", got)
 	}
-	recorded := 0
-	for _, n := range ts.Pool.FailuresOf("acc1") {
-		recorded += n
-	}
-	if recorded != 0 {
-		t.Errorf("account recorded %d failures for a client-side image error, want none (%v)", recorded, ts.Pool.FailuresOf("acc1"))
+	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
+		t.Errorf("account state = %v after a client-side image error, want available", st)
 	}
 }
 

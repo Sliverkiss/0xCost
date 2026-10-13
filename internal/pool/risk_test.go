@@ -25,7 +25,7 @@ func poolWithEgress(t *testing.T, labels map[string]string) (*Pool, *testutil.Fa
 	for _, id := range []string{"a1", "a2", "a3"} {
 		accts = append(accts, accounts.Account{ID: id, Enabled: true, Egress: labels[id]})
 	}
-	return New(accts, Options{Now: fc.Now}, nil, nil), fc
+	return New(accts, Options{Now: fc.Now}), fc
 }
 
 // RISK-001: a 461 (or 451) is recorded with everything needed to interpret it

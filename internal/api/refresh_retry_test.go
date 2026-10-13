@@ -56,7 +56,7 @@ func newRefreshStack(t *testing.T, passToken string) *otpAdminStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := pool.New([]accounts.Account{acct}, pool.Options{}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{})
 	client := mimo.New(mimo.Options{
 		Base:          up.URL(),
 		PassportHosts: []string{passport.Host()},
@@ -160,7 +160,7 @@ func TestRefreshFailureDisablesAndMapsError(t *testing.T) {
 	}
 	// The disabled state + reason live in the pool at runtime; main.go syncs
 	// them back into accounts.json (SDD §7.5), so that is what to assert here.
-	state, _, reason := s.pool.RuntimeState("acc-refresh-1")
+	state, reason := s.pool.RuntimeState("acc-refresh-1")
 	if state != pool.StateDisabled || reason == "" {
 		t.Errorf("runtime state = %s / %q, want disabled with an operator-actionable reason", state, reason)
 	}

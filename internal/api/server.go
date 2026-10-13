@@ -470,7 +470,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Accounts struct {
 			Total     int `json:"total"`
 			Available int `json:"available"`
-			Cooldown  int `json:"cooldown"`
 			Disabled  int `json:"disabled"`
 		} `json:"accounts"`
 	}{
@@ -478,7 +477,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Accounts.Total = sum.Total
 	body.Accounts.Available = sum.Available
-	body.Accounts.Cooldown = sum.Cooldown
 	body.Accounts.Disabled = sum.Disabled
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)

@@ -19,13 +19,12 @@ func sampleFile() File {
 			State:   "available",
 		},
 		{
-			ID:            "acc-2",
-			Phone:         "13800000002",
-			Enabled:       true,
-			PassToken:     "rt-2",
-			UserID:        "u2",
-			State:         "cooldown",
-			CooldownUntil: 1700000123,
+			ID:      "acc-2",
+			Phone:   "13800000002",
+			Enabled: true,
+			PassToken: "rt-2",
+			UserID:  "u2",
+			State:   "disabled",
 		},
 	}}
 }
@@ -55,8 +54,7 @@ func TestLoadRoundTrip(t *testing.T) {
 		t.Fatalf("len = %d", len(got))
 	}
 	for i := range want {
-		if got[i].ID != want[i].ID || got[i].State != want[i].State ||
-			got[i].CooldownUntil != want[i].CooldownUntil {
+		if got[i].ID != want[i].ID || got[i].State != want[i].State {
 			t.Errorf("acc %d: got %+v want %+v", i, got[i], want[i])
 		}
 		if want[i].Session != nil {
@@ -80,7 +78,6 @@ func TestAtomicWrite(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		accs := s.Accounts()
 		accs[0].State = "available"
-		accs[0].CooldownUntil = int64(1700000000 + i)
 		if err := s.Update(accs[0]); err != nil {
 			t.Fatal(err)
 		}

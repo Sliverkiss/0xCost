@@ -29,25 +29,16 @@ func maskID(id string) string {
 	return "acct-" + hex.EncodeToString(sum[:4])
 }
 
-type poolCooldownView struct {
-	Until  time.Time `json:"until"`
-	Class  string    `json:"class"`
-	Status int       `json:"status,omitempty"`
-	Since  time.Time `json:"since"`
-}
-
 type poolLastErrorView struct {
-	Class  string    `json:"class"`
 	Status int       `json:"status,omitempty"`
 	At     time.Time `json:"at"`
 }
 
-// poolSummaryView is the same four aggregates /healthz exposes — reported here too
+// poolSummaryView is the same aggregates /healthz exposes — reported here too
 // so an operator reading the detail view does not have to fetch both.
 type poolSummaryView struct {
 	Total     int `json:"total"`
 	Available int `json:"available"`
-	Cooldown  int `json:"cooldown"`
 	Disabled  int `json:"disabled"`
 }
 
@@ -60,8 +51,6 @@ type poolAccountView struct {
 	InFlight      int                `json:"in_flight"`
 	MaxInFlight   int                `json:"max_in_flight"`
 	EWMALatencyMS int64              `json:"ewma_latency_ms"`
-	Failures      map[string]int     `json:"failures"`
-	Cooldown      *poolCooldownView  `json:"cooldown,omitempty"`
 	LastError     *poolLastErrorView `json:"last_error,omitempty"`
 	// CredentialAgeS is how long ago the account's session was fetched. A stale
 	// session is the usual explanation for a run of auth-class failures.
@@ -101,18 +90,11 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 			InFlight:       snap.InFlight,
 			MaxInFlight:    snap.MaxInFlight,
 			EWMALatencyMS:  snap.EWMALatencyMS,
-			Failures:       snap.Failures,
 			CredentialAgeS: ages[snap.ID],
-		}
-		if !snap.CooldownUntil.IsZero() {
-			v.Cooldown = &poolCooldownView{
-				Until: snap.CooldownUntil, Class: string(snap.CooldownClass),
-				Status: snap.CooldownCausedBy, Since: snap.CooldownSince,
-			}
 		}
 		if !snap.LastErrorAt.IsZero() {
 			v.LastError = &poolLastErrorView{
-				Class: string(snap.LastErrorClass), Status: snap.LastErrorStatus, At: snap.LastErrorAt,
+				Status: snap.LastErrorStatus, At: snap.LastErrorAt,
 			}
 		}
 		views = append(views, v)
@@ -145,7 +127,7 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 	// The accounting invariant (INV-1) is reported rather than assumed: an
 	// operator reading this endpoint should never have to add up states by hand
 	// to trust the counts.
-	invariantOK := sum.Available+sum.Cooldown+sum.Disabled == sum.Total
+	invariantOK := sum.Available+sum.Disabled == sum.Total
 
 	response := struct {
 		Accounts    poolSummaryView     `json:"accounts"`
@@ -163,7 +145,6 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 		Accounts: poolSummaryView{
 			Total:     sum.Total,
 			Available: sum.Available,
-			Cooldown:  sum.Cooldown,
 			Disabled:  sum.Disabled,
 		},
 		InvariantOK:   invariantOK,

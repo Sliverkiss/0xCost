@@ -26,8 +26,8 @@ type Session struct {
 }
 
 // Account is one pool entry (SDD §4.7). Runtime state (user_id, pass_token,
-// session, state, cooldown_until, disabled_reason) is persisted back so
-// restarts don't re-login the whole pool.
+// session, state, disabled_reason) is persisted back so restarts don't re-login
+// the whole pool.
 type Account struct {
 	ID       string `json:"id"`
 	Phone    string `json:"phone,omitempty"`
@@ -46,8 +46,7 @@ type Account struct {
 	// (docs/login-chain-reverse.md §5 item 1; internal/mimo/device.go).
 	Device         map[string]string `json:"device,omitempty"`
 	Session        *Session          `json:"session,omitempty"`
-	State          string            `json:"state,omitempty"` // available | cooldown | disabled
-	CooldownUntil  int64             `json:"cooldown_until,omitempty"`
+	State          string            `json:"state,omitempty"` // available | disabled
 	DisabledReason string            `json:"disabled_reason,omitempty"`
 }
 

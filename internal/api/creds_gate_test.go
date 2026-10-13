@@ -66,7 +66,7 @@ func newGateStack(t *testing.T, auth2 string) *gateStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := pool.New([]accounts.Account{acct}, pool.Options{MaxInflight: 2}, nil, nil)
+	p := pool.New([]accounts.Account{acct}, pool.Options{MaxInflight: 2})
 	client := mimo.New(mimo.Options{
 		Base:          up.URL(),
 		PassportHosts: []string{passport.Host()},

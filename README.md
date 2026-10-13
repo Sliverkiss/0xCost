@@ -24,7 +24,7 @@ One static binary. One key. Standard OpenAI requests in, standard OpenAI respons
 - 🧠 **Deep thinking** — reasoning returned as `reasoning_content` (streamed as `delta.reasoning_content`)
 - 🖼️ **Image understanding** — `image_url` content parts (http(s) URLs and base64 data URLs)
 - 🔉 **Audio** — `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `GET /v1/audio/voices`
-- 🔄 **Account pool** — round-robin with per-account in-flight caps, leases, cooldowns and health states
+- 🔄 **Account pool** — round-robin with per-account in-flight caps and leases; upstream failures pass through verbatim (no cooldown/backoff)
 - 💾 **Account store: file or Upstash Redis** — the same binary, no volume needed with Redis
 - 🩺 **`GET /healthz`** — plus an operator surface (`/v1/admin/pool`, OTP and consent endpoints)
 - 📦 **Single static binary** — distroless, non-root, no shell, no runtime dependencies

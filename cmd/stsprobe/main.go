@@ -106,7 +106,7 @@ func main() {
 		return
 	}
 	// Persist surgically: touch only this account's session/identity fields so
-	// unrelated keys (label, enabled, cooldown) survive.
+	// unrelated keys (label, enabled, state) survive.
 	var rawDoc map[string]any
 	if err := json.Unmarshal(raw, &rawDoc); err != nil {
 		fmt.Println("persist: parse:", err)
