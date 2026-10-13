@@ -139,18 +139,10 @@ func TestDisconnectBeforeResponseReleasesTheLease(t *testing.T) {
 		t.Fatal("request returned after the client cancelled, want a transport error")
 	}
 
-	// The lease must return even though the upstream call was still stalled.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		snap := ts.Pool.Snapshot()
-		if len(snap) == 1 && snap[0].InFlight == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("in-flight never returned to 0: %+v", snap)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The account must stay selectable even though the upstream call was
+	// still stalled when the client left — a disconnect is not a fault, and
+	// with in-flight slots gone there is no capacity to hand back, only the
+	// account's state to protect.
 	if st := ts.Pool.StateOf(acct[0].ID); st != pool.StateAvailable {
 		t.Errorf("client disconnect changed the account state: %v, want available", st)
 	}

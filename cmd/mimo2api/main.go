@@ -181,8 +181,10 @@ func run() error {
 		DisableCrossRegionAgree: !cfg.CrossRegionAgree(),
 	})
 
-	// Pool (owner ruling 2026-10): two states only — available / disabled. There
-	// is no probe sweeper and no cooldown: failures pass through to the client.
+	// Pool (owner rulings 2026-10): two states only — available / disabled. There
+	// is no probe sweeper, no cooldown, and no concurrency cap (2026-10-14,
+	// "并发槽砍了"): failures pass through to the client, and the upstream decides
+	// what it will serve.
 	accts := store.Accounts()
 	var poolAccts []accounts.Account
 	for _, a := range accts {
@@ -191,15 +193,9 @@ func run() error {
 		}
 	}
 	p := pool.New(poolAccts, pool.Options{
-		MaxInflight: cfg.MaxInflight(),
-		QueueWait:   cfg.QueueWait(),
 		// Risk-control signals are correlated across accounts on one egress
 		// inside this window (SDD §4.5.2).
 		RiskWindow: cfg.PoolStatsWindow(),
-		// Slot TTL + reaper (ADR 0019): a slot is capacity held for one request,
-		// and a request that outlives its TTL must not pin the account it leased.
-		SlotTTL: cfg.LeaseTTL(),
-		Logf:    log.Printf,
 	})
 
 	srv := api.New(api.Options{
@@ -214,15 +210,12 @@ func run() error {
 		MaxImageBytes:     cfg.MaxImageBytes(),
 		MaxImagePixels:    cfg.MaxImagePixels(),
 		ImageAllowPrivate: cfg.ImageAllowPrivate(),
-		// 0 = per-channel caps; a positive value is the operator override
-		// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
-		MaxQueryChars: cfg.MaxQueryChars(),
-		Debug:         cfg.Debug(),
-		// ADR 0019: a real client-facing budget, a per-turn upstream deadline,
-		// and when the in-flight slot goes back to the pool.
+		Debug:             cfg.Debug(),
+		// ADR 0019: a real client-facing budget and a per-turn upstream deadline.
+		// The per-turn silence window (LeaseTTL) is request liveness, not slot
+		// capacity — the slots are gone (owner ruling 2026-10-14).
 		RequestTimeout: cfg.RequestTimeout(),
 		LeaseTTL:       cfg.LeaseTTL(),
-		SlotHold:       cfg.SlotHold(),
 
 		// Audio surface (M18).
 		AudioPoll:      cfg.AudioPoll(),
@@ -230,7 +223,6 @@ func run() error {
 		CatalogTTL:     cfg.CatalogTTL(),
 		TTSTimeout:     cfg.TTSTimeout(),
 		ASRTimeout:     cfg.ASRTimeout(),
-		SpeechMaxChars: cfg.SpeechMaxChars(),
 		DefaultVoice:   cfg.TTSVoice(),
 	})
 
@@ -242,22 +234,19 @@ func run() error {
 	srv.RefreshModelRedirects(warmCtx)
 	cancelWarm()
 
-	// Background janitors (SDD §3): the model catalog refresher, the slot
-	// reaper, and the hourly session-renew job. The probe sweeper is gone with
-	// cooldown (owner ruling 2026-10), and session freshness moved off the
-	// request paths onto the renew job (owner ruling 2026-10: "定时巡检比被
-	// 调用接口造成问题要稳定") — the job runs one round immediately so the
-	// deployment starts on fresh sessions, then once per interval.
+	// Background janitors (SDD §3): the model catalog refresher and the hourly
+	// session-renew job. The probe sweeper is gone with cooldown (owner ruling
+	// 2026-10), the slot reaper is gone with the slots (owner ruling
+	// 2026-10-14), and session freshness moved off the request paths onto the
+	// renew job ("定时巡检比被调用接口造成问题要稳定") — the job runs one round
+	// immediately so the deployment starts on fresh sessions, then once per
+	// interval.
 	ctx, stopJanitors := context.WithCancel(context.Background())
 	janitorDone := make(chan struct{})
 	go func() {
 		defer close(janitorDone)
 		probeTick := time.NewTicker(cfg.ProbeInterval())
 		defer probeTick.Stop()
-		// Slot reaper (ADR 0019): cheap, and it is the only thing standing
-		// between a wedged handler and a permanently smaller pool.
-		slotTick := time.NewTicker(5 * time.Second)
-		defer slotTick.Stop()
 		renewDone := make(chan struct{})
 		go func() {
 			defer close(renewDone)
@@ -273,8 +262,6 @@ func run() error {
 				// model mid-flight must not start failing requests that used to
 				// work (TTL-guarded inside).
 				srv.RefreshModelRedirects(ctx)
-			case <-slotTick.C:
-				p.ReapExpiredSlots()
 			}
 		}
 	}()

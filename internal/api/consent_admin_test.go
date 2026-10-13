@@ -166,8 +166,9 @@ func TestConsentAgreeExistingSession(t *testing.T) {
 }
 
 // CONSENT-API-005: the consent override runs — it POSTs the agreement despite
-// the client flag, reaches the new-device OTP demand, disables the account, and
-// exposes the challenge through GET /v1/admin/otp/pending.
+// the client flag, reaches the new-device OTP demand, registers the challenge
+// for the operator (the account itself stays available — owner ruling
+// 2026-10-14, "主动处置砍了"), and exposes it through GET /v1/admin/otp/pending.
 func TestConsentAgreeReachesOTPPending(t *testing.T) {
 	s := newConsentAdminStack(t, freshConsentAccount())
 	s.passport.SetConsentChain(true)
@@ -187,9 +188,11 @@ func TestConsentAgreeReachesOTPPending(t *testing.T) {
 	if c["userId"] != "123456" || c["status"] != "1" || c["needClose"] != "false" {
 		t.Errorf("consent form = %v, want userId/status=1/needClose=false", c)
 	}
-	// The account waits (disabled) until the operator enters the code.
-	if s.pool.StateOf("acc-consent-1") != pool.StateDisabled {
-		t.Errorf("pool state = %s, want disabled while OTP pending", s.pool.StateOf("acc-consent-1"))
+	// The account stays selectable while the code is outstanding (owner ruling
+	// 2026-10-14, "主动处置砍了"): consent anomalies must not change
+	// availability — the operator decides through /v1/admin/otp/submit.
+	if s.pool.StateOf("acc-consent-1") != pool.StateAvailable {
+		t.Errorf("pool state = %s, want available while OTP pending (no consent sit-out)", s.pool.StateOf("acc-consent-1"))
 	}
 	// The challenge is visible through the existing admin pending list.
 	list := s.pendingList("sk-admin-test")

@@ -31,32 +31,6 @@ const (
 	DefaultSecChUA      = `"Google Chrome";v="153", "Chromium";v="153", "Not)A;Brand";v="24"`
 )
 
-// Slot hold policies (ADR 0019): when a request gives its in-flight slot back.
-const (
-	// SlotHoldLastByte keeps the slot for the whole upstream generation — the
-	// slot means "this account is working on this request".
-	SlotHoldLastByte = "last-byte"
-	// SlotHoldFirstByte releases the slot the moment the upstream starts
-	// answering: the generation itself no longer occupies capacity, so a single
-	// account can serve more conversations concurrently. Account risk, not code
-	// risk — hence opt-in.
-	SlotHoldFirstByte = "first-byte"
-)
-
-// parseSlotHold validates MIMO2API_SLOT_HOLD. An unknown value is an error
-// naming the accepted ones: a typo must not silently pick a policy.
-func parseSlotHold(v string) (string, error) {
-	v = strings.ToLower(strings.TrimSpace(v))
-	switch v {
-	case "", SlotHoldLastByte:
-		return SlotHoldLastByte, nil
-	case SlotHoldFirstByte:
-		return SlotHoldFirstByte, nil
-	default:
-		return "", fmt.Errorf("MIMO2API_SLOT_HOLD=%q: want %q or %q", v, SlotHoldLastByte, SlotHoldFirstByte)
-	}
-}
-
 // Default durations per SDD §6.
 const (
 	// DefaultRequestTimeout is the whole client-facing budget for one chat
@@ -77,20 +51,12 @@ const (
 	// connection from pinning an account for the 30 minutes the HTTP client used
 	// to allow.
 	DefaultLeaseTTL = 120 * time.Second
-	// DefaultSlotHold is when a request gives its in-flight slot back:
-	// "last-byte" (the slot spans the generation) or "first-byte" (the slot is
-	// released as soon as the upstream starts answering). Conservative by
-	// default: first-byte raises per-account concurrency while a model is
-	// generating, which is the account-safety question, not a code question.
-	DefaultSlotHold = SlotHoldLastByte
 	// DefaultRenewInterval is the session-renew job's cadence (owner ruling
 	// 2026-10: hourly scheduled renewal instead of request-path renewal): the
 	// job renews every enabled account's session and — when a credential is
 	// dead — runs one password login, so the passToken's own 30-day clock
 	// never comes close to expiring between rounds.
 	DefaultRenewInterval = time.Hour
-	DefaultMaxInflight    = 2
-	DefaultQueueWait      = 15 * time.Second
 
 	// Audio surface (M18): the Studio's own poll cadence is 1s and its task
 	// deadlines are tens of seconds, so these are the honest defaults.
@@ -108,14 +74,8 @@ const (
 	// cost is superlinear and load-dependent, so the budget is generous.
 	DefaultTTSPerRuneBudget = 500 * time.Millisecond
 	// DefaultTTSMaxTimeout caps one piece's budget.
-	DefaultTTSMaxTimeout  = 900 * time.Second
-	DefaultASRTimeout     = 120 * time.Second
-	DefaultSpeechMaxChars = 1024
-	// DefaultMaxQueryChars: 0 keeps the per-channel chat caps
-	// (adapter.MaxQueryChars: 50,000 fastchat / 102,400 others — SDD §2.8,
-	// measured per ADR 0015; the old "90k others" here was the pre-measurement
-	// guess and contradicted the code).
-	DefaultMaxQueryChars = 0
+	DefaultTTSMaxTimeout = 900 * time.Second
+	DefaultASRTimeout    = 120 * time.Second
 	DefaultReplayCap     = 20
 	// Image input (IMG-*): image parts travel through resource/parse, which
 	// accounts for a file separately from the 102,400-char query budget
@@ -139,40 +99,35 @@ const (
 // Config is the immutable runtime configuration (CONF-006: no mutation
 // surface; construct via Load only).
 type Config struct {
-	host                 string
-	port                 int
-	apiKeys              []string
-	upstreamBase         string
-	accountsFile         string
-	defaultModel         string
-	requestTimeout       time.Duration
-	leaseTTL             time.Duration
-	slotHold             string
-	sseIdleTimeout       time.Duration
-	renewInterval        time.Duration
-	maxInflight          int
-	queueWait            time.Duration
-	audioPoll            time.Duration
-	catalogTTL           time.Duration
-	ttsTimeout           time.Duration
-	ttsMaxTimeout        time.Duration
-	asrTimeout           time.Duration
-	speechMaxChars       int
-	maxQueryChars        int
-	ttsVoice             string
-	timezone             string
-	userAgent            string
-	secChUA              string
-	replayCap            int
-	maxImages            int
-	maxImageBytes        int
-	maxImagePixels       int
-	imageAllowPrivate    bool
-	poolStatsWindow      time.Duration
-	probeInterval        time.Duration
-	logLevel             string
-	otpAuto              bool
-	crossRegionAgree     bool
+	host              string
+	port              int
+	apiKeys           []string
+	upstreamBase      string
+	accountsFile      string
+	defaultModel      string
+	requestTimeout    time.Duration
+	leaseTTL          time.Duration
+	sseIdleTimeout    time.Duration
+	renewInterval     time.Duration
+	audioPoll         time.Duration
+	catalogTTL        time.Duration
+	ttsTimeout        time.Duration
+	ttsMaxTimeout     time.Duration
+	asrTimeout        time.Duration
+	ttsVoice          string
+	timezone          string
+	userAgent         string
+	secChUA           string
+	replayCap         int
+	maxImages         int
+	maxImageBytes     int
+	maxImagePixels    int
+	imageAllowPrivate bool
+	poolStatsWindow   time.Duration
+	probeInterval     time.Duration
+	logLevel          string
+	otpAuto           bool
+	crossRegionAgree  bool
 
 	// redisHost/redisToken are the Upstash contract (DS_REDIS_HOST /
 	// DS_REDIS_TOKEN, ADR 0018). Both empty means the accounts file backend.
@@ -186,31 +141,27 @@ type Config struct {
 // entries dropped (CONF-004).
 func Load() (*Config, error) {
 	c := &Config{
-		host:                 getenv("MIMO2API_HOST", DefaultHost),
-		port:                 DefaultPort,
-		upstreamBase:         getenv("MIMO2API_UPSTREAM_BASE", DefaultUpstreamBase),
-		accountsFile:         getenv("MIMO2API_ACCOUNTS_FILE", DefaultAccountsFile),
-		defaultModel:         getenv("MIMO2API_DEFAULT_MODEL", DefaultDefaultModel),
-		timezone:             getenv("MIMO2API_X_TIMEZONE", DefaultTimezone),
-		userAgent:            getenv("MIMO2API_USER_AGENT", DefaultUserAgent),
-		secChUA:              getenv("MIMO2API_SEC_CH_UA", DefaultSecChUA),
-		logLevel:             getenv("MIMO2API_LOG_LEVEL", DefaultLogLevel),
-		requestTimeout:       DefaultRequestTimeout,
-		leaseTTL:             DefaultLeaseTTL,
-		slotHold:             DefaultSlotHold,
-		sseIdleTimeout:       DefaultSSEIdleTimeout,
-		renewInterval:        DefaultRenewInterval,
-		maxInflight:          DefaultMaxInflight,
-		queueWait:            DefaultQueueWait,
-		audioPoll:            DefaultAudioPoll,
-		catalogTTL:           DefaultCatalogTTL,
-		ttsTimeout:           DefaultTTSTimeout,
-		ttsMaxTimeout:        DefaultTTSMaxTimeout,
-		asrTimeout:           DefaultASRTimeout,
-		speechMaxChars:       DefaultSpeechMaxChars,
-		ttsVoice:             getenv("MIMO2API_TTS_VOICE", ""),
-		replayCap:            DefaultReplayCap,
-		probeInterval:        DefaultProbeInterval,
+		host:           getenv("MIMO2API_HOST", DefaultHost),
+		port:           DefaultPort,
+		upstreamBase:   getenv("MIMO2API_UPSTREAM_BASE", DefaultUpstreamBase),
+		accountsFile:   getenv("MIMO2API_ACCOUNTS_FILE", DefaultAccountsFile),
+		defaultModel:   getenv("MIMO2API_DEFAULT_MODEL", DefaultDefaultModel),
+		timezone:       getenv("MIMO2API_X_TIMEZONE", DefaultTimezone),
+		userAgent:      getenv("MIMO2API_USER_AGENT", DefaultUserAgent),
+		secChUA:        getenv("MIMO2API_SEC_CH_UA", DefaultSecChUA),
+		logLevel:       getenv("MIMO2API_LOG_LEVEL", DefaultLogLevel),
+		requestTimeout: DefaultRequestTimeout,
+		leaseTTL:       DefaultLeaseTTL,
+		sseIdleTimeout: DefaultSSEIdleTimeout,
+		renewInterval:  DefaultRenewInterval,
+		audioPoll:      DefaultAudioPoll,
+		catalogTTL:     DefaultCatalogTTL,
+		ttsTimeout:     DefaultTTSTimeout,
+		ttsMaxTimeout:  DefaultTTSMaxTimeout,
+		asrTimeout:     DefaultASRTimeout,
+		ttsVoice:       getenv("MIMO2API_TTS_VOICE", ""),
+		replayCap:      DefaultReplayCap,
+		probeInterval:  DefaultProbeInterval,
 		// Default OFF: starting a new-device challenge sends a real SMS to the
 		// account owner, and a human has to enter the code anyway, so the
 		// dispatch is an explicit operator decision (MIMO2API_OTP_AUTO=true).
@@ -245,19 +196,10 @@ func Load() (*Config, error) {
 	if c.leaseTTL, err = getenvSeconds("MIMO2API_LEASE_TTL_S", DefaultLeaseTTL); err != nil {
 		return nil, err
 	}
-	if c.slotHold, err = parseSlotHold(getenv("MIMO2API_SLOT_HOLD", DefaultSlotHold)); err != nil {
-		return nil, err
-	}
 	if c.sseIdleTimeout, err = getenvSeconds("MIMO2API_SSE_IDLE_TIMEOUT_S", DefaultSSEIdleTimeout); err != nil {
 		return nil, err
 	}
 	if c.renewInterval, err = getenvMinutes("MIMO2API_RENEW_INTERVAL", DefaultRenewInterval); err != nil {
-		return nil, err
-	}
-	if c.maxInflight, err = getenvInt("MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", DefaultMaxInflight); err != nil {
-		return nil, err
-	}
-	if c.queueWait, err = getenvSeconds("MIMO2API_QUEUE_WAIT_S", DefaultQueueWait); err != nil {
 		return nil, err
 	}
 	if c.replayCap, err = getenvInt("MIMO2API_REPLAY_CAP", DefaultReplayCap); err != nil {
@@ -295,15 +237,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.asrTimeout, err = getenvSeconds("MIMO2API_AUDIO_ASR_TIMEOUT_S", DefaultASRTimeout); err != nil {
-		return nil, err
-	}
-	if c.speechMaxChars, err = getenvInt("MIMO2API_SPEECH_MAX_CHARS", DefaultSpeechMaxChars); err != nil {
-		return nil, err
-	}
-	// 0 = keep the per-channel caps (50k fastchat / 90k others); a positive value
-	// overrides both and is the operator's escape hatch for a client that sends
-	// more context than the Studio's own UI would (ADR 0015).
-	if c.maxQueryChars, err = getenvInt("MIMO2API_MAX_QUERY_CHARS", DefaultMaxQueryChars); err != nil {
 		return nil, err
 	}
 
@@ -346,10 +279,6 @@ func (c *Config) RequestTimeout() time.Duration { return c.requestTimeout }
 // backstop (ADR 0019).
 func (c *Config) LeaseTTL() time.Duration { return c.leaseTTL }
 
-// SlotHold reports whether a request hands its slot back at the first upstream
-// byte rather than after the last one (ADR 0019, MIMO2API_SLOT_HOLD).
-func (c *Config) SlotHold() string { return c.slotHold }
-
 // UpstreamTimeout is the HTTP client timeout for upstream calls. It must never
 // be what decides a turn is dead — the turn's **silence window** decides that
 // (ADR 0036) — so with no operator wall clock configured the client carries no
@@ -366,12 +295,11 @@ func (c *Config) UpstreamTimeout() time.Duration {
 	return 0
 }
 func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
+
 // RenewInterval is the session-renew job's cadence (owner ruling 2026-10:
 // hourly scheduled renewal; MIMO2API_RENEW_INTERVAL, minutes).
 func (c *Config) RenewInterval() time.Duration { return c.renewInterval }
-func (c *Config) MaxInflight() int              { return c.maxInflight }
-func (c *Config) QueueWait() time.Duration      { return c.queueWait }
-func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
+func (c *Config) AudioPoll() time.Duration     { return c.audioPoll }
 
 // CatalogTTL is the per-account catalog cache lifetime (M19 §3).
 func (c *Config) CatalogTTL() time.Duration { return c.catalogTTL }
@@ -381,20 +309,15 @@ func (c *Config) TTSTimeout() time.Duration { return c.ttsTimeout }
 // TTSMaxTimeout caps the per-piece poll budget (see TTSTimeout).
 func (c *Config) TTSMaxTimeout() time.Duration { return c.ttsMaxTimeout }
 func (c *Config) ASRTimeout() time.Duration    { return c.asrTimeout }
-func (c *Config) SpeechMaxChars() int          { return c.speechMaxChars }
-
-// MaxQueryChars is the operator override for the chat request character cap;
-// 0 means "use the per-channel defaults" (adapter.MaxQueryChars).
-func (c *Config) MaxQueryChars() int               { return c.maxQueryChars }
-func (c *Config) TTSVoice() string                 { return c.ttsVoice }
-func (c *Config) Timezone() string                 { return c.timezone }
-func (c *Config) UserAgent() string                { return c.userAgent }
-func (c *Config) SecChUA() string                  { return c.secChUA }
-func (c *Config) ReplayCap() int                   { return c.replayCap }
-func (c *Config) MaxImages() int                   { return c.maxImages }
-func (c *Config) MaxImageBytes() int               { return c.maxImageBytes }
-func (c *Config) MaxImagePixels() int              { return c.maxImagePixels }
-func (c *Config) ImageAllowPrivate() bool          { return c.imageAllowPrivate }
+func (c *Config) TTSVoice() string             { return c.ttsVoice }
+func (c *Config) Timezone() string             { return c.timezone }
+func (c *Config) UserAgent() string            { return c.userAgent }
+func (c *Config) SecChUA() string              { return c.secChUA }
+func (c *Config) ReplayCap() int               { return c.replayCap }
+func (c *Config) MaxImages() int               { return c.maxImages }
+func (c *Config) MaxImageBytes() int           { return c.maxImageBytes }
+func (c *Config) MaxImagePixels() int          { return c.maxImagePixels }
+func (c *Config) ImageAllowPrivate() bool      { return c.imageAllowPrivate }
 
 // PoolStatsWindow is the risk-control correlation window (SDD §4.5.2).
 func (c *Config) PoolStatsWindow() time.Duration { return c.poolStatsWindow }

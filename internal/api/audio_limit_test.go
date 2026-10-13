@@ -2,15 +2,14 @@ package api_test
 
 // Speech length at the OpenAI edge.
 //
-// The upstream caps one synthesis at SpeechTextLimit (1024) characters. The
-// gateway used to work around that by splitting long input into pieces and
-// joining the audio; measured live on 2026-10-09, a piece of ~1020 characters
-// (what an 1110-character input splits into) makes the upstream fail the task
-// itself after ~278 s ("upstream audio task failed (task ...)"), so raising the
-// deadline does not help and the workaround only delays the error. The cap is
-// now the contract: over-length input is refused before any upstream work, with
-// the limit in the message, and a request at the limit still costs one task.
-// See docs/decisions/0010-speech-length-is-a-refused-limit.md.
+// Owner ruling 2026-10-14, verbatim: "字数预检砍了，超了上游会自己报错透传" —
+// there is no local precheck anywhere on the speech path. The upstream owns the
+// 1024-character synthesis cap (SpeechTextLimit is its mirror, ADR 0010) and
+// answers over-length input with its own refusal ("播报内容长度不能超过1024，
+// 当前长度为：1500"); classifyAudioUpstream translates that refusal into the
+// client-facing 400 input_too_long carrying the upstream's evidence. These
+// tests pin the passthrough: over-length input still costs exactly one
+// synthesis task, and the answer is the upstream's, not ours.
 
 import (
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/yg/mimo2api/internal/mimo"
-	"github.com/yg/mimo2api/internal/testserver"
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
@@ -34,29 +32,35 @@ func ttsGenerateCalls(reqs []testutil.AudioRequest) int {
 	return n
 }
 
-// TTSLIMIT-001: input over the upstream cap is refused client-side, with the
-// limit and the actual length in the message, and no upstream task is created —
-// the client learns immediately instead of waiting out a doomed synthesis.
-func TestSpeechOverUpstreamCapRejected(t *testing.T) {
+// TTSLIMIT-001 (ruling): input over the upstream cap is forwarded as sent; the
+// upstream refuses it, and its own wording ("播报内容长度不能超过1024…") passes
+// through to the client as a 400 input_too_long. Exactly one synthesis task —
+// the cap is judged upstream, nowhere else.
+func TestSpeechOverUpstreamCapRefusedByUpstream(t *testing.T) {
 	ts := audioServer(t, oneAccount(), nil)
 	long := strings.Repeat("小米 MiMo 语音合成测试。", 74) // 1110 runes
 	if n := len([]rune(long)); n <= mimo.SpeechTextLimit {
 		t.Fatalf("test input is %d runes; it must exceed the %d cap", n, mimo.SpeechTextLimit)
 	}
+	// The upstream's own over-length refusal, exactly as the Studio sends it.
+	ts.Upstream.SetAudioHTTPStatus(http.StatusBadRequest,
+		`{"code":400,"msg":"播报内容长度不能超过1024，当前长度为：1110"}`)
 	resp, body := postJSON(t, ts, "/v1/audio/speech",
 		fmt.Sprintf(`{"input":%q}`, long))
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s, want 400", resp.StatusCode, body)
+		t.Fatalf("status = %d body=%s, want 400 (the upstream's own refusal)", resp.StatusCode, body)
 	}
 	if !strings.Contains(string(body), "input_too_long") {
 		t.Errorf("body = %s, want code input_too_long", body)
 	}
-	if !strings.Contains(string(body), fmt.Sprint(mimo.SpeechTextLimit)) {
-		t.Errorf("body = %s, want the limit (%d) named in the message", body, mimo.SpeechTextLimit)
+	if !strings.Contains(string(body), "播报内容长度不能超过1024") {
+		t.Errorf("body = %s, want the upstream's own sentence passed through", body)
 	}
-	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 0 {
-		t.Errorf("upstream synthesis tasks = %d, want 0 (refused before any upstream work)", got)
+	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 1 {
+		t.Errorf("upstream synthesis tasks = %d, want 1 (forwarded; the upstream decides)", got)
 	}
+	// Restore normal service so t.Cleanup-state stays sane for other checks.
+	ts.Upstream.SetAudioHTTPStatus(0, "")
 }
 
 // TTSLIMIT-002: exactly at the cap is still accepted, and costs exactly one
@@ -80,20 +84,25 @@ func TestSpeechAtUpstreamCapIsOneCall(t *testing.T) {
 	}
 }
 
-// TTSLIMIT-003: a configured cap above the upstream limit does not raise it —
-// the upstream cannot do more, so accepting the request would only turn a clear
-// 400 into a slow upstream failure.
-func TestSpeechConfiguredCapCannotExceedUpstream(t *testing.T) {
-	ts := audioServer(t, oneAccount(), &testserver.TestServerOptions{SpeechMaxChars: 5000})
+// TTSLIMIT-003 (ruling, "字数预检砍了"): there is no operator cap to raise
+// above the upstream's any more — the request is forwarded regardless of
+// length, and the answer is always the upstream's own. This pins that the
+// 5000-character request below produces one task and the upstream refusal, not
+// a local rejection.
+func TestSpeechConfiguredCapIsGoneForwardedAndRefused(t *testing.T) {
+	ts := audioServer(t, oneAccount(), nil)
 	over := strings.Repeat("字", mimo.SpeechTextLimit+1)
+	ts.Upstream.SetAudioHTTPStatus(http.StatusBadRequest,
+		`{"code":400,"msg":"播报内容长度不能超过1024，当前长度为：1025"}`)
 	resp, body := postJSON(t, ts, "/v1/audio/speech",
 		fmt.Sprintf(`{"input":%q}`, over))
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s, want 400 even with SpeechMaxChars=5000", resp.StatusCode, body)
+		t.Fatalf("status = %d body=%s, want 400 (the upstream's own refusal)", resp.StatusCode, body)
 	}
-	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 0 {
-		t.Errorf("upstream synthesis tasks = %d, want 0", got)
+	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 1 {
+		t.Errorf("upstream synthesis tasks = %d, want 1", got)
 	}
+	ts.Upstream.SetAudioHTTPStatus(0, "")
 }
 
 // TTSLIMIT-004: a failed synthesis yields an error, never the audio produced so
@@ -110,14 +119,16 @@ func TestSpeechFailureIsNotReturnedAsAudio(t *testing.T) {
 	}
 }
 
-// TTSLIMIT-005: an operator-lowered cap below the upstream limit still applies.
-func TestSpeechConfiguredLowerCapApplies(t *testing.T) {
-	ts := audioServer(t, oneAccount(), &testserver.TestServerOptions{SpeechMaxChars: 10})
+// TTSLIMIT-005 (ruling): no operator-lowered cap either — a short input the
+// old MIMO2API_SPEECH_MAX_CHARS would have rejected locally is forwarded and
+// served. The knob is gone with the precheck.
+func TestSpeechNoOperatorLowerCap(t *testing.T) {
+	ts := audioServer(t, oneAccount(), nil)
 	resp, body := postJSON(t, ts, "/v1/audio/speech", `{"input":"这句话有十一个字了吧。"}`)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s, want 400", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200 (forwarded; nothing rejects locally)", resp.StatusCode, body)
 	}
-	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 0 {
-		t.Errorf("upstream synthesis tasks = %d, want 0", got)
+	if got := ttsGenerateCalls(ts.Upstream.AudioRequests()); got != 1 {
+		t.Errorf("upstream synthesis tasks = %d, want 1", got)
 	}
 }

@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/yg/mimo2api/internal/accounts"
-	"github.com/yg/mimo2api/internal/adapter"
 )
 
 // renewClock is the job's clock; production uses the real one, tests a fake
@@ -192,15 +191,6 @@ func (s *Server) renewOne(ctx context.Context, acct accounts.Account) {
 	s.pool.Enable(acct.ID)
 	s.pool.ReportSuccess(acct.ID)
 	s.logger.Printf("[renew-job] %s login-ok", acct.ID)
-}
-
-// queryCharCap is the character cap applied to one chat message: the operator
-// override when set, otherwise the model channel's own cap (SDD §2.8, ADR 0015).
-func (s *Server) queryCharCap(model string) int {
-	if s.maxQueryChars > 0 {
-		return s.maxQueryChars
-	}
-	return adapter.MaxQueryChars(model)
 }
 
 // IsDeadCredential reports whether a renewal/keepalive error means the stored

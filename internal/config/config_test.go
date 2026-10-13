@@ -12,14 +12,12 @@ func testEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	vars := []string{
 		"MIMO2API_HOST", "MIMO2API_PORT", "MIMO2API_API_KEYS", "MIMO2API_UPSTREAM_BASE",
-		"MIMO2API_ACCOUNTS_FILE", "MIMO2API_DEFAULT_MODEL", "MIMO2API_REQUEST_TIMEOUT_MS", "MIMO2API_LEASE_TTL_S", "MIMO2API_SLOT_HOLD",
+		"MIMO2API_ACCOUNTS_FILE", "MIMO2API_DEFAULT_MODEL", "MIMO2API_REQUEST_TIMEOUT_MS", "MIMO2API_LEASE_TTL_S",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S", "MIMO2API_RENEW_INTERVAL",
-		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", "MIMO2API_QUEUE_WAIT_S",
 		"MIMO2API_X_TIMEZONE", "MIMO2API_USER_AGENT",
 		"MIMO2API_LOG_LEVEL", "MIMO2API_REPLAY_CAP", "MIMO2API_PROBE_INTERVAL_S",
 		"MIMO2API_POOL_STATS_WINDOW_S",
-		"MIMO2API_CATALOG_TTL_S", "MIMO2API_AUDIO_TTS_TIMEOUT_S", "MIMO2API_SPEECH_MAX_CHARS",
-		"MIMO2API_MAX_QUERY_CHARS",
+		"MIMO2API_CATALOG_TTL_S", "MIMO2API_AUDIO_TTS_TIMEOUT_S",
 		"MIMO2API_OTP_AUTO", "MIMO2API_CROSS_REGION_AGREE",
 		"MIMO2API_AUDIO_POLL_MS", "MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S", "MIMO2API_AUDIO_ASR_TIMEOUT_S",
 		"MIMO2API_TTS_VOICE", "MIMO2API_SEC_CH_UA",
@@ -50,12 +48,6 @@ func TestDefaults(t *testing.T) {
 	if c.Port() != DefaultPort || c.Port() != 3000 {
 		t.Errorf("port = %d, want the hosted default 3000 (ADR 0018)", c.Port())
 	}
-	if c.MaxInflight() != 2 {
-		t.Errorf("max inflight = %d", c.MaxInflight())
-	}
-	if c.QueueWait() != 15*time.Second {
-		t.Errorf("queue wait = %v", c.QueueWait())
-	}
 	if c.Timezone() != "Asia/Shanghai" {
 		t.Errorf("timezone = %q", c.Timezone())
 	}
@@ -71,9 +63,6 @@ func TestDefaults(t *testing.T) {
 	if c.LeaseTTL() != 120*time.Second {
 		t.Errorf("lease ttl = %v", c.LeaseTTL())
 	}
-	if c.SlotHold() != SlotHoldLastByte {
-		t.Errorf("slot hold = %q, want %q (conservative default)", c.SlotHold(), SlotHoldLastByte)
-	}
 	// The upstream client timeout is derived, not a constant: it must outlive a
 	// turn's own TTL but must not be the 30 minutes a wedged socket used to get.
 	if got := c.UpstreamTimeout(); got != 0 {
@@ -87,9 +76,6 @@ func TestDefaults(t *testing.T) {
 	if c.RenewInterval() != time.Hour {
 		t.Errorf("renew interval = %v, want 1h", c.RenewInterval())
 	}
-	if c.MaxQueryChars() != 0 {
-		t.Errorf("max query chars = %d, want 0 (per-channel defaults)", c.MaxQueryChars())
-	}
 	if c.DefaultModel() != "mimo-v2.6-pro" {
 		t.Errorf("default model = %q", c.DefaultModel())
 	}
@@ -101,41 +87,25 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// CONF-014: MIMO2API_MAX_QUERY_CHARS is the operator override for the chat
-// character guardrail (ADR 0015); unset/0 keeps the per-channel defaults.
-func TestMaxQueryCharsOverrideEnv(t *testing.T) {
-	testEnv(t, map[string]string{"MIMO2API_MAX_QUERY_CHARS": "250000"})
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.MaxQueryChars() != 250000 {
-		t.Errorf("max query chars = %d, want 250000", c.MaxQueryChars())
-	}
-}
-
 // CONF-002: every var parsed and applied.
 func TestEnvOverrides(t *testing.T) {
 	testEnv(t, map[string]string{
-		"MIMO2API_HOST":                     "0.0.0.0",
-		"MIMO2API_PORT":                     "9000",
-		"MIMO2API_API_KEYS":                 "k1",
-		"MIMO2API_UPSTREAM_BASE":            "https://example.com",
-		"MIMO2API_ACCOUNTS_FILE":            "/tmp/accts.json",
-		"MIMO2API_DEFAULT_MODEL":            "mimo-v2.5-pro",
-		"MIMO2API_REQUEST_TIMEOUT_MS":       "12345",
-		"MIMO2API_LEASE_TTL_S":              "2",
-		"MIMO2API_SLOT_HOLD":                "first-byte",
-		"MIMO2API_SSE_IDLE_TIMEOUT_S":       "42",
-		"MIMO2API_RENEW_INTERVAL":           "90",
-		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT": "5",
-		"MIMO2API_QUEUE_WAIT_S":             "7",
-		"MIMO2API_X_TIMEZONE":               "UTC",
-		"MIMO2API_USER_AGENT":               "ua-test",
-		"MIMO2API_LOG_LEVEL":                "debug",
-		"MIMO2API_REPLAY_CAP":               "3",
-		"MIMO2API_PROBE_INTERVAL_S":         "11",
-		"MIMO2API_OTP_AUTO":                 "false",
+		"MIMO2API_HOST":               "0.0.0.0",
+		"MIMO2API_PORT":               "9000",
+		"MIMO2API_API_KEYS":           "k1",
+		"MIMO2API_UPSTREAM_BASE":      "https://example.com",
+		"MIMO2API_ACCOUNTS_FILE":      "/tmp/accts.json",
+		"MIMO2API_DEFAULT_MODEL":      "mimo-v2.5-pro",
+		"MIMO2API_REQUEST_TIMEOUT_MS": "12345",
+		"MIMO2API_LEASE_TTL_S":        "2",
+		"MIMO2API_SSE_IDLE_TIMEOUT_S": "42",
+		"MIMO2API_RENEW_INTERVAL":     "90",
+		"MIMO2API_X_TIMEZONE":         "UTC",
+		"MIMO2API_USER_AGENT":         "ua-test",
+		"MIMO2API_LOG_LEVEL":          "debug",
+		"MIMO2API_REPLAY_CAP":         "3",
+		"MIMO2API_PROBE_INTERVAL_S":   "11",
+		"MIMO2API_OTP_AUTO":           "false",
 	})
 	c, err := Load()
 	if err != nil {
@@ -154,8 +124,6 @@ func TestEnvOverrides(t *testing.T) {
 		{"reqTimeout", c.RequestTimeout(), 12345 * time.Millisecond},
 		{"sseIdle", c.SSEIdleTimeout(), 42 * time.Second},
 		{"refresh", c.RenewInterval(), 90 * time.Minute},
-		{"inflight", c.MaxInflight(), 5},
-		{"queueWait", c.QueueWait(), 7 * time.Second},
 		{"tz", c.Timezone(), "UTC"},
 		{"ua", c.UserAgent(), "ua-test"},
 		{"log", c.LogLevel(), "debug"},
@@ -205,14 +173,12 @@ func TestParseAPIKeys(t *testing.T) {
 // CONF-005: invalid numerics error with the var name.
 func TestInvalidValues(t *testing.T) {
 	for name, val := range map[string]string{
-		"MIMO2API_PORT":                     "not-a-port",
-		"MIMO2API_SSE_IDLE_TIMEOUT_S":       "x",
-		"MIMO2API_RENEW_INTERVAL":           "z",
-		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT": "w",
-		"MIMO2API_QUEUE_WAIT_S":             "v",
-		"MIMO2API_REQUEST_TIMEOUT_MS":       "t",
-		"MIMO2API_REPLAY_CAP":               "s",
-		"MIMO2API_PROBE_INTERVAL_S":         "r",
+		"MIMO2API_PORT":               "not-a-port",
+		"MIMO2API_SSE_IDLE_TIMEOUT_S": "x",
+		"MIMO2API_RENEW_INTERVAL":     "z",
+		"MIMO2API_REQUEST_TIMEOUT_MS": "t",
+		"MIMO2API_REPLAY_CAP":         "s",
+		"MIMO2API_PROBE_INTERVAL_S":   "r",
 	} {
 		t.Run(name, func(t *testing.T) {
 			testEnv(t, map[string]string{name: val, "MIMO2API_API_KEYS": "k"})
@@ -462,25 +428,6 @@ func TestAccountsFileDefaultIsRelative(t *testing.T) {
 	}
 }
 
-// CONF-020: an unknown MIMO2API_SLOT_HOLD is an error naming the knob. A typo
-// must not silently pick a slot policy — the difference between them is account
-// concurrency (ADR 0019).
-func TestSlotHoldRejectsUnknownValue(t *testing.T) {
-	testEnv(t, map[string]string{"MIMO2API_SLOT_HOLD": "first_byte"})
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MIMO2API_SLOT_HOLD") {
-		t.Fatalf("err = %v, want an error naming MIMO2API_SLOT_HOLD", err)
-	}
-	// Case and surrounding space are the operator's business, not a failure.
-	testEnv(t, map[string]string{"MIMO2API_SLOT_HOLD": " FIRST-BYTE "})
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("normalised value rejected: %v", err)
-	}
-	if c.SlotHold() != SlotHoldFirstByte {
-		t.Errorf("slot hold = %q, want %q", c.SlotHold(), SlotHoldFirstByte)
-	}
-}
-
 // CONF-019: every accessor answers from the parsed config — a table so a new
 // knob with no accessor case is visible here rather than as a coverage cliff.
 func TestAccessorsReflectParsedConfig(t *testing.T) {
@@ -489,14 +436,12 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		"MIMO2API_DEFAULT_MODEL":           "mimo-v2.6-flash",
 		"MIMO2API_REQUEST_TIMEOUT_MS":      "1000",
 		"MIMO2API_LEASE_TTL_S":             "2",
-		"MIMO2API_SLOT_HOLD":               "first-byte",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S":      "10",
 		"MIMO2API_CATALOG_TTL_S":           "20",
 		"MIMO2API_AUDIO_POLL_MS":           "30",
 		"MIMO2API_AUDIO_TTS_TIMEOUT_S":     "40",
 		"MIMO2API_AUDIO_TTS_MAX_TIMEOUT_S": "50",
 		"MIMO2API_AUDIO_ASR_TIMEOUT_S":     "60",
-		"MIMO2API_SPEECH_MAX_CHARS":        "700",
 		"MIMO2API_TTS_VOICE":               "voice-1",
 		"MIMO2API_SEC_CH_UA":               "\"Chromium\"",
 		"MIMO2API_CROSS_REGION_AGREE":      "false",
@@ -514,14 +459,12 @@ func TestAccessorsReflectParsedConfig(t *testing.T) {
 		{"DefaultModel", c.DefaultModel(), "mimo-v2.6-flash"},
 		{"RequestTimeout", c.RequestTimeout(), time.Second},
 		{"LeaseTTL", c.LeaseTTL(), 2 * time.Second},
-		{"SlotHold", c.SlotHold(), SlotHoldFirstByte},
 		{"SSEIdleTimeout", c.SSEIdleTimeout(), 10 * time.Second},
 		{"CatalogTTL", c.CatalogTTL(), 20 * time.Second},
 		{"AudioPoll", c.AudioPoll(), 30 * time.Millisecond},
 		{"TTSTimeout", c.TTSTimeout(), 40 * time.Second},
 		{"TTSMaxTimeout", c.TTSMaxTimeout(), 50 * time.Second},
 		{"ASRTimeout", c.ASRTimeout(), 60 * time.Second},
-		{"SpeechMaxChars", c.SpeechMaxChars(), 700},
 		{"TTSVoice", c.TTSVoice(), "voice-1"},
 		{"SecChUA", c.SecChUA(), "\"Chromium\""},
 		{"CrossRegionAgree", c.CrossRegionAgree(), false},

@@ -2,7 +2,6 @@ package testserver
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -46,14 +45,9 @@ type TestServer struct {
 // TestServerOptions tunes NewTestServer; zero value = SDD defaults.
 type TestServerOptions struct {
 	APIKeys      []string
-	MaxInflight  int
-	QueueWait    time.Duration
 	IdleTimeout  time.Duration
 	DefaultModel string
 	ReplayCap    int
-	// MaxQueryChars mirrors MIMO2API_MAX_QUERY_CHARS: >0 overrides the
-	// per-channel chat caps (ADR 0015).
-	MaxQueryChars int
 	// MaxImages/MaxImageBytes mirror MIMO2API_MAX_IMAGES / _MAX_IMAGE_BYTES
 	// (IMG-*). Zero means the api.New defaults (10 images, 20 MiB each).
 	MaxImages     int
@@ -64,11 +58,10 @@ type TestServerOptions struct {
 	// an image from its own loopback listener sets it; the default is off, which is
 	// what IMG-014 asserts.
 	ImageAllowPrivate bool
-	// RequestTimeout/LeaseTTL/SlotHold mirror the ADR 0019 knobs. Zero means the
-	// api.New defaults (no total budget, 120s per turn, last-byte).
+	// RequestTimeout/LeaseTTL mirror the request-liveness knobs. Zero means the
+	// api.New defaults (no total budget, 120s silence window per turn).
 	RequestTimeout time.Duration
 	LeaseTTL       time.Duration
-	SlotHold       string
 	// KeepaliveInterval mirrors the ADR 0034 SSE comment cadence: a streaming
 	// test that wants to observe keepalives shortens it instead of waiting 15s.
 	KeepaliveInterval time.Duration
@@ -85,7 +78,6 @@ type TestServerOptions struct {
 	AudioPoll      time.Duration
 	TTSTimeout     time.Duration
 	ASRTimeout     time.Duration
-	SpeechMaxChars int
 	DefaultVoice   string
 }
 
@@ -125,27 +117,13 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		t.Fatalf("load temp accounts: %v", err)
 	}
 
-	queueWait := opts.QueueWait
-	if queueWait == 0 {
-		queueWait = 2 * time.Second
-	}
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = time.Now
 	}
 
-	var logf func(format string, args ...any)
-	if opts.LogSink != nil {
-		sink := opts.LogSink
-		logf = func(format string, args ...any) { fmt.Fprintf(sink, format+"\n", args...) }
-	}
-
 	p := pool.New(storeAccounts, pool.Options{
-		MaxInflight: opts.MaxInflight,
-		QueueWait:   queueWait,
-		Now:         nowFn,
-		SlotTTL:     opts.LeaseTTL, // reaper TTL (ADR 0019)
-		Logf:        logf,
+		Now: nowFn,
 	})
 
 	client := mimo.New(mimo.Options{
@@ -165,15 +143,13 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		Client:            client,
 		DefaultModel:      opts.DefaultModel,
 		ReplayCap:         opts.ReplayCap,
-		MaxQueryChars:     opts.MaxQueryChars,
 		MaxImages:         opts.MaxImages,
 		MaxImageBytes:     opts.MaxImageBytes,
 		MaxImagePixels:    opts.MaxImagePixels,
 		ImageAllowPrivate: opts.ImageAllowPrivate,
-		// ADR 0019 knobs.
+		// Request-liveness knobs.
 		RequestTimeout: opts.RequestTimeout,
 		LeaseTTL:       opts.LeaseTTL,
-		SlotHold:       opts.SlotHold,
 
 		KeepaliveInterval: opts.KeepaliveInterval,
 		Logger:            logger,
@@ -182,7 +158,6 @@ func NewTestServer(t *testing.T, accts []TestAccount, opts *TestServerOptions) *
 		AudioPoll:      opts.AudioPoll,
 		TTSTimeout:     opts.TTSTimeout,
 		ASRTimeout:     opts.ASRTimeout,
-		SpeechMaxChars: opts.SpeechMaxChars,
 		DefaultVoice:   opts.DefaultVoice,
 	})
 

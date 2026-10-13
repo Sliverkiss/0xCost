@@ -48,8 +48,6 @@ type poolAccountView struct {
 	State         string             `json:"state"`
 	Permanent     bool               `json:"permanent,omitempty"`
 	Reason        string             `json:"reason,omitempty"`
-	InFlight      int                `json:"in_flight"`
-	MaxInFlight   int                `json:"max_in_flight"`
 	EWMALatencyMS int64              `json:"ewma_latency_ms"`
 	LastError     *poolLastErrorView `json:"last_error,omitempty"`
 	// CredentialAgeS is how long ago the account's session was fetched. A stale
@@ -87,8 +85,6 @@ func (s *Server) handlePoolView(w http.ResponseWriter, r *http.Request) {
 			State:          string(snap.State),
 			Permanent:      snap.Permanent,
 			Reason:         snap.Reason,
-			InFlight:       snap.InFlight,
-			MaxInFlight:    snap.MaxInFlight,
 			EWMALatencyMS:  snap.EWMALatencyMS,
 			CredentialAgeS: ages[snap.ID],
 		}

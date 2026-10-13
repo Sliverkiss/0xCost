@@ -1,13 +1,15 @@
 package api_test
 
-// "Too long" handling (ADR 0015).
+// "Too long" handling (ADR 0015), post owner-ruling 2026-10-14.
 //
 // The platform's own limit is real but is not a clean character count: measured
 // 2026-10-09 on the regular channel, a single 95,000- and a 100,100-char message
 // are served, 105,000 is refused, and 300,000 ASCII chars are refused, so the
-// ceiling moves with content. Our answer is therefore two-part: a guardrail that
-// only stops the absurd, and a translation of the upstream's own refusal (prose
-// in a 5xx envelope) into the client's own 400 with something to act on.
+// ceiling moves with content. The local char precheck is gone (owner ruling
+// 2026-10-14, "字数预检砍了，超了上游会自己报错透传"): the gateway forwards
+// every request, and what survives here is the translation of the upstream's
+// own refusal (prose in a 5xx envelope) into the client's own 400 with
+// something to act on.
 
 import (
 	"io"
@@ -16,7 +18,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/api"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
@@ -58,6 +59,8 @@ func TestUpstreamTooLongHTTPErrorMapsToClientError(t *testing.T) {
 	}
 }
 
+// TOOLLONG typo guard is not needed; tests follow.
+
 // TOOLONG-003: an unrelated upstream failure keeps its 502 — the translation
 // must not swallow real upstream trouble.
 func TestUpstreamOtherFailureStaysBadGateway(t *testing.T) {
@@ -73,16 +76,14 @@ func TestUpstreamOtherFailureStaysBadGateway(t *testing.T) {
 	}
 }
 
-// TOOLONG-004 (regression): the 90,000-char guess used to reject work the
-// platform serves. A 95,000-char message must reach the upstream.
+// TOOLONG-004: a 95,000-char message (measured served on the regular channel)
+// is forwarded and served — nothing in the gateway second-guesses the
+// platform's own limits.
 func TestLongButServableMessageIsForwarded(t *testing.T) {
-	if got := adapter.MaxQueryChars("mimo-v2.6-pro"); got != 102400 {
-		t.Fatalf("non-fastchat cap = %d, want the measured 102400 platform ceiling", got)
-	}
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	long := strings.Repeat("a", 95000) // measured served (and blocked by the old 90,000 guess)
+	long := strings.Repeat("a", 95000) // measured served
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", long}), "")
 	if err != nil {
 		t.Fatal(err)
@@ -96,11 +97,14 @@ func TestLongButServableMessageIsForwarded(t *testing.T) {
 	}
 }
 
-// TOOLONG-005 (regression, other side): the fastchat cap is a real limit, so it
-// is still enforced locally — with zero upstream traffic — and the message now
-// carries the numbers.
-func TestFastchatCapStillEnforcedLocallyWithNumbers(t *testing.T) {
+// TOOLONG-005 (owner ruling 2026-10-14, was "fastchat cap still enforced
+// locally"): an over-cap message on the fastchat channel is forwarded and the
+// upstream's own refusal is passed through — 400 context_too_long, exactly one
+// upstream hit, and the account stays available. The upstream, not the
+// gateway, is the source of truth for its own limits.
+func TestFastchatOverCapIsForwardedAndRefusedUpstream(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSETooLong})
 	long := strings.Repeat("a", 50001)
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", long}), "")
 	if err != nil {
@@ -108,30 +112,14 @@ func TestFastchatCapStillEnforcedLocallyWithNumbers(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 (the upstream's own refusal): %s", resp.StatusCode, raw)
 	}
-	if ts.Upstream.ChatHits() != 0 {
-		t.Errorf("upstream hits = %d, want 0 (the cap saves a wasted account call)", ts.Upstream.ChatHits())
+	if ts.Upstream.ChatHits() != 1 {
+		t.Errorf("upstream hits = %d, want 1 (over-cap is forwarded, not locally rejected)", ts.Upstream.ChatHits())
 	}
-}
-
-// TOOLONG-006: an operator override wins over the per-channel caps, so a
-// deployment can raise (or lower) the guardrail without a rebuild.
-func TestMaxQueryCharsOverride(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{MaxQueryChars: 1234})
-	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
-
-	// 2000 chars: served by default on this model, refused under the override.
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", strings.Repeat("a", 2000)}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 under a 1234-char override", resp.StatusCode)
-	}
-	if ts.Upstream.ChatHits() != 0 {
-		t.Errorf("upstream hits = %d, want 0 (the override must reject locally)", ts.Upstream.ChatHits())
+	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
+		t.Errorf("account state = %v, want available (a client-side limit is not an account fault)", st)
 	}
 }
 
@@ -154,46 +142,11 @@ func TestTooLongRefusalDoesNotPenalizeAccount(t *testing.T) {
 	}
 }
 
-// TOOLONG-008: the ceiling applies to the query text the platform receives, not
-// to each message on its own — the planner splices system messages into the
-// first user query, so a preamble (a client system prompt, or the protocol
-// prompt a tool layer injects in front of us) spends the same budget. Live
-// measurement: 1,760 chars of injected protocol + a 100,000-char message is
-// served, the same protocol with 101,000 chars is refused by the platform. Both
-// halves are under the cap here, so only the composed check can catch it — and
-// it must catch it locally, without spending an account call.
-func TestComposedQueryOverCapIsRejectedLocally(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
-	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
-
-	body := testutil.ChatBody("mimo-v2.6-pro", false,
-		[2]string{"system", strings.Repeat("p", 2000)},
-		[2]string{"user", strings.Repeat("a", 101000)})
-	resp, err := ts.Chat(body, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (each message fits, the composed query does not)", resp.StatusCode)
-	}
-	got, _ := io.ReadAll(resp.Body)
-	text := string(got)
-	if !strings.Contains(text, `"code":"context_too_long"`) {
-		t.Errorf("body = %s, want code context_too_long", text)
-	}
-	// The caller must be able to see where the characters went: 2000 of them are
-	// preamble it may not realise it is paying for.
-	if !strings.Contains(text, "preamble") {
-		t.Errorf("body = %s, want the preamble size named", text)
-	}
-	if ts.Upstream.ChatHits() != 0 {
-		t.Errorf("upstream hits = %d, want 0 (the platform would have refused this too)", ts.Upstream.ChatHits())
-	}
-}
-
-// TOOLONG-009: the same shape just under the ceiling is still served — the
-// composed check must not become a blanket ban on system prompts.
+// TOOLONG-008: the composed-query precheck is gone with the per-message
+// precheck (owner ruling 2026-10-14). A system prompt plus a message that
+// together sit just under the measured platform ceiling is forwarded as-is
+// and served — nothing in the gateway second-guesses the platform's budget
+// accounting (the refusal side is TOOLONG-005/ERRMAP-010).
 func TestComposedQueryUnderCapIsServed(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})

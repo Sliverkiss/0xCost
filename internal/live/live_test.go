@@ -179,10 +179,7 @@ func newHarness(t *testing.T, accountsFilePath string, otpAuto bool) *harness {
 			poolAccts = append(poolAccts, a)
 		}
 	}
-	p := pool.New(poolAccts, pool.Options{
-		MaxInflight: cfg.MaxInflight(),
-		QueueWait:   cfg.QueueWait(),
-	})
+	p := pool.New(poolAccts, pool.Options{})
 	srv := api.New(api.Options{
 		APIKeys:      cfg.APIKeys(),
 		Pool:         p,

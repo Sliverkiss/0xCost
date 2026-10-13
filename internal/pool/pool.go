@@ -1,6 +1,5 @@
-// Package pool implements the account pool: states (available / disabled),
-// score-based selection with round-robin fairness, and per-account in-flight
-// semaphores (SDD §4).
+// Package pool implements the account pool: states (available / disabled)
+// and score-based selection with round-robin fairness (SDD §4).
 //
 // There is deliberately no cooldown, backoff or circuit breaking: an upstream
 // 429/5xx/transport failure never changes an account's availability (owner
@@ -10,6 +9,12 @@
 // recovered), which is harm, not protection. The only terminal state besides
 // available is disabled, set by risk control (451/461), a dead credential, or
 // an operator.
+//
+// There is also no concurrency cap (owner ruling, 2026-10-14, "并发槽砍了"):
+// an account with capacity free locally may well be the account the upstream
+// is throttling, and an account at our synthetic limit may be perfectly
+// healthy. The upstream decides what it will serve; a local slot count was
+// just another self-imposed limit that invented 429s the upstream never sent.
 package pool
 
 import (
@@ -17,7 +22,6 @@ import (
 	"errors"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/yg/mimo2api/internal/accounts"
@@ -33,27 +37,6 @@ const (
 
 // ErrNoAccounts: pool empty or all disabled → 503 no_accounts (SDD §7.4).
 var ErrNoAccounts = errors.New("no accounts available: pool is empty or all accounts are disabled")
-
-// ErrBusy: all in-flight slots busy beyond the queue wait → 429 pool_busy
-// (SDD §7.4). A capacity signal, not backoff.
-type ErrBusy struct {
-	RetryAfter time.Duration
-}
-
-// RetryAfterSeconds clamps to at least 1s for the Retry-After header.
-func (e *ErrBusy) RetryAfterSeconds() int { return clampSeconds(e.RetryAfter) }
-
-func (e *ErrBusy) Error() string {
-	return "all account slots busy; retry after " + e.RetryAfter.Round(time.Second).String()
-}
-
-func clampSeconds(d time.Duration) int {
-	s := int(d / time.Second)
-	if s < 1 {
-		s = 1
-	}
-	return s
-}
 
 // DefaultEgress is the label of the shared, unlabelled egress. Accounts without
 // an egress label are behind it (SDD §4.8).
@@ -80,18 +63,10 @@ const riskEventCap = 200
 
 // Options configures the pool. Zero fields take SDD defaults.
 type Options struct {
-	MaxInflight int           // per-account semaphore (default 2, SDD §4.4)
-	QueueWait   time.Duration // acquire wait bound (default 15s)
 	// RiskWindow is the window inside which risk-control signals are correlated
 	// across accounts on one egress (default 5m, SDD §4.5.2).
-	RiskWindow  time.Duration
-	WarmPenalty float64 // selection penalty for accounts with inflight work
-	Now         func() time.Time
-	// SlotTTL bounds how long one request may hold an in-flight slot before the
-	// reaper force-releases it (ADR 0019). 0 disables the reaper.
-	SlotTTL time.Duration
-	// Logf receives reaper messages; nil is silent.
-	Logf func(format string, args ...any)
+	RiskWindow time.Duration
+	Now        func() time.Time
 }
 
 type account struct {
@@ -103,7 +78,6 @@ type account struct {
 	disabled  bool
 	permanent bool // dead passToken: never auto-recovers (SDD §4.5.2, TDD RISK-003)
 	reason    string
-	sem       chan struct{} // in-flight semaphore; len() is the inflight count
 	// lastErrorStatus/lastErrorAt record the most recent upstream failure of
 	// any kind: "which error did this account last hit, and when" is the first
 	// question asked when reading a pool. Diagnostics only — they never change
@@ -113,60 +87,33 @@ type account struct {
 	ewmaLatency     float64 // seconds, EWMA alpha 0.2 (SDD §4.4)
 }
 
-// Pool is the account pool. One mutex guards selection and state; in-flight
-// slots are buffered channels, so Release needs no lock (SDD §3: pool ops
-// are microseconds).
+// Pool is the account pool. One mutex guards selection and state; there is no
+// capacity to hand back on release, so the lock is held only for microseconds
+// of scoring (SDD §3).
 type Pool struct {
-	mu          sync.Mutex
-	accounts    []*account // stable order (selection tie-break)
-	byID        map[string]*account
-	cursor      int // round-robin rotation within the selection band
-	maxInflight int
-	queueWait   time.Duration
-	riskWindow  time.Duration
-	riskEvents  []RiskEvent // bounded history, oldest first
-	warmPenalty float64
-	now         func() time.Time
-	notify      chan struct{} // release signal for Acquire waiters (buffered 1)
-	// slotTTL/ live / expiredSlots implement the slot reaper (ADR 0019): a slot
-	// is capacity held for one request, and a request that outlives its TTL must
-	// not pin the account it leased.
-	slotTTL      time.Duration
-	logf         func(format string, args ...any)
-	live         map[*Lease]struct{}
-	expiredSlots int
+	mu         sync.Mutex
+	accounts   []*account // stable order (selection tie-break)
+	byID       map[string]*account
+	cursor     int // round-robin rotation within the selection band
+	riskWindow time.Duration
+	riskEvents []RiskEvent // bounded history, oldest first
+	now        func() time.Time
 }
 
 // New builds a pool from account records. Only enabled entries become pool
 // members; persisted runtime state (state / disabled_reason) is honored so
 // bans survive restart (SDD §7.5, TDD POOL-013).
 func New(accts []accounts.Account, opts Options) *Pool {
-	if opts.MaxInflight <= 0 {
-		opts.MaxInflight = 2
-	}
-	if opts.QueueWait <= 0 {
-		opts.QueueWait = 15 * time.Second
-	}
 	if opts.RiskWindow <= 0 {
 		opts.RiskWindow = 5 * time.Minute
-	}
-	if opts.WarmPenalty <= 0 {
-		opts.WarmPenalty = 0.5
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
 	p := &Pool{
-		maxInflight: opts.MaxInflight,
-		slotTTL:     opts.SlotTTL,
-		logf:        opts.Logf,
-		live:        make(map[*Lease]struct{}),
-		queueWait:   opts.QueueWait,
-		riskWindow:  opts.RiskWindow,
-		warmPenalty: opts.WarmPenalty,
-		now:         opts.Now,
-		notify:      make(chan struct{}, 1),
-		byID:        make(map[string]*account),
+		riskWindow: opts.RiskWindow,
+		now:        opts.Now,
+		byID:       make(map[string]*account),
 	}
 	for _, a := range accts {
 		if !a.Enabled {
@@ -176,11 +123,7 @@ func New(accts []accounts.Account, opts Options) *Pool {
 		if egress == "" {
 			egress = DefaultEgress
 		}
-		acc := &account{
-			id:     a.ID,
-			egress: egress,
-			sem:    make(chan struct{}, opts.MaxInflight),
-		}
+		acc := &account{id: a.ID, egress: egress}
 		switch State(a.State) {
 		case StateDisabled:
 			acc.state = StateDisabled
@@ -195,17 +138,14 @@ func New(accts []accounts.Account, opts Options) *Pool {
 	return p
 }
 
-// errBusy is the internal "candidates exist but all slots are full" signal —
-// waitable, unlike no-accounts which is terminal for the call.
-var errBusy = errors.New("pool: all in-flight slots busy")
-
-// Lease is a held in-flight slot on one account.
+// Lease names the account one request is talking to.
 //
-// A lease is capacity for ONE request, never stickiness: it names the account
-// the request is talking to (so every turn of that request keeps the same
-// upstream conversation) and it occupies one of that account's in-flight slots
-// (ADR 0019). It is not shared between requests and carries no conversation
-// state.
+// A lease is account identity, never capacity or stickiness: it exists so
+// every turn of one request keeps the same upstream conversation (ADR 0017).
+// It is not shared between requests and carries no conversation state. With
+// in-flight slots gone (owner ruling 2026-10-14) Release is a bookkeeping
+// no-op, kept so the request paths' deferred cleanup stays symmetric and
+// idempotent.
 type Lease struct {
 	Pool *Pool
 	ID   string
@@ -213,68 +153,22 @@ type Lease struct {
 	// through (SDD §4.8). Every upstream call made for this lease uses it.
 	Egress string
 
-	issued time.Time     // when the slot was claimed (for reporting)
-	ttl    time.Duration // this slot's silence window (0 = never reaped)
-
-	// lastActivity is the wall clock of the last upstream byte on this lease.
-	// The expiry moves with it (ADR 0036): a slot is reaped for **silence**, not
-	// for taking long, so a search that keeps fetching pages may hold its slot
-	// far past the window while a wedged turn is reclaimed on time.
-	lastActivity atomic.Int64
-
 	mu       sync.Mutex
-	onExpire func() // cancels the in-flight upstream call (set by the caller)
 	released bool
 }
 
-// Touch records upstream activity on this lease, moving its expiry. The chat
-// pipeline calls it from the SSE reader, i.e. on every byte from the upstream
-// (ADR 0036) — not per parsed piece, so a frame this gateway does not turn into
-// a delta (a doc or usage event, a page the search is sampling) still counts as
-// the upstream being alive. Safe on a nil lease.
-func (l *Lease) Touch() {
-	if l == nil {
-		return
-	}
-	l.lastActivity.Store(time.Now().UnixNano())
-}
-
-// IssuedAt is when the slot was claimed — used for reporting how long a request
-// has held capacity, which is a different question from how long the upstream
-// has been quiet.
-func (l *Lease) IssuedAt() time.Time {
-	if l == nil {
-		return time.Time{}
-	}
-	return l.issued
-}
-
-// SilentFor reports how long this lease has been without upstream activity, and
-// whether it has ever had any (a fresh lease counts from its claim).
-func (l *Lease) SilentFor(now time.Time) time.Duration {
-	if l == nil {
-		return 0
-	}
-	last := l.lastActivity.Load()
-	if last == 0 {
-		return now.Sub(l.issued)
-	}
-	return now.Sub(time.Unix(0, last))
-}
-
-// ArmExpiry registers the cancel func the reaper calls when this lease
-// outlives its TTL (ADR 0019). Call it right before starting the upstream call
-// it should abort; passing nil clears it.
-func (l *Lease) ArmExpiry(cancel func()) {
-	if l == nil {
+// Release marks the lease done. Idempotent; every path may release (early
+// return, deferred backstop) without double-counting.
+func (l *Lease) Release() {
+	if l == nil || l.Pool == nil {
 		return
 	}
 	l.mu.Lock()
-	l.onExpire = cancel
+	l.released = true
 	l.mu.Unlock()
 }
 
-// Released reports whether the slot has already been given back. Safe to call
+// Released reports whether the lease has already been released. Safe to call
 // on a nil lease.
 func (l *Lease) Released() bool {
 	if l == nil {
@@ -285,163 +179,17 @@ func (l *Lease) Released() bool {
 	return l.released
 }
 
-// Release frees the in-flight slot and wakes one Acquire waiter. It is
-// idempotent: every path may release (early return, first-byte policy, the
-// reaper, a deferred backstop) without double-counting capacity.
-func (l *Lease) Release() {
-	if l == nil || l.Pool == nil {
-		return
-	}
-	l.mu.Lock()
-	if l.released {
-		l.mu.Unlock()
-		return
-	}
-	l.released = true
-	l.onExpire = nil
-	l.mu.Unlock()
-
-	p := l.Pool
-	p.mu.Lock()
-	delete(p.live, l)
-	a := p.byID[l.ID]
-	p.mu.Unlock()
-	if a == nil {
-		return
-	}
-	select {
-	case <-a.sem: // drain this lease's token (exactly one per lease)
-	default: // defensive: never block on double-Release
-	}
-	select {
-	case p.notify <- struct{}{}: // wake one waiter
-	default:
-	}
-}
-
-// ReapExpiredSlots force-releases every slot whose holder outlived its TTL and
-// asks it to abort the upstream call it was holding (ADR 0019). It returns how
-// many slots were reclaimed.
-//
-// This is the backstop, not the mechanism: the request path itself bounds each
-// upstream turn with a context deadline. The reaper exists because the failure
-// it prevents is silent — a wedged connection used to hold an account slot for
-// as long as the HTTP client allowed (30 minutes), and with the default two
-// slots per account that is the whole account.
-func (p *Pool) ReapExpiredSlots() int {
-	if p == nil || p.slotTTL <= 0 {
-		return 0
-	}
-	now := time.Now()
-	p.mu.Lock()
-	var expired []*Lease
-	for l := range p.live {
-		// Silence, not age: the window moves with every upstream byte
-		// (Lease.Touch, ADR 0036).
-		if l.ttl > 0 && l.SilentFor(now) > l.ttl {
-			expired = append(expired, l)
-		}
-	}
-	p.mu.Unlock()
-	if len(expired) == 0 {
-		return 0
-	}
-	for _, l := range expired {
-		l.mu.Lock()
-		cancel := l.onExpire
-		l.mu.Unlock()
-		if cancel != nil {
-			cancel() // abort the upstream call this slot was holding
-		}
-		l.Release()
-		if p.logf != nil {
-			p.logf("pool: reaped slot account=%s after %s of silence (window %s, held %s) — the request that held it was still running",
-				l.ID, l.SilentFor(now).Round(time.Second), l.ttl, now.Sub(l.issued).Round(time.Second))
-		}
-	}
-	p.mu.Lock()
-	p.expiredSlots += len(expired)
-	p.mu.Unlock()
-	return len(expired)
-}
-
-// InFlight reports how many in-flight slots are currently held across all
-// accounts (test and observability aid for the slot policies, ADR 0019).
-func (p *Pool) InFlight() int {
+// Acquire selects an available account. Selection is score-based with a
+// round-robin rotation inside the best band (SDD §4.4): the score is the
+// EWMA first-byte latency, and accounts within best*1.15+1 share the load
+// evenly (TDD POOL-001). excludeIDs (retry-on-another-account, SDD §7.2) are
+// skipped entirely. There is no waiting and no capacity limit (owner ruling
+// 2026-10-14): Acquire returns immediately or fails with ErrNoAccounts (empty
+// pool / all disabled / all excluded), mapped by the API layer (SDD §7.4).
+func (p *Pool) Acquire(ctx context.Context, excludeIDs ...string) (*Lease, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	n := 0
-	for _, a := range p.accounts {
-		n += len(a.sem)
-	}
-	return n
-}
 
-// Acquire selects an account and claims one in-flight slot. Selection is
-// score-based with a round-robin rotation inside the best band (SDD §4.4):
-// score = (inflight/capacity)*100 + ewma_latency + warm_penalty; accounts
-// within best*1.15+1 share the load evenly (TDD POOL-001/015).
-// excludeIDs (retry-on-another-account, SDD §7.2) are skipped entirely.
-// Waits up to queueWait (or the context deadline) for a free slot, then
-// fails closed with ErrBusy. Terminal failure: ErrNoAccounts (empty/all
-// disabled), mapped by the API layer (SDD §7.4).
-func (p *Pool) Acquire(ctx context.Context, excludeIDs ...string) (*Lease, error) {
-	// Queue waiting is wall-clock bounded (real time).
-	deadline := time.Now().Add(p.queueWait)
-	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
-		deadline = dl
-	}
-	for {
-		p.mu.Lock()
-		lease, err := p.tryAcquireLocked(excludeIDs)
-		p.mu.Unlock()
-		if err == nil {
-			return lease, nil
-		}
-		if !errors.Is(err, errBusy) {
-			return nil, err // no-accounts: terminal
-		}
-		wait := time.Until(deadline)
-		if wait <= 0 {
-			return nil, &ErrBusy{RetryAfter: p.queueWait}
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err() // no slot held: nothing leaks (TDD POOL-016)
-		case <-p.notify:
-			timer.Stop()
-		case <-timer.C:
-			// Loop once more; the next pass sees the expired deadline.
-		}
-	}
-}
-
-// AcquireSticky acquires a specific account (sticky-session path, SDD
-// §4.3). When the target is not selectable or has no free slot, falls back
-// to a general Acquire; the bool reports whether the sticky target was won.
-func (p *Pool) AcquireSticky(ctx context.Context, accountID string) (*Lease, bool, error) {
-	p.mu.Lock()
-	a := p.byID[accountID]
-	var lease *Lease
-	if a != nil && !a.disabled && len(a.sem) < cap(a.sem) {
-		select {
-		case a.sem <- struct{}{}:
-			lease = p.registerLease(a)
-		default:
-		}
-	}
-	p.mu.Unlock()
-	if lease != nil {
-		return lease, true, nil
-	}
-	l, err := p.Acquire(ctx)
-	return l, false, err
-}
-
-// tryAcquireLocked attempts an immediate selection. Callers hold p.mu.
-func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 	excl := make(map[string]bool, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excl[id] = true
@@ -452,7 +200,6 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 		score float64
 	}
 	var candidates []scored
-	availableExists := false
 	enabled := 0
 	for _, a := range p.accounts {
 		if excl[a.id] || a.disabled {
@@ -462,23 +209,9 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 		if a.state != StateAvailable {
 			continue
 		}
-		availableExists = true
-		if len(a.sem) >= cap(a.sem) {
-			continue // full: contributes to busy, not to candidates
-		}
-		score := float64(len(a.sem))/float64(p.maxInflight)*100 + a.ewmaLatency
-		if len(a.sem) > 0 {
-			score += p.warmPenalty
-		}
-		candidates = append(candidates, scored{a, score})
+		candidates = append(candidates, scored{a, a.ewmaLatency})
 	}
-	if enabled == 0 {
-		return nil, ErrNoAccounts // empty pool / all disabled (TDD POOL-011)
-	}
-	if len(candidates) == 0 {
-		if availableExists {
-			return nil, errBusy // slots may free up: waitable
-		}
+	if enabled == 0 || len(candidates) == 0 {
 		return nil, ErrNoAccounts
 	}
 
@@ -494,26 +227,22 @@ func (p *Pool) tryAcquireLocked(excludeIDs []string) (*Lease, error) {
 	p.cursor++
 	pick := band[p.cursor%len(band)].a
 
-	// Claim under the pool lock so selection and slot-taking are atomic
-	// with respect to other Acquires (Release takes no lock, so capacity
-	// can only grow between the check and the claim).
-	select {
-	case pick.sem <- struct{}{}:
-	default:
-		return nil, errBusy
-	}
-	return p.registerLease(pick), nil
+	return &Lease{Pool: p, ID: pick.id, Egress: pick.egress}, nil
 }
 
-// registerLease creates a lease on an account and tracks it for the slot
-// reaper. Callers hold p.mu.
-func (p *Pool) registerLease(a *account) *Lease {
-	l := &Lease{Pool: p, ID: a.id, Egress: a.egress, issued: time.Now(), ttl: p.slotTTL}
-	l.Touch() // a fresh lease counts as active from its claim
-	if p.slotTTL > 0 {
-		p.live[l] = struct{}{}
+// AcquireSticky acquires a specific account (sticky-session path, SDD
+// §4.3). When the target is not selectable it falls back to a general
+// Acquire; the bool reports whether the sticky target was won.
+func (p *Pool) AcquireSticky(ctx context.Context, accountID string) (*Lease, bool, error) {
+	p.mu.Lock()
+	a := p.byID[accountID]
+	if a != nil && !a.disabled && a.state == StateAvailable {
+		p.mu.Unlock()
+		return &Lease{Pool: p, ID: a.id, Egress: a.egress}, true, nil
 	}
-	return l
+	p.mu.Unlock()
+	l, err := p.Acquire(ctx)
+	return l, false, err
 }
 
 // RecordFirstByte feeds first-byte latency into the EWMA selection term
@@ -632,8 +361,6 @@ type AccountSnapshot struct {
 	State         State  `json:"state"`
 	Permanent     bool   `json:"permanent"`
 	Reason        string `json:"reason,omitempty"`
-	InFlight      int    `json:"in_flight"`
-	MaxInFlight   int    `json:"max_in_flight"`
 	EWMALatencyMS int64  `json:"ewma_latency_ms"`
 	// LastErrorStatus/LastErrorAt record the most recent upstream failure seen
 	// on this account, purely as diagnostics — they never affect availability.
@@ -654,8 +381,6 @@ func (p *Pool) Snapshot() []AccountSnapshot {
 			State:           a.state,
 			Permanent:       a.permanent,
 			Reason:          a.reason,
-			InFlight:        len(a.sem),
-			MaxInFlight:     cap(a.sem),
 			EWMALatencyMS:   int64(a.ewmaLatency * 1000),
 			LastErrorStatus: a.lastErrorStatus,
 			LastErrorAt:     a.lastErrorAt,
@@ -700,10 +425,6 @@ func (p *Pool) ReportDisabled(accountID, reason string, permanent bool) {
 	a.disabled = true
 	a.permanent = permanent
 	a.reason = reason
-	select {
-	case p.notify <- struct{}{}: // waiters must re-evaluate (the pool may now be empty)
-	default:
-	}
 }
 
 // Enable clears disabled state for an account and makes it
@@ -720,10 +441,6 @@ func (p *Pool) Enable(accountID string) {
 	a.permanent = false
 	a.reason = ""
 	a.state = StateAvailable
-	select {
-	case p.notify <- struct{}{}: // waiters re-evaluate
-	default:
-	}
 }
 
 // RuntimeState returns the persisted-form state for the accounts file

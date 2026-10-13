@@ -384,25 +384,6 @@ func TestNormalizeModel(t *testing.T) {
 	}
 }
 
-// ADR 0015: the fastchat cap is the platform's own limit (a 60,000-char message
-// is refused upstream with "query is too long"); every other channel gets a
-// guardrail, not a guess — the old 90,000 rejected work the platform serves
-// (95,000 and 100,100-char messages are answered; 105,000 is refused).
-func TestMaxQueryChars(t *testing.T) {
-	if got := MaxQueryChars("mimo-v2.6-pro-ultraspeed-studio"); got != 50000 {
-		t.Errorf("fastchat cap = %d, want 50000 (the Studio's ultraspeedQueryLimitLength)", got)
-	}
-	if got := MaxQueryChars("mimo-v2.6-pro"); got != 102400 {
-		t.Errorf("normal cap = %d, want the measured 102400-character platform ceiling", got)
-	}
-	if MaxQueryChars("mimo-v2.6-pro") < 101000 {
-		t.Error("the cap must not sit below the largest message the platform was measured to serve (101,000)")
-	}
-	if MaxQueryChars("mimo-v2.6-pro") > 102400 {
-		t.Error("the cap must not sit above the measured boundary: it would forward what the platform refuses")
-	}
-}
-
 func TestRandomHex32(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 100; i++ {
@@ -433,36 +414,5 @@ func TestShapeCompletion(t *testing.T) {
 	}
 	if m["object"] != "chat.completion" || m["model"] != "mimo-v2.6-pro" {
 		t.Errorf("shape = %v", m)
-	}
-}
-
-// The composed-length helper must mirror what the planner sends: the preamble
-// counts, and it is exactly the systems joined plus the "\n\n---\n\n"
-// separator the planner uses (ADR 0015).
-func TestComposedFirstQueryLen(t *testing.T) {
-	msgs := []Msg{
-		{Role: "system", Content: "abc"},
-		{Role: "system", Content: "def"},
-		{Role: "user", Content: "hello"},
-		{Role: "user", Content: "second"},
-	}
-	composed, overhead := ComposedFirstQueryLen(msgs)
-	// "abc" + "\n\n" + "def" + "\n\n---\n\n" + "hello"
-	wantOverhead := len([]rune("abc\n\ndef\n\n---\n\n"))
-	if overhead != wantOverhead {
-		t.Fatalf("overhead = %d, want %d", overhead, wantOverhead)
-	}
-	if composed != wantOverhead+5 {
-		t.Fatalf("composed = %d, want %d (preamble + first user message)", composed, wantOverhead+5)
-	}
-
-	// No system preamble: composed is just the first user message.
-	if composed, overhead := ComposedFirstQueryLen([]Msg{{Role: "user", Content: "hey"}}); composed != 3 || overhead != 0 {
-		t.Fatalf("composed = %d overhead = %d, want 3/0", composed, overhead)
-	}
-
-	// Blank system messages are dropped, exactly as the planner drops them.
-	if composed, overhead := ComposedFirstQueryLen([]Msg{{Role: "system", Content: "   "}, {Role: "user", Content: "hey"}}); composed != 3 || overhead != 0 {
-		t.Fatalf("composed = %d overhead = %d, want 3/0 (a blank system message is not a preamble)", composed, overhead)
 	}
 }

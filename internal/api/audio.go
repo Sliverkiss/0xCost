@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
@@ -33,8 +32,10 @@ const (
 	// audio input is 25 MB; we enforce it locally instead of streaming a
 	// multi-hundred-MB body into memory first).
 	maxAudioUploadBytes = 25 << 20
-	// maxSpeechRequestBytes bounds the JSON body of /v1/audio/speech. Scripts
-	// are capped by SpeechMaxChars anyway; this stops a huge body earlier.
+	// maxSpeechRequestBytes bounds the JSON body of /v1/audio/speech: a body
+	// past 1 MiB is a runaway client, not speech input. The character cap is
+	// the upstream's own (owner ruling 2026-10-14, "字数预检砍了"), so there is
+	// no local precheck to make this redundant.
 	maxSpeechRequestBytes = 1 << 20
 	// botConfigTTL is how long the account catalog (models, voices, switches)
 	// is reused. It changes on the operator's schedule, not per request.
@@ -171,11 +172,10 @@ func (s *Server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 			"`input` is required", 0)
 		return
 	}
-	if n := utf8.RuneCountInString(input); n > s.speechMaxChars {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "input_too_long",
-			fmt.Sprintf("`input` is %d characters; the upstream caps one synthesis at %d", n, s.speechMaxChars), 0)
-		return
-	}
+	// No local length precheck (owner ruling 2026-10-14, "字数预检砍了"): the
+	// upstream answers its own refusal ("播报内容长度不能超过1024，当前长度
+	// 为：1500"), and classifyAudioUpstream translates it for the client. The
+	// request is forwarded as sent.
 	format := strings.ToLower(strings.TrimSpace(req.ResponseFormat))
 	if format == "" {
 		format = "wav"

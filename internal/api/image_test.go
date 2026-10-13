@@ -199,11 +199,8 @@ func TestIMG004NonImageURLRejected(t *testing.T) {
 	if !strings.Contains(raw, "unsupported_image_type") {
 		t.Errorf("body = %s, want unsupported_image_type", raw)
 	}
-	// No account was punished for the client's bad URL: the slot came back and
-	// the account is still available.
-	if got := ts.Pool.InFlight(); got != 0 {
-		t.Errorf("in-flight = %d after the refusal, want 0 (the slot must be back)", got)
-	}
+	// No account was punished for the client's bad URL: the account is still
+	// available.
 	if st := ts.Pool.StateOf("acc1"); st != pool.StateAvailable {
 		t.Errorf("account state = %v after a client-side image error, want available", st)
 	}

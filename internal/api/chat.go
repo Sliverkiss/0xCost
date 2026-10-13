@@ -90,32 +90,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Client-side char caps BEFORE any pool interaction (SDD §2.8, TDD
-	// API-016: zero upstream requests recorded).
-	cap := s.queryCharCap(model)
-	for _, m := range msgs {
-		if n := len([]rune(m.Content)); n > cap {
-			// Log it: this rejection used to be silent on the server side, so an
-			// operator could not even tell which client sent what (ADR 0015).
-			s.logger.Printf("chat: rejected request from %s: %s message of %d chars over the %d-char cap (model %s, %d messages)",
-				r.RemoteAddr, m.Role, n, cap, model, len(msgs))
-			s.MapError(w, &queryTooLongError{Limit: cap, Actual: n, Model: model})
-			return
-		}
-	}
-	// The cap the platform enforces is on the query text it receives, and the
-	// turn planner splices every system message into the first user query — so
-	// a client's system prompt — or the protocol prompt a tool layer injects in
-	// front of us — spends the same budget as the user's own message. Checked
-	// here so the failure is ours (fast, free, with numbers) instead of the
-	// platform's, which costs an account call and returns prose (ADR 0015).
-	if composed, overhead := adapter.ComposedFirstQueryLen(am); composed > cap {
-		s.logger.Printf("chat: rejected request from %s: composed first query of %d chars (incl. %d chars of system/injected preamble) over the %d-char cap (model %s, %d messages)",
-			r.RemoteAddr, composed, overhead, cap, model, len(msgs))
-		s.MapError(w, &queryTooLongError{Limit: cap, Actual: composed, Model: model, Overhead: overhead})
-		return
-	}
-
 	// Dropped-field warning header (SDD §5.2, TDD API-008/009, IMG-012).
 	if warn := req.warningsHeader(); warn != "" {
 		w.Header().Set("X-Mimo-Warnings", warn)
@@ -228,7 +202,11 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 	var lastErr error
 	attempts := 0
 
-	for attempts < 2 { // original + 1 retry (SDD §7.2)
+	// original + 3 retries: the only retryable failures are the transient busy
+	// frame and an empty response, and the busy retry is immediate — the client
+	// is already waiting, and the live observation is that the condition clears
+	// in seconds (owner ruling 2026-10-14: "800ms改成0，直接重试，最多3次").
+	for attempts < 4 {
 		var lease *pool.Lease
 		var plan *attemptPlan
 
@@ -343,12 +321,11 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Transient throttle ("服务器繁忙，请稍后再试"): live-observed to
-			// clear within seconds, so retry once after a short pause
-			// rather than failing a request that would succeed a moment
-			// later. The account stays healthy — this is platform load,
-			// not a dead account.
+			// clear within seconds. Retry immediately (owner ruling 2026-10-14:
+			// no backoff wait — "直接重试，最多3次"). The account stays healthy —
+			// this is platform load, not a dead account.
 			lease.Release()
-			if attempts > 0 {
+			if attempts >= 3 {
 				p.fail(w, err)
 				return
 			}
@@ -365,22 +342,14 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 					p.model, p.fastchat = nm, fc
 				}
 			}
-			s.debugf("chat: upstream busy, retrying in %s (account=%s, model=%s)", busyRetryBackoff, lease.ID, p.model)
+			s.debugf("chat: upstream busy, retrying immediately (attempt %d/4, account=%s, model=%s)", attempts+2, lease.ID, p.model)
 			attempts++
-			select {
-			case <-time.After(busyRetryBackoff):
-			case <-ctx.Done():
-				p.fail(w, s.budgetError(clientCtx, ctx, "waiting to retry a busy upstream"))
-				return
-			}
 			continue
 
 		case isGatewayDeadline(err, clientCtx):
 			// Our own budget or the per-turn lease TTL fired (ADR 0019). Nothing
 			// is wrong with the account: no cooldown, no retry, and the client
 			// gets a 504 naming the knob instead of a silent hang.
-			s.logger.Printf("chat: our own bound fired while account %s was serving (silence window %s, held %s): %v",
-				lease.ID, lease.SilentFor(time.Now()).Round(time.Second), time.Since(lease.IssuedAt()).Round(time.Second), err)
 			lease.Release()
 			p.fail(w, s.budgetError(clientCtx, ctx, "waiting for the upstream"))
 			return
@@ -474,15 +443,6 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			},
 			OnFirstByte: func() {
 				s.pool.RecordFirstByte(lease.ID, time.Since(attemptStart))
-				// first-byte policy (ADR 0019): give the slot back the moment the
-				// upstream starts answering, because the generation itself does not
-				// need to occupy capacity. The account is still pinned to this
-				// request by lease.ID, and Release is idempotent so the later
-				// finishTurn (and the deferred backstop) are no-ops.
-				if s.slotHold == slotHoldFirstByte && !lease.Released() {
-					s.debugf("chat: slot released at first byte (account=%s, slot policy %s)", lease.ID, s.slotHold)
-					lease.Release()
-				}
 			},
 			// The dialogId of this turn, recorded so the log line can name the
 			// upstream conversation a failure belonged to.
@@ -498,23 +458,17 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			chatReq.OnPiece = p.onPiece
 		}
 
-		// Per-turn bound (ADR 0036, amending ADR 0019): the lease TTL is a
-		// **silence** window, and every upstream byte moves it (the reader calls
-		// OnActivity → lease.Touch). A turn is therefore cut for going quiet, not
-		// for taking long: a search that keeps fetching pages runs until it
-		// answers, while a wedged turn dies on time and its slot is reclaimed.
-		// The cancel stays armed on the lease so a reaped slot still takes its
-		// in-flight upstream call down with it; the operator's wall clock
-		// (MIMO2API_REQUEST_TIMEOUT_MS) rides on ctx, not here.
+		// Per-turn bound (ADR 0036): the lease TTL is a **silence** window — a
+		// turn is cut for going quiet, not for taking long: a search that keeps
+		// fetching pages runs until it answers, while a wedged turn dies on
+		// time. This is request liveness, not account capacity — the in-flight
+		// slots it used to feed are gone (owner ruling 2026-10-14). The
+		// operator's wall clock (MIMO2API_REQUEST_TIMEOUT_MS) rides on ctx, not
+		// here.
 		turnCtx, cancelTurn := context.WithCancel(ctx)
-		lease.ArmExpiry(cancelTurn)
 		chatReq.IdleTimeout = s.leaseTTL
-		chatReq.OnActivity = lease.Touch
 		res, err := s.clientFor(lease.Egress).Chat(turnCtx, cookie, ph, chatReq)
-		if cancelTurn != nil {
-			cancelTurn()
-			lease.ArmExpiry(nil)
-		}
+		cancelTurn()
 		if err != nil {
 			// Client disconnect (SDD §7.3, TDD API-024): abort upstream (already
 			// done via ctx); neither success nor failure, and nothing was sent.
@@ -724,14 +678,8 @@ func (p *chatPipeline) isEmptyResponse(err error) bool {
 }
 
 // busyRetryAfterSeconds is the Retry-After handed to the client when the
-// upstream is still busy after the in-request retry.
+// upstream is still busy after the in-request retries.
 const busyRetryAfterSeconds = 2
-
-// busyRetryBackoff is how long the gateway waits before retrying a request the
-// upstream answered with the transient "服务器繁忙" frame. It is deliberately
-// short: the live observation is that the condition clears within a couple of
-// seconds, and the client is already waiting on this request.
-const busyRetryBackoff = 800 * time.Millisecond
 
 // channelName names the upstream chat channel for logs (SDD §2.4).
 func channelName(fastchat bool) string {

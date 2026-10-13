@@ -68,66 +68,47 @@ func Test429KeepsAccountAvailable(t *testing.T) {
 	}
 }
 
-// POOL-009: per-account in-flight semaphore — max_inflight=2, no third
-// concurrent claim (SDD §4.4).
-func TestInflightSemaphore(t *testing.T) {
-	p, _ := newPool(1, Options{QueueWait: 50 * time.Millisecond})
-	l1, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
+// NOSLOT-001 (owner ruling 2026-10-14, "并发槽砍了"): there is no concurrency
+// cap anymore. Sequential acquires on a one-account pool all succeed — the
+// account is simply selected every time, and Release is a no-op that must
+// never make a later Acquire fail.
+func TestAcquireHasNoConcurrencyCap(t *testing.T) {
+	p, _ := newPool(1, Options{})
+	for i := 0; i < 10; i++ {
+		l, err := p.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("acquire %d: %v (a second concurrent request must never be refused locally)", i+1, err)
+		}
+		l.Release()
 	}
-	l2, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = p.Acquire(context.Background())
-	var busy *ErrBusy
-	if !errors.As(err, &busy) {
-		t.Fatalf("third concurrent acquire: err = %v, want ErrBusy", err)
-	}
-	if busy.RetryAfterSeconds() < 1 {
-		t.Errorf("RetryAfterSeconds = %d, want >= 1", busy.RetryAfterSeconds())
-	}
-	l2.Release()
-	l3, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire after release: %v", err)
-	}
-	l3.Release()
-	l1.Release()
 }
 
-// POOL-010: queue-wait timeout → 429 pool_busy; the waiter is released and
-// the slot accounting is intact afterwards (SDD §4.4).
-func TestQueueWaitTimeout(t *testing.T) {
-	p, _ := newPool(1, Options{QueueWait: 80 * time.Millisecond})
-	l1, _ := p.Acquire(context.Background())
-	l2, _ := p.Acquire(context.Background())
-
-	start := time.Now()
-	_, err := p.Acquire(context.Background())
-	elapsed := time.Since(start)
-	var busy *ErrBusy
-	if !errors.As(err, &busy) {
-		t.Fatalf("err = %v, want ErrBusy", err)
+// NOSLOT-002: concurrent acquires all succeed and all name the same (only)
+// account — the upstream decides what it will serve, not us.
+func TestConcurrentAcquiresAllSucceed(t *testing.T) {
+	p, _ := newPool(1, Options{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l, err := p.Acquire(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			if l.ID != "a1" {
+				errs <- fmt.Errorf("lease = %s, want a1", l.ID)
+			}
+			l.Release()
+		}()
 	}
-	if elapsed < 70*time.Millisecond {
-		t.Errorf("busy returned after %v, want ~queue wait", elapsed)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
-
-	// Waiter released: after freeing one slot, acquires work and the
-	// semaphore still caps at 2.
-	l1.Release()
-	l3, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire after release: %v", err)
-	}
-	_, err = p.Acquire(context.Background())
-	if !errors.As(err, &busy) {
-		t.Errorf("post-timeout cap: err = %v, want ErrBusy (no slot leak)", err)
-	}
-	l3.Release()
-	l2.Release()
 }
 
 // POOL-011: empty pool or all-disabled pool → 503 no_accounts (SDD §7.4).
@@ -193,55 +174,6 @@ func TestDisabledPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-// POOL-015: selection score prefers idle accounts — a busy account (slot
-// held) is skipped in favor of an idle one (SDD §4.4).
-func TestSelectionPrefersIdle(t *testing.T) {
-	p, _ := newPool(2, Options{})
-	l1, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l1.Release()
-	l2, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l2.Release()
-	if l2.ID == l1.ID {
-		t.Errorf("both acquires landed on %s; second should prefer the idle account", l1.ID)
-	}
-}
-
-// POOL-016: context cancel while queued returns without holding a slot —
-// 100 iterations under -race leave the semaphore intact (TDD §1.5).
-func TestContextCancelNoLeak(t *testing.T) {
-	p, _ := newPool(1, Options{QueueWait: 10 * time.Second})
-	l1, _ := p.Acquire(context.Background())
-	l2, _ := p.Acquire(context.Background())
-
-	for i := 0; i < 100; i++ {
-		ctx, cancel := context.WithCancel(context.Background())
-		errCh := make(chan error, 1)
-		go func() {
-			_, err := p.Acquire(ctx)
-			errCh <- err
-		}()
-		time.Sleep(time.Millisecond) // let the waiter block
-		cancel()
-		if err := <-errCh; !errors.Is(err, context.Canceled) {
-			t.Fatalf("iteration %d: err = %v, want context.Canceled", i, err)
-		}
-	}
-
-	l1.Release()
-	l3, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire after cancels: %v (slot leaked?)", err)
-	}
-	l3.Release()
-	l2.Release()
-}
-
 // Sticky acquisition: target won when available, fallback otherwise
 // (SDD §4.3).
 func TestAcquireSticky(t *testing.T) {
@@ -276,7 +208,7 @@ func TestAcquireSticky(t *testing.T) {
 
 // Concurrent acquire/release under -race (TDD §1.5).
 func TestConcurrentAcquireRelease(t *testing.T) {
-	p, _ := newPool(3, Options{QueueWait: 2 * time.Second})
+	p, _ := newPool(3, Options{})
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
@@ -285,7 +217,7 @@ func TestConcurrentAcquireRelease(t *testing.T) {
 			for i := 0; i < 50; i++ {
 				l, err := p.Acquire(context.Background())
 				if err != nil {
-					continue // busy under contention is fine here
+					continue
 				}
 				p.RecordFirstByte(l.ID, 10*time.Millisecond)
 				p.ReportSuccess(l.ID)

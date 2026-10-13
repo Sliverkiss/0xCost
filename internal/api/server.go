@@ -48,20 +48,16 @@ type Server struct {
 	// loopback/private/link-local destinations on every hop (imageinput.go), so a
 	// caller cannot use the gateway as a probe into the host's own network.
 	imageClient *http.Client
-	// requestTimeout/leaseTTL/slotHold implement ADR 0019: a real client-facing
-	// deadline, a per-turn upstream deadline, and when the in-flight slot goes
-	// back to the pool.
+	// requestTimeout/leaseTTL implement ADR 0019/0036: a real client-facing
+	// deadline and a per-turn upstream silence window (request liveness, not
+	// slot capacity — the slots are gone, owner ruling 2026-10-14).
 	requestTimeout time.Duration
 	leaseTTL       time.Duration
-	slotHold       string
 	// keepaliveInterval is how often a committed chat stream writes an SSE
 	// comment while the upstream is still generating (ADR 0034). It is a timing
 	// constant, not a deployment knob: the client's `stream` field decides
 	// whether there is a stream at all, and nothing here changes the answer.
 	keepaliveInterval time.Duration
-	// maxQueryChars overrides the per-channel chat char cap when > 0
-	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015).
-	maxQueryChars int
 
 	logger *log.Logger
 	debug  bool
@@ -72,12 +68,11 @@ type Server struct {
 	audioConvs     *mimo.ConversationCache
 	botCfg         botConfigCache
 	catalogTTL     time.Duration
-	audioPoll      time.Duration
-	ttsTimeout     time.Duration
-	ttsMaxTimeout  time.Duration
-	asrTimeout     time.Duration
-	speechMaxChars int
-	defaultVoice   string
+	audioPoll     time.Duration
+	ttsTimeout    time.Duration
+	ttsMaxTimeout time.Duration
+	asrTimeout    time.Duration
+	defaultVoice  string
 
 	// redirects caches the upstream's deprecated-model map (`redirectTo`) for
 	// catalogTTL, so the request paths can resolve a superseded id without
@@ -236,14 +231,6 @@ func (s *Server) debugf(format string, args ...any) {
 	s.logger.Printf("debug: "+format, args...)
 }
 
-// Slot hold policies (ADR 0019). The env-level names live in
-// internal/config (MIMO2API_SLOT_HOLD); the API layer only needs to know which
-// one is in force.
-const (
-	slotHoldLastByte  = "last-byte"
-	slotHoldFirstByte = "first-byte"
-)
-
 // Options configures a Server.
 type Options struct {
 	APIKeys      []string // parsed list; empty = open auth
@@ -268,18 +255,12 @@ type Options struct {
 	// as a probe into the host's own network.
 	ImageAllowPrivate bool
 	// RequestTimeout is the whole client-facing budget for one chat request
-	// (ADR 0019, default 120s). 0 = no total budget (the per-turn lease TTL
-	// still applies).
+	// (ADR 0019, default 120s). 0 = no total budget (the per-turn silence
+	// window still applies).
 	RequestTimeout time.Duration
-	// LeaseTTL bounds one upstream turn and, as a backstop, the in-flight slot
-	// that turn holds (ADR 0019, default 120s).
+	// LeaseTTL bounds one upstream turn as a **silence** window (ADR 0019/0036,
+	// default 120s). Request liveness only — it no longer bounds a slot.
 	LeaseTTL time.Duration
-	// SlotHold is when a request gives its in-flight slot back: "last-byte"
-	// (default) or "first-byte" (ADR 0019).
-	SlotHold string
-	// MaxQueryChars overrides the per-channel chat char cap when > 0
-	// (MIMO2API_MAX_QUERY_CHARS, ADR 0015). 0 = adapter.MaxQueryChars per model.
-	MaxQueryChars int
 	// KeepaliveInterval is the SSE comment cadence on a committed chat stream
 	// (ADR 0034, default 15s). Tests shorten it; production never needs to.
 	KeepaliveInterval time.Duration
@@ -296,7 +277,6 @@ type Options struct {
 	// (default 15m).
 	TTSMaxTimeout  time.Duration
 	ASRTimeout     time.Duration // transcription deadline (default 120s)
-	SpeechMaxChars int           // /v1/audio/speech input cap (default 10000)
 	DefaultVoice   string        // upstream voice id/name; empty = first in the catalog
 }
 
@@ -326,9 +306,6 @@ func New(opts Options) *Server {
 	if opts.LeaseTTL <= 0 {
 		opts.LeaseTTL = 120 * time.Second
 	}
-	if opts.SlotHold == "" {
-		opts.SlotHold = slotHoldLastByte
-	}
 	if opts.AudioPoll <= 0 {
 		opts.AudioPoll = time.Second
 	}
@@ -340,15 +317,6 @@ func New(opts Options) *Server {
 	}
 	if opts.ASRTimeout <= 0 {
 		opts.ASRTimeout = 120 * time.Second
-	}
-	if opts.SpeechMaxChars <= 0 {
-		opts.SpeechMaxChars = 10000
-	}
-	// The upstream refuses one synthesis over SpeechTextLimit characters, so a
-	// larger configured cap would only accept requests that cannot succeed and
-	// turn a clear 400 into a slow upstream failure (ADR 0010).
-	if opts.SpeechMaxChars > mimo.SpeechTextLimit {
-		opts.SpeechMaxChars = mimo.SpeechTextLimit
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -375,8 +343,6 @@ func New(opts Options) *Server {
 		maxImageBytes:     opts.MaxImageBytes,
 		requestTimeout:    opts.RequestTimeout,
 		leaseTTL:          opts.LeaseTTL,
-		slotHold:          opts.SlotHold,
-		maxQueryChars:     opts.MaxQueryChars,
 		keepaliveInterval: opts.KeepaliveInterval,
 		logger:            logger,
 		debug:             opts.Debug,
@@ -386,7 +352,6 @@ func New(opts Options) *Server {
 		ttsTimeout:        opts.TTSTimeout,
 		ttsMaxTimeout:     opts.TTSMaxTimeout,
 		asrTimeout:        opts.ASRTimeout,
-		speechMaxChars:    opts.SpeechMaxChars,
 		defaultVoice:      opts.DefaultVoice,
 	}
 }

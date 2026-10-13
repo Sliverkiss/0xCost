@@ -5,42 +5,19 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 )
 
 // ============================================================================
 // Additional coverage for internal/pool (TDD §6.2 floor ≥85%).
 // ============================================================================
 
-// The exported error types must render usable messages, clamp Retry-After to
-// at least 1s, and round-trip through errors.As / errors.Is so the API layer
-// can map them.
+// ErrNoAccounts is the pool's only refusal, and it maps cleanly through
+// errors.Is so the API layer can turn it into 503 no_accounts.
 func TestErrorTypesAndUnwrap(t *testing.T) {
-	t.Run("ErrBusy", func(t *testing.T) {
-		e := &ErrBusy{RetryAfter: 3 * time.Second}
-		if !strings.Contains(e.Error(), "3s") {
-			t.Errorf("Error() = %q", e.Error())
-		}
-		if e.RetryAfterSeconds() != 3 {
-			t.Errorf("RetryAfterSeconds = %d, want 3", e.RetryAfterSeconds())
-		}
-	})
-
-	t.Run("errors.As reaches ErrBusy from a real acquire", func(t *testing.T) {
-		p, _ := newPool(1, Options{QueueWait: 20 * time.Millisecond})
-		l1, _ := p.Acquire(context.Background())
-		l2, _ := p.Acquire(context.Background())
-		_, err := p.Acquire(context.Background())
-		var busy *ErrBusy
-		if !errors.As(err, &busy) {
-			t.Fatalf("err = %v, want *ErrBusy", err)
-		}
-		if busy.RetryAfterSeconds() < 1 {
-			t.Errorf("RetryAfterSeconds = %d, want >= 1", busy.RetryAfterSeconds())
-		}
-		l1.Release()
-		l2.Release()
-	})
+	p, _ := newPool(1, Options{})
+	if _, err := p.Acquire(context.Background(), "a1"); !errors.Is(err, ErrNoAccounts) {
+		t.Errorf("err = %v, want ErrNoAccounts", err)
+	}
 }
 
 // Enable clears disabled state and makes the account selectable again;
@@ -106,12 +83,15 @@ func TestUnknownAccountAccessors(t *testing.T) {
 }
 
 // Release is defensive: nil receivers, unknown ids, and double-release must be
-// safe and must not corrupt slot accounting.
+// safe and must never make a later Acquire fail.
 func TestReleaseDefensive(t *testing.T) {
 	p, _ := newPool(1, Options{})
 
 	var nilLease *Lease
 	nilLease.Release() // nil receiver: no panic
+	if !nilLease.Released() {
+		t.Error("nil lease must report released")
+	}
 
 	(&Lease{Pool: p, ID: "ghost"}).Release() // unknown id: no-op
 
@@ -119,8 +99,14 @@ func TestReleaseDefensive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if l.Released() {
+		t.Error("fresh lease must not report released")
+	}
 	l.Release()
 	l.Release() // double release must not block or panic
+	if !l.Released() {
+		t.Error("lease must report released after Release")
+	}
 
 	// Accounting intact: two sequential acquires still succeed.
 	for i := 0; i < 2; i++ {

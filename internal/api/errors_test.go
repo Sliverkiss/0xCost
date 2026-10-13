@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/testserver"
@@ -17,31 +16,7 @@ import (
 // upstream script) rather than calling MapError directly, per TDD §6 wave 6
 // ("every triggering path exists; close the table last").
 
-// twoAccounts (from api_test.go): distinct scripted identities for
-// cooldown/exclusion rows.
-
-// holdSlot starts a stalled chat turn in the background so the pool's single
-// in-flight slot stays taken while the caller probes the busy mapping.
-//
-// Why a goroutine: this case sends `stream:false`, so ts.Chat only returns once
-// the whole JSON body has arrived — a stalled turn cannot be awaited inline the
-// way an SSE caller could (a streaming request returns at the first delta, ADR
-// 0034). The returned function waits for the stalled turn to finish.
-func holdSlot(t *testing.T, ts *testserver.TestServer) func() {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-		if err == nil && resp != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-	}()
-	// Let the lease be taken before the caller queues a second request.
-	time.Sleep(150 * time.Millisecond)
-	return func() { <-done }
-}
+// twoAccounts (from api_test.go): distinct scripted identities.
 
 // readErr drains an error response and asserts the OpenAI error shape.
 func readErr(t *testing.T, resp *http.Response) (status int, msg, typ, code string) {
@@ -90,35 +65,6 @@ func TestERRMAPMalformedAndNoUser(t *testing.T) {
 	}
 }
 
-// ERRMAP-004: all slots busy, queue wait exceeded → 429 pool_busy +
-// Retry-After (SDD §7.4 row 4).
-func TestERRMAPPoolBusy(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
-		MaxInflight: 1,
-		QueueWait:   50 * time.Millisecond,
-	})
-	// Occupy the single slot: stall mid-stream so the handler keeps the lease
-	// while the second request queues.
-	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{
-		Body:           testutil.FixtureSSEStall,
-		StallMidStream: 2 * time.Second,
-		MidStreamSplit: 134,
-	})
-	release := holdSlot(t, ts)
-	defer release()
-	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	status, _, typ, code := readErr(t, resp)
-	if status != http.StatusTooManyRequests || typ != "rate_limit_error" || code != "pool_busy" {
-		t.Fatalf("got %d %q %q", status, typ, code)
-	}
-	if ra := resp.Header.Get("Retry-After"); ra == "" {
-		t.Error("missing Retry-After header")
-	}
-}
-
 // ERRMAP-005: all disabled / empty pool → 503 api_error / no_accounts.
 func TestERRMAPNoAccounts(t *testing.T) {
 	// Zero accounts = empty pool.
@@ -162,12 +108,10 @@ func TestERRMAPUpstream429(t *testing.T) {
 	}
 }
 
-// ERRMAP-007: upstream 401 after the refresh retry → 401
-// invalid_request_error / upstream_auth_expired.
+// ERRMAP-007: upstream 401 → 401 invalid_request_error / upstream_auth_expired.
 func TestERRMAPUpstreamAuthExpired(t *testing.T) {
 	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	// Script BOTH identities (round-robin selection); renewal is impossible
-	// (no passToken stored) so the refresh retry fails → mapped 401.
+	// Script BOTH identities (round-robin selection).
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusUnauthorized})
 	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusUnauthorized})
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
@@ -185,8 +129,8 @@ func TestERRMAPUpstreamAuthExpired(t *testing.T) {
 // another account, no cooldown). Exactly one upstream hit.
 func TestERRMAPUpstream5xx(t *testing.T) {
 	ts := testserver.NewTestServer(t, twoAccounts(), nil)
-	// Script BOTH identities: with the retry gone, selection is round-robin and
-	// either may serve — the answer must be the same either way.
+	// Script BOTH identities: selection is round-robin and either may serve —
+	// the answer must be the same either way.
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
 	ts.Upstream.Script(testutil.TestPH2, testutil.ScriptStep{StatusCode: http.StatusBadGateway})
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
@@ -234,59 +178,48 @@ func TestERRMAPContentFilter(t *testing.T) {
 	}
 }
 
-// ERRMAP-010: query over the channel char cap → 400 context_too_long, zero
-// upstream requests (cross-ref API-016). mimo-v2.6-pro-ultraspeed-studio caps
-// at 50000 chars.
+// ERRMAP-010 (owner ruling 2026-10-14, "字数预检砍了，超了上游会自己报错透
+// 传"): a query over the channel char cap is NO LONGER rejected locally — the
+// request is forwarded and the upstream's own refusal is passed through as
+// 400 invalid_request_error / context_too_long. Exactly one upstream hit: the
+// upstream, not the gateway, is the source of truth for its own limits.
 func TestERRMAPContextTooLong(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	// The upstream answers its own too-long refusal (FixtureSSETooLong: the
+	// "Sorry, the text you sent is too long!" error event).
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSETooLong})
 	long := strings.Repeat("a", 50001)
 	body := testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", long})
 	resp, err := ts.Chat(body, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, typ, code := readErr(t, resp)
+	status, msg, typ, code := readErr(t, resp)
 	if status != http.StatusBadRequest || typ != "invalid_request_error" || code != "context_too_long" {
-		t.Fatalf("got %d %q %q", status, typ, code)
+		t.Fatalf("got %d %q %q (%q), want the upstream-refusal mapping", status, typ, code, msg)
 	}
-	if ts.Upstream.ChatHits() != 0 {
-		t.Errorf("char-cap rejection must not reach upstream, hits = %d", ts.Upstream.ChatHits())
+	// The message must carry the upstream's own wording, not a local
+	// rejection: the refusal is the upstream's answer, passed through.
+	if !strings.Contains(msg, "too long") {
+		t.Errorf("message = %q, want the upstream's own too-long refusal in it", msg)
+	}
+	// Forwarded, not locally rejected: exactly one upstream hit.
+	if n := ts.Upstream.ChatHits(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1 (over-cap request forwarded, refusal passed through)", n)
 	}
 }
 
-// ERRMAP-011: Retry-After privacy invariant — across the 429 rows the
-// Retry-After reflects only the answer that was already given (pool capacity
-// or the upstream's own header), and no response body or header ever carries
-// phone/userId/cookie/passToken.
+// ERRMAP-011: Retry-After privacy invariant — the upstream's Retry-After
+// header is the only Retry-After there is (the pool never invents one), and
+// no response body or header ever carries phone/userId/cookie/passToken.
 func TestERRMAPRetryAfterPrivacy(t *testing.T) {
-	// Busy row.
-	ts2 := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{
-		MaxInflight: 1,
-		QueueWait:   50 * time.Millisecond,
-	})
-	ts2.Upstream.Script(testutil.TestPH, testutil.ScriptStep{
-		Body:           testutil.FixtureSSEStall,
-		StallMidStream: 2 * time.Second,
-		MidStreamSplit: 134,
-	})
-	release2 := holdSlot(t, ts2)
-	defer release2()
-	resp2, _ := ts2.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
-	status2, _, _, code2 := readErr(t, resp2)
-	if status2 != http.StatusTooManyRequests || code2 != "pool_busy" {
-		t.Fatalf("busy row: got %d %q", status2, code2)
-	}
-	if ra2 := resp2.Header.Get("Retry-After"); ra2 == "" {
-		t.Error("pool_busy row missing Retry-After")
-	}
-
 	// Upstream-429 row: surfaced mapping; nothing leaks in the body.
 	ts3 := testserver.NewTestServer(t, oneAccount(), nil)
 	ts3.Upstream.Script(testutil.TestPH, testutil.ScriptStep{StatusCode: http.StatusTooManyRequests})
 	resp3, _ := ts3.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hi"}), "")
 	status3, msg3, typ3, code3 := readErr(t, resp3)
 	if status3 != http.StatusTooManyRequests || typ3 != "rate_limit_error" || code3 != "upstream_rate_limited" {
-		t.Fatalf("upstream 429 row: got %d %q %q", status3, typ3, code3)
+		t.Fatalf("upstream 429 row: got %d %q", status3, code3)
 	}
 	// Privacy: no credential anywhere. The mock cookies carry "st-mock" and
 	// "userId=123456"; none may appear in any response.

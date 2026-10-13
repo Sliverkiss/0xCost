@@ -322,11 +322,14 @@ func TestAPIReplayCap(t *testing.T) {
 	}
 }
 
-// API-016: client-side char caps — zero upstream requests.
+// API-016 (owner ruling 2026-10-14, "字数预检砍了，超了上游会自己报错透
+// 传"): there is no client-side char cap — the over-cap request is forwarded
+// and the upstream's own refusal is passed through. Zero local rejections,
+// exactly one upstream hit per request.
 func TestAPICharCaps(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	big := strings.Repeat("字", 50001)
-	// Normal model: cap 90000 — under.
+	// Normal model: served by the platform (50k is under the 102400 ceiling).
 	resp, err := ts.Chat(testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", big}), "")
 	if err != nil {
 		t.Fatal(err)
@@ -335,22 +338,24 @@ func TestAPICharCaps(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("90k model: status = %d", resp.StatusCode)
 	}
-	// Ultraspeed: cap 50000 — over.
+	// Ultraspeed: the upstream refuses; its own answer passes through.
+	ts.Upstream.ResetScript(testutil.TestPH)
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSETooLong})
 	resp, err = ts.Chat(testutil.ChatBody("mimo-v2.6-pro-ultraspeed-studio", false, [2]string{"user", big}), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("50k model: status = %d, want 400", resp.StatusCode)
+		t.Fatalf("50k model: status = %d, want 400 (the upstream's own refusal)", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_, _, code := testutil.ParseError(t, body)
 	if code != "context_too_long" {
 		t.Errorf("code = %q", code)
 	}
-	if n := ts.Upstream.ChatHits(); n != 1 {
-		t.Errorf("upstream chat hits = %d, want 1 (only the legal request)", n)
+	if n := ts.Upstream.ChatHits(); n != 2 {
+		t.Errorf("upstream chat hits = %d, want 2 (both requests forwarded; the upstream decides)", n)
 	}
 }
 

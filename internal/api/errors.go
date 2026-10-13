@@ -158,30 +158,6 @@ func asTooManyImages(err error) *tooManyImagesError {
 	return nil
 }
 
-// queryTooLongError names the number that matters: a caller that only learns
-// "the query is too long" cannot act, one that learns "92311 chars over a 90000
-// limit on this model" can trim. The code stays `context_too_long` so clients
-// that key on it keep working.
-type queryTooLongError struct {
-	Limit  int
-	Actual int
-	Model  string
-	// Overhead is how much of Actual is preamble the client did not write —
-	// the system prompt it sent plus any protocol prompt a tool layer injected
-	// before us (ADR 0015). Zero for a plain user message.
-	Overhead int
-}
-
-func (e *queryTooLongError) Error() string {
-	suffix := ""
-	if e.Overhead > 0 {
-		suffix = fmt.Sprintf(" (of which %d chars are the injected/system preamble, %d are the message)",
-			e.Overhead, e.Actual-e.Overhead)
-	}
-	return fmt.Sprintf("query is too long for this model channel: %d chars, limit %d (model %q);%s send fewer or shorter messages",
-		e.Actual, e.Limit, e.Model, suffix)
-}
-
 // upstreamTooLong reports whether an upstream refusal is about the request
 // being too long, across the wordings the platform uses: the chat channel
 // answers `Sorry, the text you sent is too long!`, the fastchat channel
@@ -249,23 +225,17 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 	var uv *unknownVoiceError
 	var deadline *requestTimeoutError
 	var (
-		busy    *pool.ErrBusy
 		nf      *adapter.ErrModelNotFound
 		nouser  adapter.ErrNoUserMessage
 		tooMany *adapter.ErrTooManyTurns
 		filter  *mimo.ErrContentFilter
 		upErr   *mimo.UpstreamError
-		tooLong *queryTooLongError
 	)
 	switch {
 	case errors.As(err, &deadline):
 		// Our own budget/TTL (ADR 0019): a gateway-side timeout, with numbers,
 		// and no account penalty — the account was serving correctly.
 		writeError(w, http.StatusGatewayTimeout, "api_error", "chat_timeout", deadline.Error(), 0)
-	case errors.As(err, &busy):
-		// Queue wait exceeded (SDD §7.4, TDD ERRMAP-004).
-		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "pool_busy",
-			"all account slots busy; retry later", busy.RetryAfterSeconds())
 	case errors.Is(err, pool.ErrNoAccounts):
 		// Empty pool / all disabled (SDD §7.4, TDD ERRMAP-005).
 		writeError(w, http.StatusServiceUnavailable, "api_error", "no_accounts",
@@ -288,10 +258,6 @@ func (s *Server) MapError(w http.ResponseWriter, err error) {
 		// a moderation judgement from a broken request.
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "content_filter",
 			filter.Error(), 0)
-	case errors.As(err, &tooLong):
-		// Channel char cap (SDD §2.8, TDD ERRMAP-010/API-016). The message names
-		// the measured size and the limit, so a caller can act on it.
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "context_too_long", tooLong.Error(), 0)
 	case errors.Is(err, errUnsupportedImageURL):
 		// Name the real reason: the wrapped error says which rule was broken
 		// ("data URL has no comma before its payload"), which is what a caller can

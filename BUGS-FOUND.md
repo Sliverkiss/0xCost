@@ -173,3 +173,60 @@ tick only; one log line per account in ID order). The OTP-admin,
 consent-admin, and device-persistence tests were reworked to seed their
 challenges through a synchronous `renewRound` — the only login path left.
 
+## 6. Five self-imposed gateway restrictions — REMOVED by owner ruling
+
+**Ruling** (owner, 2026-10-14, verbatim): “并发槽砍了，等待800m砍了。
+upstream is busy的800ms改成0，直接重试，最多3次。字数预检砍了，超了上游
+会自己报错透传。recovery砍了，主动处置砍了。”
+
+Governing principle: 上游是唯一真相源，我们只做纯管道 — the upstream is
+the single source of truth; the gateway is a pure pipe. Five mechanisms we
+invented for its benefit were actually decisions taken away from it.
+
+**1. Concurrency slots.** Per-account in-flight slots (MaxInflight, default 2)
+with a 15s queue wait (ErrBusy/pool_busy), a slot TTL reaper, and warm-up
+penalty — gone. `pool.Acquire` is a single-pass availability check with
+latency scoring and band round-robin; every request that arrives gets an
+account (NOSLOT-001/002/003). A lease is account identity passthrough only
+(ADR 0017); `Release` is an idempotent no-op. LeaseTTL survives as the
+request-liveness **silence** window feeding `chatReq.IdleTimeout`
+(ErrSilentUpstream/ErrIdleStall, ADR 0036) — capacity was cut, liveness was
+not. `MIMO2API_MAX_INFLIGHT_PER_ACCOUNT`, `MIMO2API_QUEUE_WAIT_S`,
+`MIMO2API_SLOT_HOLD`, and the `in_flight`/`max_in_flight` admin fields are
+deleted.
+
+**2. Busy backoff 800ms → 0, retries → 3.** An in-band “服务器繁忙，
+请稍后再试” frame now retries immediately, up to 3 times (4 attempts total),
+then answers 503 `upstream_busy` with the platform's own sentence attached
+(ADR 0033). No `time.After` between attempts (BUSY-003: busy ×3 + success in
+<2s wall).
+
+**3. Character precheck.** Both chat (per-message cap loop +
+ComposedFirstQueryLen, `adapter.MaxQueryChars`/`config.MaxQueryChars`) and
+speech (`SpeechMaxChars` local precheck) are deleted. Over-length requests
+are forwarded as sent and the upstream's own refusal passes through
+(TOOLONG-005, ERRMAP-010, TTSLIMIT-001: 400 `context_too_long` /
+`input_too_long` carrying the upstream's evidence; account stays available).
+`MIMO2API_MAX_QUERY_CHARS` and `MIMO2API_SPEECH_MAX_CHARS` are gone;
+`mimo.SpeechTextLimit` stays as the upstream's mirror for translation only.
+
+**4. Async recovery.** Verified already removed by commit `1490fa0` (see #5):
+`RecoverCredentialAsync` has zero non-test remnants; grep clean.
+
+**5. Consent-anomaly sit-out.** `/v1/admin/consent/agree` no longer calls
+`ReportDisabled` when the consent login lands on a new-device OTP demand —
+the challenge is registered for the operator and the account stays
+selectable (CONSENT-API-005). Consent state must not decide account
+availability; the renew-job's own dead-credential disables (renewjob.go) are
+credential management, not consent action, and stay.
+
+**The removal** (this sweep): no compat layers, no switches — direct
+deletion across pool, api, adapter, config, testserver, and cmd. Acceptance
+gates: `go build ./... && go vet ./...` clean; `go test ./internal/... -race
+-count=1` all green; residue grep (`MaxInflight|max_in_flight|ErrBusy|
+pool_busy|busyRetryBackoff|queryCharCap|MaxQueryChars|RecoverCredentialAsync`)
+finds only must-NOT-appear test assertions and ruling-mention comments;
+`docker compose up -d --build` live checks: /v1/models lists 7 models, chat
+200, /v1/admin/pool has no in_flight/cooldown/consent markers, and an
+over-cap ultraspeed request returns the upstream's own refusal (400
+context_too_long via `upstreamTooLong` translation, account still available).

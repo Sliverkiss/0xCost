@@ -75,7 +75,10 @@ func (s *Server) handleConsentAgree(w http.ResponseWriter, r *http.Request) {
 					s.logger.Printf("accounts: persist device for %s: %v", id, uerr)
 				}
 			}
-			s.pool.ReportDisabled(id, "cross-region consent given; new-device OTP verification pending", false)
+			// No ReportDisabled here (owner ruling 2026-10-14, "主动处置砍了"):
+			// consent-state anomalies must not change account availability. The
+			// challenge is registered above; the operator decides through
+			// /v1/admin/otp/submit, and the account stays selectable meanwhile.
 			ch := pending.Challenge
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{

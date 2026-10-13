@@ -218,8 +218,11 @@ func TestPoolViewCarriesDiagnosticFields(t *testing.T) {
 	if _, ok := row["ewma_latency_ms"]; !ok {
 		t.Error("ewma_latency_ms is missing")
 	}
-	if _, ok := row["in_flight"]; !ok {
-		t.Error("in_flight is missing")
+	if _, ok := row["in_flight"]; ok {
+		t.Error("in_flight is gone with the in-flight slots; it must not appear")
+	}
+	if _, ok := row["max_in_flight"]; ok {
+		t.Error("max_in_flight is gone with the in-flight slots; it must not appear")
 	}
 	if _, ok := row["credential_age_s"]; !ok {
 		t.Error("credential_age_s is missing")

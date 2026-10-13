@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yg/mimo2api/internal/pool"
 	"github.com/yg/mimo2api/internal/testserver"
@@ -64,15 +65,45 @@ func TestUpstreamBusyRetriedThenSucceeds(t *testing.T) {
 	}
 }
 
-// BUSY-002: busy twice → the client gets 503 upstream_busy with a Retry-After,
-// not a 502 content failure, and the account is NOT put on cooldown: the
-// condition is platform load, not a dead account.
-func TestUpstreamBusyTwiceMapsTo503(t *testing.T) {
+// BUSY-003 (owner ruling 2026-10-14, "upstream is busy的800ms改成0，直接重
+// 试，最多3次"): all three retries are live and each is immediate. Busy on the
+// first three attempts and success on the fourth still yields 200, with no
+// waiting between attempts (the ruling moved the backoff to 0).
+func TestUpstreamBusyAllThreeRetriesLand(t *testing.T) {
 	acct := oneAccount()
 	ts := testserver.NewTestServer(t, acct, nil)
 	ph := acct[0].PH
 	ts.Upstream.Script(ph,
 		testutil.ScriptStep{Body: sseErrorFrame("服务器繁忙，请稍后再试")},
+		testutil.ScriptStep{Body: sseErrorFrame("服务器繁忙，请稍后再试")},
+		testutil.ScriptStep{Body: sseErrorFrame("服务器繁忙，请稍后再试")},
+		testutil.ScriptStep{Body: testutil.FixtureSSEBasic},
+	)
+
+	start := time.Now()
+	status, body := chatOnce(t, ts, testutil.ChatBody("mimo-v2.6-pro", false, [2]string{"user", "hello"}))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200: busy ×3 then success must be served by the third retry", status, body)
+	}
+	if n := len(ts.Upstream.Requests()); n != 4 {
+		t.Fatalf("upstream calls = %d, want 4 (original + 3 retries)", n)
+	}
+	// Immediate retries: three busy frames cost no backoff wait at all (0ms,
+	// was 800ms each). Local-serve latency only.
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("took %s for busy ×3 + success; retries must be immediate, not 800ms-paced", waited)
+	}
+}
+
+// BUSY-002: busy on every attempt (4 total: original + 3 retries) → the client
+// gets 503 upstream_busy with a Retry-After, not a 502 content failure, and the
+// account is NOT disabled: the condition is platform load, not a dead account.
+func TestUpstreamBusyTwiceMapsTo503(t *testing.T) {
+	acct := oneAccount()
+	ts := testserver.NewTestServer(t, acct, nil)
+	ph := acct[0].PH
+	// Single sticky step: busy on every attempt, including all three retries.
+	ts.Upstream.Script(ph,
 		testutil.ScriptStep{Body: sseErrorFrame("服务器繁忙，请稍后再试")},
 	)
 
@@ -87,6 +118,10 @@ func TestUpstreamBusyTwiceMapsTo503(t *testing.T) {
 	// busy" is our reading, 服务器繁忙，请稍后再试 is its evidence.
 	if !strings.Contains(body, "服务器繁忙") {
 		t.Errorf("body = %q, want the upstream's own wording passed through", body)
+	}
+	// The retry cap: original + 3 retries = 4 upstream calls, then the 503.
+	if n := len(ts.Upstream.Requests()); n != 4 {
+		t.Errorf("upstream calls = %d, want 4 (original + 3 busy retries, then give up)", n)
 	}
 	// Platform load, not a dead account: the account must stay selectable.
 	if got := ts.Pool.StateOf("acc1"); got != pool.StateAvailable {

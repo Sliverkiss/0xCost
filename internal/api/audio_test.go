@@ -129,14 +129,13 @@ func TestSpeechExplicitVoice(t *testing.T) {
 
 // AUDIO-TTS-003: request validation.
 func TestSpeechValidation(t *testing.T) {
-	ts := audioServer(t, oneAccount(), &testserver.TestServerOptions{SpeechMaxChars: 10, AudioPoll: time.Millisecond})
+	ts := audioServer(t, oneAccount(), &testserver.TestServerOptions{AudioPoll: time.Millisecond})
 	for _, tc := range []struct {
 		name string
 		body string
 		code string
 	}{
 		{"missing input", `{"input":"   "}`, "missing_input"},
-		{"input too long", `{"input":"` + strings.Repeat("字", 11) + `"}`, "input_too_long"},
 		{"bad format", `{"input":"hi","response_format":"opus"}`, "unsupported_response_format"},
 		{"unknown voice", `{"input":"hi","voice":"不存在的音色"}`, "unknown_voice"},
 		{"malformed json", `{"input":`, "malformed_request_body"},

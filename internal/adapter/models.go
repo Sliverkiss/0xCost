@@ -69,34 +69,3 @@ func NormalizeModel(requested, defaultModel string, catalog []string) (model str
 	}
 	return m, IsFastchatModel(m), nil
 }
-
-// MaxQueryChars returns the client-side per-request character cap for a model
-// channel (SDD §2.8).
-//
-// Both numbers are measured, and the platform counts **characters**, not tokens —
-// checked by probing until the boundary flips (2026-10-09, one user message,
-// MIMO2API_MAX_QUERY_CHARS raised so the upstream was the judge):
-//
-//	fastchat / ultraspeed:  49,500 served · 52,000 refused (`query is too long`)
-//	every other model:     101,000 served · 102,400 served · 105,000 refused
-//	                       exactly 102,400 chars served · 102,415 refused
-//	                       ASCII 102,400 refused at 102,415 — same boundary as CJK
-//
-// So the regular channel's ceiling is **102,400 characters** (100 KiB) of the
-// query text and it does not move with language (an earlier "token budget near
-// 100k" reading of the same data was wrong: what varies is only how close a
-// payload sits to the boundary). fastchat's is the Studio's own
-// `ultraspeedQueryLimitLength: 5e4` (docs/web-surface-reverse.md §11), bracketed
-// by the two probes above.
-//
-// Enforcing both locally costs nothing and saves a wasted account call: the
-// platform refuses anything above them anyway, so this cannot reject work that
-// would have been served — which is exactly what the old unmeasured 90,000 did
-// (a 95,000-char message is served fine). The upstream's own refusal is still
-// translated into our 400 (errors.go) for the cases that reach it.
-func MaxQueryChars(model string) int {
-	if IsFastchatModel(model) {
-		return 50000
-	}
-	return 102400
-}
