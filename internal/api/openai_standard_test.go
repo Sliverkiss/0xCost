@@ -257,6 +257,9 @@ func TestOSTD009ErrorParamNamesTheOffendingField(t *testing.T) {
 	}
 
 	// A failure that is not about a request field must not invent one.
+	// Warmed snapshot (as main.go serves with): an unknown id is a catalog
+	// 404, which is no single field's fault.
+	ts.API.RefreshModelRedirects(context.Background())
 	status, raw = chatOnce(t, ts, ostdBody("no-such-model", nil))
 	if status == http.StatusOK {
 		t.Fatalf("status = 200 for an unknown model, want an error: %s", raw)
@@ -352,6 +355,10 @@ func TestOSTD007ModelIDUnchangedByStandardFields(t *testing.T) {
 func TestOSTD013ErrorBodyAlwaysCarriesFourKeys(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{APIKeys: []string{"k1"}})
 	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
+	// Warm the catalog snapshot the way main.go does before serving: an
+	// unknown model id is a 404 only against a known catalog, and the snapshot
+	// is what the chat gate validates against (a cold one passes ids through).
+	ts.API.RefreshModelRedirects(context.Background())
 
 	cases := []struct {
 		name       string

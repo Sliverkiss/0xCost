@@ -39,19 +39,18 @@ func TestTHK001ThinkingDefaultLayers(t *testing.T) {
 	}
 }
 
-// THK-002: only a declaration counts. The built-in floor's zero value means "the
-// catalog said nothing", not "thinking is off" — conflating the two would turn a
-// failed catalog read into a silent behaviour change, and the floor is exactly what
-// a deployment falls back to when the catalog is unreadable.
+// THK-002: only a declaration counts. An entry with no declaration means "the
+// catalog said nothing", not "thinking is off" — conflating the two would turn
+// a degraded catalog into a silent behaviour change.
 func TestTHK002OnlyDeclaredDefaultsCount(t *testing.T) {
 	entries := []adapter.CatalogEntry{
-		{ID: "static-only", Think: false, ThinkKnown: false, Static: true},
+		{ID: "undeclared", Think: false, ThinkKnown: false},
 		{ID: "declared-on", Think: true, ThinkKnown: true},
 		{ID: "declared-off", Think: false, ThinkKnown: true},
 	}
 	m := thinkingDefaultsOf(entries)
-	if _, ok := m["static-only"]; ok {
-		t.Errorf("a floor entry with no declaration was read as a thinking default")
+	if _, ok := m["undeclared"]; ok {
+		t.Errorf("an entry with no declaration was read as a thinking default")
 	}
 	if v, ok := m["declared-on"]; !ok || !v {
 		t.Errorf("declared-on missing from the snapshot: %v %v", v, ok)
@@ -60,14 +59,14 @@ func TestTHK002OnlyDeclaredDefaultsCount(t *testing.T) {
 		t.Errorf("declared-off missing from the snapshot: %v %v", v, ok)
 	}
 
-	// Merge keeps a declaration when the other side (floor, or an account whose
-	// catalog does not describe the id) has none.
+	// Merge keeps a declaration when the other side (an account whose catalog
+	// does not describe the id) has none.
 	merged := adapter.CatalogEntry{ID: "x"}.Merge(adapter.CatalogEntry{ID: "x", Think: true, ThinkKnown: true})
 	if !merged.ThinkKnown || !merged.Think {
 		t.Errorf("merge dropped the declaration: %+v", merged)
 	}
-	// And the floor alone never invents one.
-	if got := thinkingDefaultsOf([]adapter.CatalogEntry{{ID: "x", Static: true}}); len(got) != 0 {
-		t.Errorf("floor-only entry produced a default: %v", got)
+	// And an undeclared entry alone never invents one.
+	if got := thinkingDefaultsOf([]adapter.CatalogEntry{{ID: "x"}}); len(got) != 0 {
+		t.Errorf("undeclared entry produced a default: %v", got)
 	}
 }

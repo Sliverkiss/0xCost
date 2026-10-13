@@ -201,8 +201,8 @@ func TestLive001ColdStartLogin(t *testing.T) {
 	}
 }
 
-// LIVE-002: the model catalog is served from the static list and contains the
-// configured default plus the ultraspeed model (TDD API-005).
+// LIVE-002: the model catalog is served from the account's own Studio catalog
+// and contains the configured default plus the ultraspeed model (TDD API-005).
 func TestLive002ModelCatalog(t *testing.T) {
 	liveGate(t)
 	h := newLiveHarness(t, func(acct map[string]any) {}, true)

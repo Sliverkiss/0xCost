@@ -1,9 +1,10 @@
 package adapter
 
-// Model catalog (M19 §3). The account's own `bot/config` is the authority for
-// what this deployment can serve and what each id can do; the built-in table is
-// only a floor for when that read fails. Capabilities are deliberately coarse
-// and evidence-backed:
+// Model catalog (M19 §3). The account's own `bot/config` is the authority —
+// the single source of truth — for what this deployment can serve and what each
+// id can do; there is deliberately no static fallback list, because a hardcoded
+// list goes stale the day the upstream retires a model. Capabilities are
+// deliberately coarse and evidence-backed:
 //
 //   - web_search: 0 = no search surface (non-chat page type), 1 = searchable
 //     but off by default, 2 = searchable and on by default. The live payload
@@ -19,19 +20,22 @@ import "sort"
 
 // Page types the Studio reports in modelConfigListNg pageType.
 const (
-	PageChat    = "chat"
-	PageTTS     = "tts"
-	PageTTSVD   = "tts-vd"
-	PageTTSVC   = "tts-vc"
-	PageASR     = "asr"
-	AudioNone   = "none"
-	AudioTTS    = "tts"
-	AudioASR    = "asr"
+	PageChat  = "chat"
+	PageTTS   = "tts"
+	PageTTSVD = "tts-vd"
+	PageTTSVC = "tts-vc"
+	PageASR   = "asr"
+	AudioNone = "none"
+	AudioTTS  = "tts"
+	AudioASR  = "asr"
+	// SourceAccnt is the only catalog source: the account's own Studio
+	// catalog. There is deliberately no static fallback list — a hardcoded
+	// list goes stale the day the upstream retires a model, and the account
+	// catalog is the single source of truth.
 	SourceAccnt = "account"
-	SourceFallo = "static"
 )
 
-// CatalogEntry is one model as reported by an account (or by the static floor).
+// CatalogEntry is one model as reported by an account.
 type CatalogEntry struct {
 	ID    string
 	Name  string
@@ -39,9 +43,9 @@ type CatalogEntry struct {
 	Web   int  // 0|1|2
 	Think bool // default-on
 	// ThinkKnown says whether the account catalog itself declared the thinking
-	// default, as opposed to the value being the zero from the built-in floor
-	// (or from an unreadable catalog). The request path uses the declared default
-	// when a request says nothing about thinking, so "not declared" must not be
+	// default, as opposed to the value being the zero from a row that does not
+	// describe it. The request path uses the declared default when a request
+	// says nothing about thinking, so "not declared" must not be
 	// indistinguishable from "declared off" (ADR 0031).
 	ThinkKnown bool
 	Audio      string
@@ -54,7 +58,6 @@ type CatalogEntry struct {
 	// An entry with a target is therefore NOT advertised, and a request naming it
 	// is resolved before it reaches the upstream.
 	RedirectTo string
-	Static     bool // from the built-in table, not the account catalog
 }
 
 // Deprecated reports whether the upstream has superseded this id.
@@ -152,16 +155,12 @@ func (e CatalogEntry) Merge(o CatalogEntry) CatalogEntry {
 	if out.NToken == "" {
 		out.NToken = o.NToken
 	}
-	// A superseded id stays superseded: the static floor has no opinion about
-	// redirects, so it must never erase the account's. (The reverse — the account
-	// telling us an id is current — arrives as a row without the field, which
-	// this leaves alone too.)
+	// A superseded id stays superseded across merges: two accounts' views of
+	// the same id keep the redirect when either side carries it. (The reverse —
+	// an account telling us an id is current — arrives as a row without the
+	// field, which this leaves alone too.)
 	if out.RedirectTo == "" {
 		out.RedirectTo = o.RedirectTo
-	}
-	// Only drop the static marker when the account itself reported the id.
-	if out.Static && !o.Static {
-		out.Static = false
 	}
 	return out
 }
@@ -205,14 +204,10 @@ func Usable(entries []CatalogEntry) []CatalogEntry {
 	return out
 }
 
-// SortCatalog orders entries for a stable response: the built-in table first
-// (a client's configured default usually lives there), then by id.
+// SortCatalog orders entries for a stable response, by id.
 func SortCatalog(entries []CatalogEntry) []CatalogEntry {
 	out := append([]CatalogEntry(nil), entries...)
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Static != out[j].Static {
-			return out[i].Static
-		}
 		return out[i].ID < out[j].ID
 	})
 	return out

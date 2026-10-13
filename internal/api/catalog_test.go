@@ -3,13 +3,15 @@ package api_test
 // /v1/models against the deployment's own Studio catalog (M19 §3).
 //
 // The endpoint must report what this deployment can actually serve, with
-// per-id capabilities unioned across accounts, and it must never fail because
-// an upstream catalog read failed: the static table is the floor.
+// per-id capabilities unioned across accounts. The account catalog is the
+// single source of truth: there is no static fallback list, so an unreadable
+// catalog yields an empty list, never invented rows.
 
 import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/yg/mimo2api/internal/testserver"
@@ -166,34 +168,65 @@ func TestCAT002UnionAcrossAccounts(t *testing.T) {
 	}
 }
 
-// CAT-003: when every account's catalog read fails the endpoint still answers
-// 200 from the static floor, marked as such — a catalog read must never take
-// the endpoint down.
-func TestCAT003StaticFallback(t *testing.T) {
-	ts := testserver.NewTestServer(t, oneAccount(), nil)
+// CAT-003: when every account's catalog read fails the endpoint answers 200
+// with an EMPTY list and says so in the debug trace — no invented rows. A
+// hardcoded floor would advertise ids the upstream may have retired; the
+// account catalog is the single source of truth, so an unreadable one yields
+// nothing. 200 (not 503) matches how the chat surface degrades: the model id
+// passes through unchecked there, and every OpenAI-compatible client calls
+// this endpoint at startup — an empty list is honest, a 503 would take the
+// client down over a read that may succeed a second later.
+func TestCAT003EmptyCatalogWhenUnreadable(t *testing.T) {
+	var sink strings.Builder
+	ts := testserver.NewTestServer(t, oneAccount(), &testserver.TestServerOptions{Debug: true, LogSink: &sink})
 	ts.Upstream.SetBotConfigError("目录暂不可用")
 
 	status, rows, body := fetchModels(t, ts, "/v1/models")
 	if status != http.StatusOK {
-		t.Fatalf("status = %d body=%s, want 200 from the static floor", status, body)
+		t.Fatalf("status = %d body=%s, want 200 with an empty list", status, body)
 	}
-	if len(rows) == 0 {
-		t.Fatal("no rows served")
+	if len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0 (no account catalog is readable; nothing may be invented)", len(rows))
 	}
 	for _, r := range rows {
-		if r.Source != "static" {
-			t.Errorf("row %s source = %q, want static (the account read failed)", r.ID, r.Source)
-		}
-		if r.Capabilities.WebSearch != 1 {
-			t.Errorf("row %s web_search = %d, want the conservative 1 (searchable, off by default)", r.ID, r.Capabilities.WebSearch)
-		}
-		if r.Capabilities.Audio != "none" || r.PageType != "chat" {
-			t.Errorf("row %s audio/page_type = %q/%q, want none/chat", r.ID, r.Capabilities.Audio, r.PageType)
+		if r.Source == "static" {
+			t.Errorf("row %s source = %q; a static row is impossible now", r.ID, r.Source)
 		}
 	}
-	// The default alias must remain resolvable in this degraded mode.
-	if _, ok := rowByID(rows, "mimo-v2.6-flash"); !ok {
-		t.Errorf("static floor is missing the default model: %+v", rows)
+	if log := sink.String(); !strings.Contains(log, "catalog read failed") && !strings.Contains(log, "no account catalog available") {
+		t.Errorf("debug log = %q, want the failed read recorded", log)
+	}
+}
+
+// CAT-003b: with the catalog unreadable, a chat request passes the model id
+// through unchecked — the upstream is the better judge of its own model names,
+// and a failed catalog read must not turn into invented 404s. The upstream's
+// own answer (here the scripted model-name refusal) is what surfaces.
+func TestCAT003bChatPassesModelThroughWhenCatalogUnreadable(t *testing.T) {
+	ts := testserver.NewTestServer(t, oneAccount(), nil)
+	// The pool has a session, but bot/config fails — the exact degraded mode
+	// where a stale list used to answer with invented 404s.
+	ts.Upstream.SetBotConfigError("目录暂不可用")
+	ts.Upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: sseErrorFrame("模型名称错误")})
+
+	resp, err := ts.Chat(testutil.ChatBody("whatever-model", false, [2]string{"user", "hi"}), "")
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		t.Fatalf("a 404 invented from an unreadable catalog: %s", raw)
+	}
+	// The id the caller asked for is the id the upstream judged.
+	for _, r := range ts.Upstream.Requests() {
+		if r.Model != "whatever-model" {
+			t.Errorf("upstream saw model %q, want the caller's id passed through unchecked", r.Model)
+		}
+	}
+	// And the upstream's own refusal — not a gateway 404 — is the answer.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want the upstream's own refusal (400 model_not_available_on_channel)", resp.StatusCode, raw)
 	}
 }
 
@@ -216,9 +249,10 @@ func TestCAT004CatalogCachedPerAccount(t *testing.T) {
 	}
 }
 
-// CAT-005: the single-model endpoint uses the same source, so an id the static
-// table does not know still resolves; an unknown id keeps the 404 behaviour and
-// lists what is available.
+// CAT-005: the single-model endpoint uses the same source, so an id the
+// account catalog reports resolves; an unknown id keeps the 404 behaviour and
+// lists what is available — the account catalog only, which is all the
+// deployment actually serves.
 func TestCAT005ModelByIDUsesCatalog(t *testing.T) {
 	ts := testserver.NewTestServer(t, oneAccount(), nil)
 	ts.Upstream.SetCatalogOverride(testutil.TestPH, []map[string]any{
@@ -239,7 +273,7 @@ func TestCAT005ModelByIDUsesCatalog(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d body=%s, want 404", status, body)
 	}
-	if !containsEvent(body, "mimo-v2.6-flash") {
-		t.Errorf("404 body = %s, want it to list available ids", body)
+	if !containsEvent(body, "mimo-v2.1-omni") {
+		t.Errorf("404 body = %s, want it to list the account catalog's ids", body)
 	}
 }

@@ -84,7 +84,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// (the audio surface refuses it, chat answers it with the busy frame), and the
 	// client keeps seeing the id it asked for in the response.
 	requested = s.resolveModel(requested)
-	model, fastchat, err := adapter.NormalizeModel(requested, s.defaultModel, nil)
+	model, fastchat, err := s.resolveChatModel(requested)
 	if err != nil {
 		s.MapError(w, err)
 		return
@@ -384,7 +384,10 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 			// superseded-id map and re-resolve before the retry. If the id was
 			// retired between two refreshes, this is where the deployment notices.
 			if m := s.relearnModel(ctx, p.requested); m != p.model {
-				if nm, fc, nerr := adapter.NormalizeModel(m, s.defaultModel, nil); nerr == nil {
+				// Re-validate against the refreshed snapshot: the successor
+				// must still be a served id, and the relearn may also have
+				// warmed the id set a cold start never had.
+				if nm, fc, nerr := s.resolveChatModel(m); nerr == nil {
 					p.model, p.fastchat = nm, fc
 				}
 			}

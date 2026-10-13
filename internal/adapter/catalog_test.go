@@ -61,26 +61,23 @@ func TestCatalogWebSearchLevel(t *testing.T) {
 	}
 }
 
-// CATMAP-003: merging takes capabilities at their maximum and prefers the
-// account's own row over the static floor.
+// CATMAP-003: merging takes capabilities at their maximum — the account's own
+// rows, unioned across accounts.
 func TestCatalogMerge(t *testing.T) {
-	floor := adapter.CatalogEntry{ID: "m", Page: adapter.PageChat, Web: 1, Static: true}
+	base := adapter.CatalogEntry{ID: "m", Page: adapter.PageChat, Web: 1}
 	account := adapter.CatalogEntry{ID: "m", Page: adapter.PageChat, Web: 2, Think: true, Audio: adapter.AudioTTS, Name: "M", NToken: "1M"}
-	got := floor.Merge(account)
+	got := base.Merge(account)
 	if got.Web != 2 || !got.Think || got.Audio != adapter.AudioTTS {
 		t.Errorf("merged = %+v, want the account's higher capabilities", got)
-	}
-	if got.Static {
-		t.Error("merged.Static = true, want false once an account reports the id")
 	}
 	if got.Name != "M" || got.NToken != "1M" {
 		t.Errorf("merged = %+v, want the account's name and context size", got)
 	}
 
-	// Folding in a floor-only entry must not downgrade anything.
-	round := got.Merge(adapter.CatalogEntry{ID: "m", Page: adapter.PageChat, Web: 1, Static: true})
-	if round.Web != 2 || !round.Think || round.Static {
-		t.Errorf("merged with a floor entry = %+v, want no downgrade", round)
+	// Folding in a bare entry must not downgrade anything.
+	round := got.Merge(adapter.CatalogEntry{ID: "m", Page: adapter.PageChat, Web: 1})
+	if round.Web != 2 || !round.Think {
+		t.Errorf("merged with a bare entry = %+v, want no downgrade", round)
 	}
 
 	// A richer audio capability wins over none, and tts over asr.
@@ -120,17 +117,16 @@ func TestMergeCatalog(t *testing.T) {
 	}
 }
 
-// CATMAP-005: sorting puts the static floor first (a client's configured
-// default usually lives there) and is otherwise by id, without reordering the
+// CATMAP-005: sorting is by id for a stable response, without reordering the
 // caller's slice.
 func TestSortCatalog(t *testing.T) {
 	in := []adapter.CatalogEntry{
-		{ID: "z"}, {ID: "b", Static: true}, {ID: "a"}, {ID: "c", Static: true},
+		{ID: "z"}, {ID: "b"}, {ID: "a"}, {ID: "c"},
 	}
 	out := adapter.SortCatalog(in)
 	got := []string{out[0].ID, out[1].ID, out[2].ID, out[3].ID}
-	if strings.Join(got, ",") != "b,c,a,z" {
-		t.Errorf("order = %v, want b,c,a,z (static first, then by id)", got)
+	if strings.Join(got, ",") != "a,b,c,z" {
+		t.Errorf("order = %v, want a,b,c,z (by id)", got)
 	}
 	if in[0].ID != "z" {
 		t.Error("SortCatalog mutated its input")

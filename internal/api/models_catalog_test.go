@@ -2,9 +2,9 @@ package api_test
 
 // The model catalog endpoint serves what THIS deployment can actually talk to.
 // The account's own Studio catalog is the authority (bot/config
-// modelConfigListNg), with the static list kept as the floor: a catalog the
-// upstream fails to answer must not take /v1/models down, because every
-// OpenAI-compatible client calls it on startup.
+// modelConfigListNg) — the single source of truth, with no static fallback
+// list: a catalog the upstream fails to answer yields an empty list, not
+// invented rows for ids that may be retired.
 
 import (
 	"encoding/json"
@@ -37,8 +37,7 @@ func modelsIDs(t *testing.T, ts *testserver.TestServer) []string {
 }
 
 // MODELS-LIVE-001: the account catalog is listed in full — audio rows included,
-// since they are valid models for /v1/audio/* and carry their own capabilities —
-// and the static floor is never dropped.
+// since they are valid models for /v1/audio/* and carry their own capabilities.
 func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 	ts := audioServer(t, oneAccount(), nil)
 	ids := strings.Join(modelsIDs(t, ts), ",")
@@ -55,37 +54,32 @@ func TestModelsIncludesLiveChatCatalog(t *testing.T) {
 			t.Errorf("catalog %s is missing the audio row %q", ids, wantAudio)
 		}
 	}
-	if !strings.Contains(ids, "mimo-v2.6-pro") {
-		t.Errorf("static floor missing from %s", ids)
-	}
 }
 
-// MODELS-LIVE-002: when the upstream catalog read fails the endpoint still
-// answers 200 with the static list, and says so in the debug trace.
-func TestModelsFallsBackWhenCatalogUnavailable(t *testing.T) {
+// MODELS-LIVE-002: when the upstream catalog read fails the endpoint answers
+// 200 with an EMPTY list and records the failure in the debug trace. Nothing
+// may be invented: a hardcoded floor would advertise ids the upstream may have
+// retired (that is exactly the bug that started this rewrite).
+func TestModelsEmptyWhenCatalogUnavailable(t *testing.T) {
 	var sink strings.Builder
 	ts := audioServer(t, oneAccount(), &testserver.TestServerOptions{Debug: true, LogSink: &sink})
 	ts.Upstream.SetBotConfigError("系统异常，请稍后重试")
 
 	ids := modelsIDs(t, ts)
-	if len(ids) == 0 {
-		t.Fatal("no models listed when the catalog read failed")
-	}
-	if !strings.Contains(strings.Join(ids, ","), "mimo-v2.6-pro") {
-		t.Errorf("static fallback missing: %v", ids)
+	if len(ids) != 0 {
+		t.Fatalf("models listed %v when the catalog read failed, want none — no invented rows", ids)
 	}
 	log := sink.String()
-	if !strings.Contains(log, "catalog read failed") || !strings.Contains(log, "serving the static floor") {
-		t.Errorf("debug log = %q, want the failed read and the fallback recorded", log)
+	if !strings.Contains(log, "catalog read failed") && !strings.Contains(log, "no account catalog available") {
+		t.Errorf("debug log = %q, want the failed read recorded", log)
 	}
 }
 
 // MODELS-LIVE-003: a chat row that is absent from modelConfigListNg is still an
 // account model — the id comes from the row and its capability defaults come
-// from the same row, not from the static floor. Live shape (2026-10-09): only
-// ultraspeed is like this, and the floor's values (no thinking, web search
-// merely enabled) contradict the account's own row (thinking on by default,
-// web search "auto").
+// from the same row. Live shape (2026-10-09): only ultraspeed is like this, and
+// its row's own values (thinking on by default, web search "auto") must be
+// reported, not defaults of ours.
 func TestModelsKeepsChatRowMissingFromNgList(t *testing.T) {
 	ts := audioServer(t, oneAccount(), nil)
 	_, body := getPath(t, ts, "/v1/models")

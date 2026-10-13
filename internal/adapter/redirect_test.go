@@ -61,13 +61,12 @@ func TestUsableDropsSupersededIDs(t *testing.T) {
 	}
 }
 
-// A superseded account row stays superseded even when the static floor also
-// carries the id: the floor has no opinion about redirects, and losing the field
-// would put the id back on the menu.
+// A superseded row stays superseded when another account's row for the same id
+// carries no redirect field: losing the field would put the id back on the menu.
 func TestMergeKeepsRedirect(t *testing.T) {
-	account := CatalogEntry{ID: "mimo-v2-flash", Page: PageChat, RedirectTo: "mimo-v2.6-flash"}
-	static := CatalogEntry{ID: "mimo-v2-flash", Page: PageChat, Static: true}
-	merged := MergeCatalog([]CatalogEntry{static, account})
+	superseded := CatalogEntry{ID: "mimo-v2-flash", Page: PageChat, RedirectTo: "mimo-v2.6-flash"}
+	plain := CatalogEntry{ID: "mimo-v2-flash", Page: PageChat}
+	merged := MergeCatalog([]CatalogEntry{plain, superseded})
 	if len(merged) != 1 {
 		t.Fatalf("merge produced %d rows", len(merged))
 	}

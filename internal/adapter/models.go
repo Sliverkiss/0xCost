@@ -6,20 +6,6 @@ import (
 	"strings"
 )
 
-// Static model catalog as of the references (SDD §2.6). The ultraspeed model
-// routes through the fastchat channel (SDD §2.4).
-var DefaultModels = []string{
-	"mimo-v2.6-pro-ultraspeed-studio",
-	"mimo-v2.6-pro",
-	"mimo-v2.6-flash",
-	"mimo-v2.5-pro",
-	"mimo-v2.5",
-	"mimo-v2.1-pro",
-	"mimo-v2.1-pro-preview",
-	"mimo-v2-pro",
-	"mimo-v2-flash",
-}
-
 // IsFastchatModel reports whether a model id must use the fastchat channel
 // (routing rule: id matches /ultraspeed/i, SDD §2.4).
 func IsFastchatModel(model string) bool {
@@ -43,11 +29,13 @@ func (e *ErrModelNotFound) Error() string {
 //     multimodal.go:50-85)
 //   - anything else       → *ErrModelNotFound listing available ids
 //
+// The catalog is the caller's own: pass the account catalog's ids (the live
+// snapshot), never a hardcode — there is deliberately no fallback list, because
+// a list that no longer matches the upstream answers 404s for models it still
+// serves and passes stale ids it no longer does.
+//
 // The returned bool reports fastchat routing (SDD §5.2).
 func NormalizeModel(requested, defaultModel string, catalog []string) (model string, fastchat bool, err error) {
-	if catalog == nil {
-		catalog = DefaultModels
-	}
 	if len(catalog) == 0 {
 		return "", false, &ErrModelNotFound{Requested: requested, Available: nil}
 	}

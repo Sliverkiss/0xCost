@@ -119,14 +119,18 @@ func TestPlanDeltaEdgeBranches(t *testing.T) {
 
 // truncateUTF8 must pass short strings through untouched and never split a
 
-// NormalizeModel: nil catalog falls back to DefaultModels, an empty catalog is
-// an error, a default not in the catalog falls back to the first entry, and
-// the -studio alias resolves.
+// NormalizeModel: a nil/empty catalog is an error (there is deliberately no
+// built-in fallback list), a default not in the catalog falls back to the first
+// entry, and the -studio alias resolves.
 func TestNormalizeModelCatalogBranches(t *testing.T) {
-	t.Run("nil catalog uses defaults", func(t *testing.T) {
-		m, fc, err := NormalizeModel("mimo-v2.6-flash", "mimo-v2.6-pro", nil)
-		if err != nil || m != "mimo-v2.6-flash" || fc {
-			t.Errorf("got (%q,%v,%v)", m, fc, err)
+	t.Run("nil catalog errors (no fallback list)", func(t *testing.T) {
+		_, _, err := NormalizeModel("mimo-v2.6-flash", "mimo-v2.6-pro", nil)
+		if err == nil {
+			t.Fatal("nil catalog must not resolve: the account catalog is the single source of truth")
+		}
+		var nf *ErrModelNotFound
+		if !errors.As(err, &nf) {
+			t.Errorf("err = %T (%v), want *ErrModelNotFound", err, err)
 		}
 	})
 	t.Run("empty catalog errors", func(t *testing.T) {
@@ -146,7 +150,7 @@ func TestNormalizeModelCatalogBranches(t *testing.T) {
 		}
 	})
 	t.Run("auto is case/space insensitive", func(t *testing.T) {
-		m, _, err := NormalizeModel("  AUTO  ", "mimo-v2.6-pro", DefaultModels)
+		m, _, err := NormalizeModel("  AUTO  ", "mimo-v2.6-pro", []string{"mimo-v2.6-pro", "mimo-v2.6-flash"})
 		if err != nil || m != "mimo-v2.6-pro" {
 			t.Errorf("got (%q,%v)", m, err)
 		}
@@ -158,7 +162,7 @@ func TestNormalizeModelCatalogBranches(t *testing.T) {
 		}
 	})
 	t.Run("whitespace around requested id trimmed", func(t *testing.T) {
-		m, _, err := NormalizeModel("  mimo-v2.6-pro  ", "x", DefaultModels)
+		m, _, err := NormalizeModel("  mimo-v2.6-pro  ", "x", []string{"mimo-v2.6-pro", "mimo-v2.6-flash"})
 		if err != nil || m != "mimo-v2.6-pro" {
 			t.Errorf("got (%q,%v)", m, err)
 		}

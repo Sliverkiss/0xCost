@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +78,12 @@ type Server struct {
 		mu sync.Mutex
 		at time.Time
 		m  map[string]string
+		// ids is the set of model ids the account catalogs currently serve —
+		// the single source of truth for chat's model gate. Read from this
+		// snapshot, never fetched: a chat request that read a catalog could
+		// trigger a login (and a second OTP challenge), which is exactly what
+		// the request path must never do (ADR 0011).
+		ids map[string]bool
 		// thinks caches each id's declared thinking default (`thinkingDefaultOn`)
 		// from the same snapshot: a request that says nothing about thinking must
 		// be able to follow the model's own setting without the request path
@@ -85,12 +92,13 @@ type Server struct {
 	}
 }
 
-// modelRedirects returns the cached superseded-id map. It is memory-only and
-// does NOT read the account catalog: the request paths call it, and making a chat
-// request fetch a catalog would let it trigger a login — which is exactly what an
-// existing regression case caught (a chat call produced a second OTP challenge).
-// The map is warmed by RefreshModelRedirects at startup, by the janitor, and as a
-// side effect of reading the model list; a cold map (or one account whose catalog
+// modelRedirects returns the cached superseded-id map. The whole snapshot —
+// this map, the served-id set, and the thinking defaults — is memory-only and
+// is never populated from the request paths: a chat request that fetched a
+// catalog could trigger a login, which is exactly what an existing regression
+// case caught (a chat call produced a second OTP challenge). The snapshot is
+// warmed by RefreshModelRedirects at startup, by the janitor, and as a side
+// effect of reading the model list; a cold map (or one account whose catalog
 // is unreadable) simply leaves the requested id alone.
 func (s *Server) modelRedirects() map[string]string {
 	s.redirects.mu.Lock()
@@ -98,10 +106,20 @@ func (s *Server) modelRedirects() map[string]string {
 	return s.redirects.m
 }
 
+// catalogIDs returns the cached set of model ids the account catalogs serve —
+// the id set chat's model gate validates against. Same contract as
+// modelRedirects: snapshot only, never a fetch.
+func (s *Server) catalogIDs() map[string]bool {
+	s.redirects.mu.Lock()
+	defer s.redirects.mu.Unlock()
+	return s.redirects.ids
+}
+
 // RefreshModelRedirects rebuilds the cached catalog *hints* from the account
-// catalogs — the superseded-id map and each id's declared thinking default — at
-// most once per catalog TTL. It is the exported warm-up main.go calls at startup
-// and on its janitor tick, so the request paths never pay for a catalog read.
+// catalogs — the superseded-id map, the served-id set, and each id's declared
+// thinking default — at most once per catalog TTL. It is the exported warm-up
+// main.go calls at startup and on its janitor tick, so the request paths never
+// pay for a catalog read.
 func (s *Server) RefreshModelRedirects(ctx context.Context) {
 	s.redirects.mu.Lock()
 	if s.redirects.m != nil && time.Since(s.redirects.at) < s.catalogWindow() {
@@ -112,9 +130,11 @@ func (s *Server) RefreshModelRedirects(ctx context.Context) {
 
 	entries := s.catalogEntries(ctx)
 	m := s.redirectMapOf(entries)
+	ids := servedIDsOf(entries)
 	thinks := thinkingDefaultsOf(entries)
 	s.redirects.mu.Lock()
 	s.redirects.m = m
+	s.redirects.ids = ids
 	s.redirects.thinks = thinks
 	s.redirects.at = time.Now()
 	s.redirects.mu.Unlock()
@@ -247,9 +267,11 @@ type Options struct {
 // New builds a Server. All collaborators must be wired (real or test
 // doubles).
 func New(opts Options) *Server {
-	if opts.DefaultModel == "" {
-		opts.DefaultModel = adapter.DefaultModels[0]
-	}
+	// DefaultModel: no hardcoded value. An empty default is resolved against
+	// the live catalog at request time (NormalizeModel falls back to the
+	// catalog's first entry), and a configured default comes from config
+	// (MIMO2API_DEFAULT_MODEL). The account catalog is the source of truth —
+	// never a built-in list.
 	if opts.ReplayCap <= 0 {
 		opts.ReplayCap = 20
 	}
@@ -443,9 +465,10 @@ type modelJSON struct {
 	// ContextSize is the upstream's own context label ("1M") when it states
 	// one; absent when it does not, rather than guessed.
 	ContextSize string `json:"context_size,omitempty"`
-	// Source says where the row came from: "account" (the deployment's own
-	// Studio catalog) or "static" (the built-in fallback table, used only
-	// when the account read failed). Account wins on conflict.
+	// Source says where the row came from. There is only one source now — the
+	// account's own Studio catalog — but the field stays in the wire shape so
+	// existing clients keep parsing. A "static" row cannot exist: the built-in
+	// fallback table is gone.
 	Source string `json:"source"`
 	// RedirectTo is set only when a client asked for a superseded id: it names
 	// the model the upstream serves instead (the list itself never advertises a
@@ -463,9 +486,13 @@ type modelCapabilities struct {
 
 // handleModels lists the catalog in OpenAI list shape (TDD API-005).
 //
-// The rows come from the account's own Studio catalog (bot/config), unioned
-// across accounts, with the static table as a floor and fallback: an upstream
-// hiccup must never take the endpoint down (M19 §3).
+// The rows come from the accounts' own Studio catalogs (bot/config), unioned
+// across accounts. There is no static fallback list: when no account catalog is
+// readable the endpoint answers 200 with an empty list and says so in the debug
+// trace — honest ("this deployment currently knows of no models") rather than
+// invented rows for retired ids. Chat stays consistent with this: its model
+// gate reads the same account catalog and passes ids through when the catalog
+// is unreadable (the upstream is the better judge of its own names).
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.modelsList(r.Context()))
@@ -473,7 +500,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) modelsList(ctx context.Context) map[string]any {
 	all := s.catalogEntries(ctx)
-	s.storeRedirects(s.redirectMapOf(all))
+	// Reading the model list is one of the two sanctioned catalog readers (the
+	// other is RefreshModelRedirects), so it refreshes the whole snapshot —
+	// superseded-id map, served-id set, thinking defaults — as a side effect.
+	s.storeSnapshot(s.redirectMapOf(all), servedIDsOf(all), thinkingDefaultsOf(all))
 	entries := adapter.Usable(all)
 	data := make([]modelJSON, 0, len(entries))
 	for _, e := range entries {
@@ -485,10 +515,6 @@ func (s *Server) modelsList(ctx context.Context) map[string]any {
 // modelEntryDTO renders one catalog entry, so the list and the single-model
 // endpoint cannot drift apart (M19 §3).
 func modelEntryDTO(e adapter.CatalogEntry) modelJSON {
-	source := adapter.SourceAccnt
-	if e.Static {
-		source = adapter.SourceFallo
-	}
 	return modelJSON{
 		ID:      e.ID,
 		Object:  "model",
@@ -503,22 +529,18 @@ func modelEntryDTO(e adapter.CatalogEntry) modelJSON {
 		PageType:    e.Page,
 		Tasks:       adapter.Tasks(e.Page),
 		ContextSize: e.NToken,
-		Source:      source,
+		Source:      adapter.SourceAccnt,
 	}
 }
 
-// catalogEntries builds the deployment-wide catalog: the static floor merged
-// with every account's own view, capabilities taken at their maximum per id
-// (M19 §3).
+// catalogEntries builds the deployment-wide catalog from the accounts' own
+// views, capabilities taken at their maximum per id (M19 §3). There is no
+// static floor on purpose: a hardcoded list goes stale the day the upstream
+// retires a model, so when no account catalog is readable the catalog is
+// empty — the account catalog is the single source of truth, and an
+// unreadable one yields nothing rather than invented rows.
 func (s *Server) catalogEntries(ctx context.Context) []adapter.CatalogEntry {
-	entries := make([]adapter.CatalogEntry, 0, len(adapter.DefaultModels)+24)
-	for _, m := range adapter.DefaultModels {
-		// Fallback values: a chat model that is searchable but not on by
-		// default. The account catalog overrides these when it is readable.
-		entries = append(entries, adapter.CatalogEntry{
-			ID: m, Page: adapter.PageChat, Web: 1, Audio: adapter.AudioNone, Static: true,
-		})
-	}
+	entries := make([]adapter.CatalogEntry, 0, 24)
 
 	ids := s.pool.IDs()
 	cfgByID := s.accountCatalogs(ctx, ids)
@@ -528,7 +550,7 @@ func (s *Server) catalogEntries(ctx context.Context) []adapter.CatalogEntry {
 		}
 	}
 	if len(cfgByID) == 0 {
-		s.debugf("models: no account catalog available (%d accounts); serving the static floor", len(ids))
+		s.debugf("models: no account catalog available (%d accounts); serving an empty list", len(ids))
 	}
 	return adapter.SortCatalog(adapter.MergeCatalog(entries))
 }
@@ -577,11 +599,9 @@ func (s *Server) accountCatalogs(ctx context.Context, ids []string) map[string]*
 //
 // The id source is both lists, not just modelConfigListNg: the live payload
 // (2026-10-09) carries a chat row for mimo-v2.6-pro-ultraspeed-studio without a
-// matching Ng row, so an Ng-only walk loses the model and the response falls
-// back to the static floor for it — reporting the floor's capabilities
-// (no thinking, search merely enabled) over the account's own (thinking on,
-// search "auto"). A chat row is by definition a chat model, which supplies the
-// page type the row itself does not carry.
+// matching Ng row, so an Ng-only walk loses the model entirely. A chat row is
+// by definition a chat model, which supplies the page type the row itself does
+// not carry.
 func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 	rows := make(map[string]mimo.ChatModel, len(cfg.ChatModels))
 	for _, r := range cfg.ChatModels {
@@ -655,10 +675,10 @@ func accountCatalogEntries(cfg *mimo.BotConfig) []adapter.CatalogEntry {
 func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	entries := s.catalogEntries(r.Context())
-	s.storeRedirects(s.redirectMapOf(entries))
+	s.storeSnapshot(s.redirectMapOf(entries), servedIDsOf(entries), thinkingDefaultsOf(entries))
 	for _, e := range entries {
-		// Same source as the list: a model the account reports is known even
-		// when the static table has never heard of it (M19 §3).
+		// Same source as the list: a model the account reports is known
+		// (M19 §3).
 		if e.ID == id {
 			dto := modelEntryDTO(e)
 			if e.RedirectTo != "" {
@@ -676,7 +696,7 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	model, _, err := adapter.NormalizeModel(id, s.defaultModel, nil)
+	model, _, err := adapter.NormalizeModel(id, s.defaultModel, modelIDs(entries))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -692,18 +712,70 @@ func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(modelJSON{ID: model, Object: "model", Created: 1700000000, OwnedBy: "xiaomi"})
 }
 
-// storeRedirects caches the superseded-id map.
-func (s *Server) storeRedirects(m map[string]string) {
-	s.redirects.mu.Lock()
-	defer s.redirects.mu.Unlock()
-	s.redirects.m, s.redirects.at = m, time.Now()
+// resolveChatModel is the only model gate on the chat surface: the account
+// catalog is the single source of truth. There is no static fallback list.
+//
+//   - Snapshot warmed (main.go calls RefreshModelRedirects before serving, and
+//     the janitor keeps it current): the id must be in it (redirects already
+//     resolved). Anything else is 404 listing what the deployment actually
+//     serves.
+//   - Snapshot cold — no account catalog readable, or a fresh start whose
+//     warm-up read failed: the id passes through unchecked. The upstream is a
+//     better judge of its own model names than any list we hold, and a failed
+//     catalog read must not turn into invented 404s.
+//
+// It reads the cached snapshot only, never a catalog: fetching here would put
+// a login (and its OTP challenge) on the chat request path (ADR 0011).
+func (s *Server) resolveChatModel(requested string) (string, bool, error) {
+	ids := s.catalogIDs()
+	if len(ids) == 0 {
+		// An empty pool cannot serve any model; report that instead of a
+		// misleading "model not found".
+		if len(s.pool.IDs()) == 0 {
+			return "", false, pool.ErrNoAccounts
+		}
+		s.debugf("models: account catalog unavailable; passing %q through unchecked", requested)
+		return requested, adapter.IsFastchatModel(requested), nil
+	}
+	return adapter.NormalizeModel(requested, s.defaultModel, idsSlice(ids))
 }
 
-// redirectMapOf builds the superseded-id map from an entry slice.
-// thinkingDefaultsOf maps the ids the account catalog itself described onto their
-// declared thinking default. An entry that only came from the built-in floor is
-// left out: the floor has no opinion, and its zero must not be read as a
-// declaration that thinking is off (ADR 0031).
+// servedIDsOf builds the served-id set from an entry slice: every id the
+// account catalogs carry that the upstream has not superseded. A superseded id
+// is not served (the upstream refuses it), so it must not validate.
+func servedIDsOf(entries []adapter.CatalogEntry) map[string]bool {
+	m := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if !e.Deprecated() {
+			m[e.ID] = true
+		}
+	}
+	return m
+}
+
+// idsSlice lists a set's ids in sorted order, for NormalizeModel and the error
+// message it builds.
+func idsSlice(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// storeSnapshot caches the superseded-id map, the served-id set, and the
+// thinking defaults from one catalog read.
+func (s *Server) storeSnapshot(m map[string]string, ids map[string]bool, thinks map[string]bool) {
+	s.redirects.mu.Lock()
+	defer s.redirects.mu.Unlock()
+	s.redirects.m, s.redirects.ids, s.redirects.thinks = m, ids, thinks
+	s.redirects.at = time.Now()
+}
+
+// thinkingDefaultsOf maps the ids the account catalog itself described onto
+// their declared thinking default. An entry with no declaration is left out:
+// its zero must not be read as a declaration that thinking is off (ADR 0031).
 func thinkingDefaultsOf(entries []adapter.CatalogEntry) map[string]bool {
 	m := map[string]bool{}
 	for _, e := range entries {
@@ -732,6 +804,7 @@ func (s *Server) thinkingDefaultFor(model string) bool {
 	return true
 }
 
+// redirectMapOf builds the superseded-id map from an entry slice.
 func (s *Server) redirectMapOf(entries []adapter.CatalogEntry) map[string]string {
 	m := map[string]string{}
 	for _, e := range entries {

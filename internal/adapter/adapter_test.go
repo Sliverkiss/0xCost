@@ -355,8 +355,15 @@ func TestNormalizeModel(t *testing.T) {
 		{in: "", def: "mimo-v2.6-pro", want: "mimo-v2.6-pro"},
 		{in: "foo", def: "mimo-v2.6-pro", wantErr: true},
 	}
+	// The catalog the account serves (a slice like the live snapshot hands
+	// the gate); there is deliberately no built-in fallback list anymore.
+	catalog := []string{
+		"mimo-v2.6-pro-ultraspeed-studio",
+		"mimo-v2.6-pro",
+		"mimo-v2.6-flash",
+	}
 	for _, tc := range cases {
-		got, fc, err := NormalizeModel(tc.in, tc.def, DefaultModels)
+		got, fc, err := NormalizeModel(tc.in, tc.def, catalog)
 		if tc.wantErr {
 			if err == nil {
 				t.Errorf("%q: expected error", tc.in)

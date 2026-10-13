@@ -419,7 +419,7 @@ func mockBotConfig() map[string]any {
 			{"name": "MiMo-V2.6-Pro", "model": "mimo-v2.6-pro", "temperature": 0.8, "topP": 0.95},
 			// Live shape (2026-10-09): ultraspeed carries a chat row but is NOT
 			// in modelConfigListNg, so an id source that reads the Ng list alone
-			// loses it and falls back to the static floor for its capabilities.
+			// loses it entirely.
 			{
 				"name": "MiMo-V2.6-Pro UltraSpeed", "model": "mimo-v2.6-pro-ultraspeed-studio",
 				"temperature": 0.8, "topP": 0.95, "thinkingDefaultOn": true,
