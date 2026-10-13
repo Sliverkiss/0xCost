@@ -13,7 +13,7 @@ func testEnv(t *testing.T, kv map[string]string) {
 	vars := []string{
 		"MIMO2API_HOST", "MIMO2API_PORT", "MIMO2API_API_KEYS", "MIMO2API_UPSTREAM_BASE",
 		"MIMO2API_ACCOUNTS_FILE", "MIMO2API_DEFAULT_MODEL", "MIMO2API_REQUEST_TIMEOUT_MS", "MIMO2API_LEASE_TTL_S", "MIMO2API_SLOT_HOLD",
-		"MIMO2API_SSE_IDLE_TIMEOUT_S", "MIMO2API_SESSION_REFRESH_HOURS",
+		"MIMO2API_SSE_IDLE_TIMEOUT_S", "MIMO2API_RENEW_INTERVAL",
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", "MIMO2API_QUEUE_WAIT_S",
 		"MIMO2API_X_TIMEZONE", "MIMO2API_USER_AGENT",
 		"MIMO2API_LOG_LEVEL", "MIMO2API_REPLAY_CAP", "MIMO2API_PROBE_INTERVAL_S",
@@ -82,11 +82,10 @@ func TestDefaults(t *testing.T) {
 	if c.SSEIdleTimeout() != 180*time.Second {
 		t.Errorf("sse idle = %v", c.SSEIdleTimeout())
 	}
-	// 12 h since ADR 0014: the keepalive re-mints the session cookie and never
-	// the credential, so its cadence is about keeping the cookie warm, not about
-	// the passToken's 30-day life (which only a password login resets).
-	if c.SessionRefresh() != 12*time.Hour {
-		t.Errorf("session refresh = %v, want 12h", c.SessionRefresh())
+	// 1 h default (owner ruling 2026-10-14): the renew job owns session
+	// freshness — hourly, on its own timer, never on a request path.
+	if c.RenewInterval() != time.Hour {
+		t.Errorf("renew interval = %v, want 1h", c.RenewInterval())
 	}
 	if c.MaxQueryChars() != 0 {
 		t.Errorf("max query chars = %d, want 0 (per-channel defaults)", c.MaxQueryChars())
@@ -128,7 +127,7 @@ func TestEnvOverrides(t *testing.T) {
 		"MIMO2API_LEASE_TTL_S":              "2",
 		"MIMO2API_SLOT_HOLD":                "first-byte",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S":       "42",
-		"MIMO2API_SESSION_REFRESH_HOURS":    "2",
+		"MIMO2API_RENEW_INTERVAL":           "90",
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT": "5",
 		"MIMO2API_QUEUE_WAIT_S":             "7",
 		"MIMO2API_X_TIMEZONE":               "UTC",
@@ -154,7 +153,7 @@ func TestEnvOverrides(t *testing.T) {
 		{"model", c.DefaultModel(), "mimo-v2.5-pro"},
 		{"reqTimeout", c.RequestTimeout(), 12345 * time.Millisecond},
 		{"sseIdle", c.SSEIdleTimeout(), 42 * time.Second},
-		{"refresh", c.SessionRefresh(), 2 * time.Hour},
+		{"refresh", c.RenewInterval(), 90 * time.Minute},
 		{"inflight", c.MaxInflight(), 5},
 		{"queueWait", c.QueueWait(), 7 * time.Second},
 		{"tz", c.Timezone(), "UTC"},
@@ -208,7 +207,7 @@ func TestInvalidValues(t *testing.T) {
 	for name, val := range map[string]string{
 		"MIMO2API_PORT":                     "not-a-port",
 		"MIMO2API_SSE_IDLE_TIMEOUT_S":       "x",
-		"MIMO2API_SESSION_REFRESH_HOURS":    "z",
+		"MIMO2API_RENEW_INTERVAL":           "z",
 		"MIMO2API_MAX_INFLIGHT_PER_ACCOUNT": "w",
 		"MIMO2API_QUEUE_WAIT_S":             "v",
 		"MIMO2API_REQUEST_TIMEOUT_MS":       "t",

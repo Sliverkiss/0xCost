@@ -242,24 +242,31 @@ func run() error {
 	srv.RefreshModelRedirects(warmCtx)
 	cancelWarm()
 
-	// Background janitors (SDD §3): the STS keepalive sweep (§2.3) and the model
-	// catalog refresher. The probe sweeper is gone with cooldown (owner ruling
-	// 2026-10): disabled accounts come back only via operator action.
+	// Background janitors (SDD §3): the model catalog refresher, the slot
+	// reaper, and the hourly session-renew job. The probe sweeper is gone with
+	// cooldown (owner ruling 2026-10), and session freshness moved off the
+	// request paths onto the renew job (owner ruling 2026-10: "定时巡检比被
+	// 调用接口造成问题要稳定") — the job runs one round immediately so the
+	// deployment starts on fresh sessions, then once per interval.
 	ctx, stopJanitors := context.WithCancel(context.Background())
 	janitorDone := make(chan struct{})
 	go func() {
 		defer close(janitorDone)
 		probeTick := time.NewTicker(cfg.ProbeInterval())
 		defer probeTick.Stop()
-		refreshTick := time.NewTicker(cfg.SessionRefresh())
-		defer refreshTick.Stop()
 		// Slot reaper (ADR 0019): cheap, and it is the only thing standing
 		// between a wedged handler and a permanently smaller pool.
 		slotTick := time.NewTicker(5 * time.Second)
 		defer slotTick.Stop()
+		renewDone := make(chan struct{})
+		go func() {
+			defer close(renewDone)
+			srv.RunRenewJob(ctx, cfg.RenewInterval())
+		}()
 		for {
 			select {
 			case <-ctx.Done():
+				<-renewDone
 				return
 			case <-probeTick.C:
 				// Keep the superseded-id map current: an upstream that retires a
@@ -268,8 +275,6 @@ func run() error {
 				srv.RefreshModelRedirects(ctx)
 			case <-slotTick.C:
 				p.ReapExpiredSlots()
-			case <-refreshTick.C:
-				stsSweep(ctx, store, client, srv)
 			}
 		}
 	}()
@@ -305,36 +310,6 @@ func run() error {
 	stopJanitors()
 	<-janitorDone
 	return serveErr
-}
-
-// stsSweep renews cached sessions so pool accounts never ride a stale
-// serviceToken into a request (SDD §2.3 timer sweep, session.js:203-230
-// analogue).
-func stsSweep(ctx context.Context, store *accounts.Store, client *mimo.Client, srv *api.Server) {
-	for _, acct := range store.Accounts() {
-		if !acct.Enabled || acct.UserID == "" || acct.PassToken == "" {
-			continue
-		}
-		if acct.Session == nil {
-			continue
-		}
-		sess, err := client.For(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
-		if err != nil {
-			log.Printf("accounts: STS keepalive for %s: %v", acct.ID, err)
-			// A revoked credential does not heal itself and the next sweep is 12
-			// hours away: hand it to the asynchronous password re-login now
-			// (ADR 0014). Transient failures stay on the sweep cadence.
-			if srv != nil && api.IsDeadCredential(err) {
-				srv.RecoverCredentialAsync(acct.ID, "12-hour keepalive renewal reported a dead credential")
-			}
-			continue
-		}
-		acct.Device = mimo.MergeDevice(acct.Device, sess.Device)
-		acct.Session = &accounts.Session{Cookie: sess.Cookie, PH: sess.PH, FetchedAt: time.Now().Unix()}
-		if err := store.Update(acct); err != nil {
-			log.Printf("accounts: persist STS keepalive for %s: %v", acct.ID, err)
-		}
-	}
 }
 
 // runHealthcheck does GET /healthz against the configured addr and returns

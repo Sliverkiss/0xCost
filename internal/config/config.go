@@ -83,10 +83,12 @@ const (
 	// default: first-byte raises per-account concurrency while a model is
 	// generating, which is the account-safety question, not a code question.
 	DefaultSlotHold = SlotHoldLastByte
-	// DefaultSessionRefresh is the STS keepalive cadence (ADR 0014): 12 hours,
-	// because a renewal re-mints the session cookie and never the credential —
-	// the passToken's own 30-day clock is what a password login resets.
-	DefaultSessionRefresh = 12 * time.Hour
+	// DefaultRenewInterval is the session-renew job's cadence (owner ruling
+	// 2026-10: hourly scheduled renewal instead of request-path renewal): the
+	// job renews every enabled account's session and — when a credential is
+	// dead — runs one password login, so the passToken's own 30-day clock
+	// never comes close to expiring between rounds.
+	DefaultRenewInterval = time.Hour
 	DefaultMaxInflight    = 2
 	DefaultQueueWait      = 15 * time.Second
 
@@ -147,7 +149,7 @@ type Config struct {
 	leaseTTL             time.Duration
 	slotHold             string
 	sseIdleTimeout       time.Duration
-	sessionRefresh       time.Duration
+	renewInterval        time.Duration
 	maxInflight          int
 	queueWait            time.Duration
 	audioPoll            time.Duration
@@ -197,7 +199,7 @@ func Load() (*Config, error) {
 		leaseTTL:             DefaultLeaseTTL,
 		slotHold:             DefaultSlotHold,
 		sseIdleTimeout:       DefaultSSEIdleTimeout,
-		sessionRefresh:       DefaultSessionRefresh,
+		renewInterval:        DefaultRenewInterval,
 		maxInflight:          DefaultMaxInflight,
 		queueWait:            DefaultQueueWait,
 		audioPoll:            DefaultAudioPoll,
@@ -249,7 +251,7 @@ func Load() (*Config, error) {
 	if c.sseIdleTimeout, err = getenvSeconds("MIMO2API_SSE_IDLE_TIMEOUT_S", DefaultSSEIdleTimeout); err != nil {
 		return nil, err
 	}
-	if c.sessionRefresh, err = getenvHours("MIMO2API_SESSION_REFRESH_HOURS", DefaultSessionRefresh); err != nil {
+	if c.renewInterval, err = getenvMinutes("MIMO2API_RENEW_INTERVAL", DefaultRenewInterval); err != nil {
 		return nil, err
 	}
 	if c.maxInflight, err = getenvInt("MIMO2API_MAX_INFLIGHT_PER_ACCOUNT", DefaultMaxInflight); err != nil {
@@ -364,7 +366,9 @@ func (c *Config) UpstreamTimeout() time.Duration {
 	return 0
 }
 func (c *Config) SSEIdleTimeout() time.Duration { return c.sseIdleTimeout }
-func (c *Config) SessionRefresh() time.Duration { return c.sessionRefresh }
+// RenewInterval is the session-renew job's cadence (owner ruling 2026-10:
+// hourly scheduled renewal; MIMO2API_RENEW_INTERVAL, minutes).
+func (c *Config) RenewInterval() time.Duration { return c.renewInterval }
 func (c *Config) MaxInflight() int              { return c.maxInflight }
 func (c *Config) QueueWait() time.Duration      { return c.queueWait }
 func (c *Config) AudioPoll() time.Duration      { return c.audioPoll }
@@ -512,4 +516,11 @@ func getenvSeconds(name string, def time.Duration) (time.Duration, error) {
 func getenvHours(name string, def time.Duration) (time.Duration, error) {
 	n, err := getenvInt(name, int(def/time.Hour))
 	return time.Duration(n) * time.Hour, err
+}
+
+// getenvMinutes parses a whole-number of minutes; used for the renew-job
+// interval so "60" reads as 60 minutes, the unit the ruling names.
+func getenvMinutes(name string, def time.Duration) (time.Duration, error) {
+	n, err := getenvInt(name, int(def/time.Minute))
+	return time.Duration(n) * time.Minute, err
 }

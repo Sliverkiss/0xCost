@@ -26,13 +26,17 @@ type Server struct {
 	pool  *pool.Pool
 	store *accounts.Store
 
-	client   *mimo.Client
-	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
-	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
+	client *mimo.Client
+	otp    *otpStore // new-device OTP challenges (SDD §2.2 amendment)
 	// logins is the per-account credential-resolution gate (BUGS-FOUND #2):
-	// one login chain at a time per account, shared by creds and the
-	// background recovery, so a burst cannot start a challenge per request.
+	// one login chain at a time per account, shared by the hourly renew job
+	// and the admin OTP submit flow — the request paths never log in.
 	logins *loginGate
+	// renewClockMu/Val hold the hourly renew job's clock (renewjob.go):
+	// production runs on the real clock, tests install a fake via
+	// SetRenewClock and advance it across a tick.
+	renewClockMu  sync.Mutex
+	renewClockVal renewClock
 
 	apiKeys        [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
 	defaultModel   string
@@ -363,7 +367,6 @@ func New(opts Options) *Server {
 		store:             opts.Accounts,
 		client:            opts.Client,
 		otp:               newOTPStore(),
-		recovery:          newRecoveryState(),
 		logins:            &loginGate{},
 		apiKeys:           keys,
 		defaultModel:      opts.DefaultModel,

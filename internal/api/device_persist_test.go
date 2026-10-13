@@ -8,6 +8,7 @@ package api
 // identity the login harvests is written back to the account file.
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,14 +26,16 @@ import (
 
 type deviceStack struct {
 	ts       *httptest.Server
+	apiSrv   *Server
 	store    *accounts.Store
 	path     string
 	passport *testutil.MockPassport
 	upstream *testutil.MockUpstream
 }
 
-// newDeviceStack wires an account that has a stored device identity but no
-// cached session, so the first request must take the password-login fallback
+// newDeviceStack wires an account that has a stored device identity, a dead
+// passToken, and no cached session — the shape the hourly renew job picks
+// up: renewal fails dead (70016) and the job's single password login runs
 // (the path the device plumbing has to cover).
 func newDeviceStack(t *testing.T) *deviceStack {
 	t.Helper()
@@ -46,11 +49,13 @@ func newDeviceStack(t *testing.T) *deviceStack {
 	up.AddAccount(testutil.TestPH, "serviceToken=st-mock-1")
 
 	acct := accounts.Account{
-		ID:       "acc-device-1",
-		Enabled:  true,
-		Phone:    "13800000001",
-		Password: "pw",
-		Device:   map[string]string{"deviceId": "dev-stored-1", "uLocale": "zh_CN"},
+		ID:        "acc-device-1",
+		Enabled:   true,
+		Phone:     "13800000001",
+		Password:  "pw",
+		UserID:    "123456",
+		PassToken: "rt-dead-device-1",
+		Device:    map[string]string{"deviceId": "dev-stored-1", "uLocale": "zh_CN"},
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "accounts.json")
@@ -75,7 +80,7 @@ func newDeviceStack(t *testing.T) *deviceStack {
 	})
 	hs := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(hs.Close)
-	return &deviceStack{ts: hs, store: store, path: path, passport: passport, upstream: up}
+	return &deviceStack{ts: hs, apiSrv: apiSrv, store: store, path: path, passport: passport, upstream: up}
 }
 
 func (s *deviceStack) do(method, path, apiKey, body string) (*http.Response, string) {
@@ -94,17 +99,19 @@ func (s *deviceStack) do(method, path, apiKey, body string) (*http.Response, str
 }
 
 // DEVPL-001: the stored device identity is replayed on the password login the
-// pipeline performs, and the identity the login harvests is persisted (to the
-// store and to disk) so the NEXT login is no longer a new device.
+// renew job performs, and the identity the login harvests is persisted (to
+// the store and to disk) so the NEXT login is no longer a new device.
 func TestLoginPresentsAndPersistsDeviceIdentity(t *testing.T) {
 	s := newDeviceStack(t)
 	s.upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}],"stream":false}`)
-	if resp == nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("chat = %v %q, want 200 (the login must have repaired the missing session)", resp, body)
-	}
+	// The job's login path: renewal comes back dead (70016) → one password
+	// login under the login gate. The default serviceLogin body answers
+	// code=0 + location, so the renewal itself would SUCCEED — script it dead
+	// for this one synchronous round, then restore.
+	s.passport.SetServiceLoginResponse(`&&&START&&&{"code":70016,"description":"登录验证失败"}`)
+	s.apiSrv.renewRound(context.Background())
+	s.passport.SetServiceLoginResponse("")
 
 	if len(s.passport.Auth2Headers) != 1 {
 		t.Fatalf("auth2 calls = %d, want exactly 1 password login", len(s.passport.Auth2Headers))

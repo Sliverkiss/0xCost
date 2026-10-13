@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,12 +18,14 @@ import (
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
-// otpAdminStack wires a full api.Server whose only account has NO cached
-// session (phone/password login on demand). The MockUpstream's 401 probe
-// carries the MockPassport's loginUrl; the passport's serviceLoginAuth2 is
-// scripted with the live-captured code=0 OTP demand, so the first chat
-// request triggers Login → ErrOTPPending → challenge registered (SDD §2.2
-// amendment).
+// otpAdminStack wires a full api.Server whose only account has a passToken
+// but no cached session — the exact shape the hourly renew job picks up: it
+// renews, the renewal comes back dead (70016), and the job's single password
+// Login runs against the MockPassport's serviceLoginAuth2. This stack scripts
+// the OTP path: the passport's serviceLoginAuth2 answers the live-captured
+// code=0 OTP demand, and the MockUpstream's 401 probe carries the
+// MockPassport's loginUrl, so a dead-token renewal falls through to
+// Login → ErrOTPPending → challenge registered (SDD §2.2 amendment).
 type otpAdminStack struct {
 	ts       *httptest.Server
 	apiSrv   *Server
@@ -43,10 +46,12 @@ func newOTPAdminStack(t *testing.T) *otpAdminStack {
 	up.AddAccount(testutil.TestPH, testutil.TestCookie) // the OTP-minted session serves after submit
 
 	acct := accounts.Account{
-		ID:       "acc-otp-1",
-		Enabled:  true,
-		Phone:    "13800000001",
-		Password: "pw",
+		ID:        "acc-otp-1",
+		Enabled:   true,
+		Phone:     "13800000001",
+		Password:  "pw",
+		UserID:    "123456",
+		PassToken: "rt-dead-1",
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "accounts.json")
@@ -109,21 +114,37 @@ func (s *otpAdminStack) pendingList(apiKey string) []pendingOTP {
 	return out.Pending
 }
 
-// ADOTP-001: full admin flow — chat triggers the OTP demand and disables
-// the account; pending lists the challenge (key-protected); wrong code is
-// rejected with the challenge retained; the correct code completes the
-// login, persists the session, and re-enables the account; a follow-up
+// seedOTPChallenge runs one synchronous renew round against the account with
+// a scripted-dead passToken (70016): the job's Renew fails dead, its single
+// password Login hits the OTP-zero scripted auth2, and the challenge lands
+// in the store. The request path (chat/audio) never triggers a login under
+// the hourly-job ruling — this is the job's flow, exercised synchronously.
+func (s *otpAdminStack) seedOTPChallenge(t *testing.T) pendingOTP {
+	t.Helper()
+	// Script the renewal dead (70016) for this one synchronous round, then
+	// restore the default (code=0 + location) so later renewals succeed.
+	s.passport.SetServiceLoginResponse(`&&&START&&&{"code":70016,"description":"登录验证失败"}`)
+	defer s.passport.SetServiceLoginResponse("")
+	s.apiSrv.renewRound(context.Background())
+	list := s.pendingList("sk-admin-test")
+	if len(list) != 1 {
+		t.Fatalf("pending after the job round = %d, want 1", len(list))
+	}
+	return list[0]
+}
+
+// ADOTP-001: full admin flow — the renew job's login hits the OTP demand and
+// disables the account; pending lists the challenge (key-protected); wrong
+// code is rejected with the challenge retained; the correct code completes
+// the login, persists the session, and re-enables the account; a follow-up
 // chat request succeeds on the OTP-minted session.
 func TestAdminOTPFullFlow(t *testing.T) {
 	s := newOTPAdminStack(t)
+	s.upstream.Script(testutil.TestPH, testutil.ScriptStep{Body: testutil.FixtureSSEBasic})
 
-	// 1. First chat: login on demand → OTP demand → account disabled,
-	// request fails (pre-first-byte error mapping).
-	resp, body := s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)
-	if resp == nil || resp.StatusCode == http.StatusOK {
-		t.Fatalf("first chat must fail pre-OTP, got %v %q", resp, body)
-	}
+	// 1. The job's login on a dead passToken hits the OTP demand: the account
+	// is disabled while the code is outstanding.
+	ch := s.seedOTPChallenge(t)
 	if s.pool.StateOf("acc-otp-1") != pool.StateDisabled {
 		t.Errorf("pool state = %s, want disabled while OTP pending", s.pool.StateOf("acc-otp-1"))
 	}
@@ -136,7 +157,6 @@ func TestAdminOTPFullFlow(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("pending = %d, want 1", len(list))
 	}
-	ch := list[0]
 	if ch.Method != "Phone" || ch.Notify != "188****5616" || ch.AccountID != "acc-otp-1" {
 		t.Errorf("challenge = %+v", ch)
 	}
@@ -146,7 +166,7 @@ func TestAdminOTPFullFlow(t *testing.T) {
 
 	// 3. Wrong code: rejected, challenge retained.
 	s.passport.OTPWrongCode = true
-	resp, body = s.do(http.MethodPost, "/v1/admin/otp/submit", "sk-admin-test",
+	resp, body := s.do(http.MethodPost, "/v1/admin/otp/submit", "sk-admin-test",
 		`{"id":"`+ch.ID+`","code":"000000"}`)
 	if resp == nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("wrong code = %d %q, want 400", statusOf(resp), body)
@@ -222,9 +242,8 @@ func TestAdminOTPPendingAuth(t *testing.T) {
 // ADOTP-004: expired challenges vanish from pending (safe cleanup).
 func TestAdminOTPExpirySweep(t *testing.T) {
 	s := newOTPAdminStack(t)
-	// Trigger a challenge.
-	s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)
+	// Seed one challenge through the renew job's login path.
+	s.seedOTPChallenge(t)
 	list := s.pendingList("sk-admin-test")
 	if len(list) != 1 {
 		t.Fatalf("pending = %d, want 1", len(list))

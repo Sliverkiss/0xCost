@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
@@ -286,39 +285,13 @@ func (p *chatPipeline) run(w http.ResponseWriter, r *http.Request) {
 
 		switch {
 		case isAuthErr(err):
-			// Defensive: an HTTP-level auth failure arrives before the body, so
-			// a committed stream should not see one. The guard keeps a future
-			// in-band variant from silently restarting a turn mid-answer.
-			if committed {
-				p.fail(w, err)
-				return
-			}
-			// 1 transparent refresh-retry, same account (SDD §7.1, TDD
-			// RENEW-005).
-			if rerr := s.refreshSession(ctx, lease.ID); rerr == nil {
-				err2 := p.execute(ctx, w, lease, plan)
-				if err2 == nil {
-					return
-				}
-				lastErr = err2
-				if isAuthErr(lastErr) {
-					s.pool.ReportDisabled(lease.ID, "session dead after refresh", false)
-				}
-			} else {
-				// Refresh failed: dead passToken / captcha demand disables
-				// the account; the client sees the original 401 (SDD §7.1,
-				// TDD RENEW-006).
-				var dead *mimo.ErrPassTokenDead
-				var act *mimo.ErrAccountAction
-				if errors.As(rerr, &dead) {
-					s.pool.ReportDisabled(lease.ID, rerr.Error(), true)
-				} else if errors.As(rerr, &act) {
-					s.pool.ReportDisabled(lease.ID, rerr.Error(), false)
-				}
-				lastErr = err
-			}
+			// Upstream 401 = dead session, and the request path does not
+			// repair sessions (owner ruling 2026-10: no renewal, no login, no
+			// recovery from a request — the hourly renew job owns freshness).
+			// Pass the error through; the account stays as it is, and the next
+			// job round mints a fresh session if the credential still lives.
 			lease.Release()
-			p.fail(w, lastErr)
+			p.fail(w, err)
 			return
 
 		case isRiskControl(err):
@@ -686,154 +659,30 @@ func (p *chatPipeline) finishTurn(lease *pool.Lease, lastDialogID string) {
 	lease.Release()
 }
 
-// creds resolves the upstream cookie + ph for an account, performing
-// on-demand login when no cached session exists (SDD §4.7) and persisting
-// the result.
-//
-// The whole resolution — renewal fallback included — runs under the shared
-// per-account loginGate (BUGS-FOUND #2, recovery.go): a burst of requests
-// that all find the session missing runs ONE login chain, not one each, so
-// one new-device OTP challenge is started, not one per concurrent request.
-// creds holds a pool lease while it waits (the callers acquired one), which
-// the gate design accounts for: losers wait on the flight bounded by their
-// own request ctx, never by the winner's progress.
+// creds resolves the upstream cookie + ph for an account from the store —
+// nothing else (owner ruling 2026-10: the request path never renews, never
+// logs in, never schedules a recovery). Session freshness is owned by the
+// hourly renew job (renewjob.go); a missing or dead session is an error the
+// caller passes through, and the next job round repairs it.
 func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string, err error) {
-	for attempt := 0; attempt < 3; attempt++ {
-		// Fast path first, outside the gate: a cached session needs no login
-		// and must not queue behind one. The winner's flight ends only after
-		// it persisted (or failed to persist), so a loser re-entering the
-		// loop sees the store's final state — no TOCTOU on the session.
-		acct, ok := s.store.Get(accountID)
-		if !ok {
-			return "", "", fmt.Errorf("account %s not found in store", accountID)
-		}
-		if acct.Session != nil && acct.Session.Cookie != "" {
-			return acct.Session.Cookie, acct.Session.PH, nil
-		}
-		// A live new-device challenge means the account is already waiting on
-		// the operator: another login would auto-start a second challenge and
-		// a second SMS (BUGS-FOUND #2). This check is what makes the
-		// guarantee hold for a request that arrives after the winner's flight
-		// already ended, not only for one that waited on it.
-		if p := s.otp.pendingFor(accountID); p != nil {
-			return "", "", &mimo.ErrOTPPending{Challenge: p.Challenge}
-		}
-		if acct.Phone == "" || acct.Password == "" {
-			return "", "", fmt.Errorf("account %s has no session and no login credentials", accountID)
-		}
-
-		won, finish, werr := s.logins.acquire(ctx, accountID)
-		if werr != nil {
-			return "", "", werr
-		}
-		if !won {
-			// A concurrent resolution (another request, or the background
-			// recovery) finished while this request waited. Re-read what it
-			// left instead of running a login of our own: the session if it
-			// landed one, the pending challenge if it stopped at the
-			// new-device gate. Losers must not error and must not start
-			// another challenge (BUGS-FOUND #2).
-			acct, ok := s.store.Get(accountID)
-			if ok && acct.Session != nil && acct.Session.Cookie != "" {
-				return acct.Session.Cookie, acct.Session.PH, nil
-			}
-			if p := s.otp.pendingFor(accountID); p != nil {
-				return "", "", &mimo.ErrOTPPending{Challenge: p.Challenge}
-			}
-			if s.recovery.InFlight(accountID) {
-				// The ADR 0014 fail-fast: a background re-login is running;
-				// answer with account_action and let the caller retry.
-				return "", "", &mimo.ErrAccountAction{
-					Reason: "credential revoked; automated re-login in progress — retry in a few seconds",
-				}
-			}
-			continue // winner left nothing usable: become the next winner
-		}
-		cookie, ph, err = s.credsNow(ctx, accountID, acct)
-		finish()
-		return cookie, ph, err
-	}
-	return "", "", fmt.Errorf("account %s: credential resolution raced three times without a result", accountID)
-}
-
-// credsNow is the winner's half of creds: the renewal attempt and, when it
-// cannot renew, the password login — run while holding the account's login
-// flight, so exactly one request per account performs it per burst.
-func (s *Server) credsNow(ctx context.Context, accountID string, acct accounts.Account) (cookie, ph string, err error) {
-	// Renewal before password login: a stored passToken re-mints the session
-	// with no user interaction, while the password path re-runs the whole
-	// verification chain (new-device OTP = a human, SDD §2.3 / TDD LIVE-006).
-	if acct.UserID != "" && acct.PassToken != "" {
-		sess, rerr := s.clientFor(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
-		if rerr == nil {
-			applySession(&acct, sess)
-			if uerr := s.store.Update(acct); uerr != nil {
-				s.logger.Printf("accounts: persist renewed session for %s: %v", accountID, uerr)
-			}
-			return sess.Cookie, sess.PH, nil
-		}
-		// The credential is dead (or the renewal was refused): recover in the
-		// background instead of blocking this request on a full login. ADR 0014
-		// — a password login on a known device needs no operator and no SMS, so
-		// the account heals within seconds and the caller simply retries.
-		if dead, reason := renewalFailureClass(rerr); dead {
-			s.logger.Printf("accounts: renewal for %s failed (%v) — %s; scheduling asynchronous credential recovery", accountID, rerr, reason)
-			s.RecoverCredentialAsync(accountID, reason)
-			return "", "", &mimo.ErrAccountAction{
-				Reason: "credential revoked; automated re-login in progress — retry in a few seconds (" + reason + ")",
-				Cause:  rerr,
-			}
-		}
-		s.logger.Printf("accounts: renewal for %s failed (%v), falling back to password login", accountID, rerr)
-	}
-	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).Login(ctx, acct.Phone, acct.Password)
-	if err != nil {
-		// New-device OTP demand auto-started a challenge: register it for
-		// the admin submit endpoint (SDD §2.2 amendment). The request
-		// fails with account-action; the account goes available again
-		// once the operator submits the code.
-		if pending, ok := errOTPPendingUnwrap(err); ok {
-			s.otp.add(&otpPending{AccountID: accountID, Challenge: pending.Challenge, CreatedAt: time.Now()})
-		}
-		// Keep the device identity the attempt harvested even though it did not
-		// finish: otherwise the next attempt looks like new hardware again and
-		// the operator's pending code no longer belongs to any device we claim.
-		if persistDeviceFromError(&acct, err) {
-			if uerr := s.store.Update(acct); uerr != nil {
-				s.logger.Printf("accounts: persist device for %s: %v", accountID, uerr)
-			}
-		}
-		return "", "", err
-	} // Keep the stored identity when the flow could not harvest a fresh one
-	// (the landing chain plants passToken only on some passport variants, and
-	// blanking it would break the next renewal); the device identity is merged
-	// the same way (session_apply.go).
-	applySession(&acct, sess)
-	if err := s.store.Update(acct); err != nil {
-		s.logger.Printf("accounts: persist session for %s: %v", accountID, err)
-	}
-	return sess.Cookie, sess.PH, nil
-}
-
-// refreshSession performs one transparent STS renewal and persists the new
-// session (SDD §2.3/§7.1).
-func (s *Server) refreshSession(ctx context.Context, accountID string) error {
+	_ = ctx // resolution is a pure store read; ctx stays for the callers' shape
 	acct, ok := s.store.Get(accountID)
 	if !ok {
-		return fmt.Errorf("account %s not found in store", accountID)
+		return "", "", fmt.Errorf("account %s not found in store", accountID)
 	}
-	if acct.UserID == "" || acct.PassToken == "" {
-		return fmt.Errorf("account %s has no stored passToken to renew", accountID)
+	if acct.Session == nil || acct.Session.Cookie == "" {
+		return "", "", &noSessionError{AccountID: accountID}
 	}
-	sess, err := s.clientFor(acct.Egress).WithDevice(acct.Device).Renew(ctx, acct.UserID, acct.PassToken)
-	if err != nil {
-		return err
-	}
-	applySession(&acct, sess)
-	if err := s.store.Update(acct); err != nil {
-		s.logger.Printf("accounts: persist renewed session for %s: %v", accountID, err)
-	}
-	return nil
+	return acct.Session.Cookie, acct.Session.PH, nil
+}
+
+// noSessionError: the account has no stored session and the request path will
+// not mint one — the hourly renew job is the only writer (owner ruling
+// 2026-10). The client answer carries that fact instead of a login attempt.
+type noSessionError struct{ AccountID string }
+
+func (e *noSessionError) Error() string {
+	return "account " + e.AccountID + " has no stored session; the hourly renew job will restore it"
 }
 
 // Classification helpers (SDD §7.1). These depend on the error alone, so the

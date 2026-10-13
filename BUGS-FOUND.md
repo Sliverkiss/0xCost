@@ -125,3 +125,51 @@ Tests: the ladder/parked cases were deleted or rewritten as pass-through
 assertions (`passfail_test.go` PASSFAIL-001..004: upstream 429 → client 429
 with the upstream's body and Retry-After, account still available, no
 parking on repeated 429s).
+
+## 5. Request paths renewed/logged in mid-flight — REMOVED by owner ruling
+
+**Ruling** (owner, 2026-10-14, verbatim): “那个过期后自动重新token续期的
+逻辑我们砍掉，改成只通过定时任务每小时自动续期，定时巡检比被调用接口
+造成问题要稳定。”
+
+**What the mechanism did** (pre-removal): `creds()`/`credsNow()` on the chat
+and audio paths repaired sessions on demand — a missing session triggered a
+password login inside the request, an auth-class upstream error triggered
+`refreshSession()` (Renew + persist) and, on a dead credential,
+`RecoverCredentialAsync` in the background. A burst of concurrent requests
+on a session-less account could therefore start logins from inside request
+handling — exactly the traffic pattern risk control reacts to — and a slow
+renewal/login chain held the request (and its pool slot) for the whole
+passport round-trip.
+
+**The problem**: the request path was both a correctness hazard (concurrent
+logins stampede OTP challenges — see #2 — and a wedged passport stalls
+in-flight requests) and a stability hazard (an hourly-cadence concern was
+being decided per-request). The upstream is the single source of truth: a
+401 means the session is dead *now*, and the client should hear that, not
+wait while the gateway re-logs-in.
+
+**The removal** (this sweep): `creds()` is a pure store read — cookie/PH from
+the account record, nothing else. A missing session fails with a
+`noSessionError`; an upstream 401/auth-expiry passes through to the client
+verbatim (same structure as the 429 pass-through ruling, #4), and the
+account is NOT disabled by the request path. `refreshSession()`,
+`RecoverCredentialAsync`, and `recoveryState` are deleted outright — no
+compat layer, no flag. Session freshness moved to `RunRenewJob`
+(`internal/api/renewjob.go`): one round immediately at startup, then one per
+hour (`MIMO2API_RENEW_INTERVAL`, minutes, default 60; replaces
+`MIMO2API_SESSION_REFRESH_HOURS`), walking enabled accounts serially in ID
+order — Renew first, one password Login under the existing `loginGate`
+single-flight only when the credential is dead (`renewalFailureClass` /
+`IsDeadCredential` stay for exactly this), one `[renew-job]` log line per
+account, no retry storm and no backoff: a failure waits for the next tick.
+Tests: `norenew_test.go` NORENEW-001..004 (request path: 401 passes through
+as 401 with zero passport calls, account stays available; no session →
+fail with zero logins; burst → zero logins; creds reads the store only) and
+`renewjob_test.go` RENEWJOB-001..005 (startup round renews every
+enabled+passToken account once; hourly cadence; dead credential → exactly
+one login with the session persisted; transient failure retried on the next
+tick only; one log line per account in ID order). The OTP-admin,
+consent-admin, and device-persistence tests were reworked to seed their
+challenges through a synchronous `renewRound` — the only login path left.
+

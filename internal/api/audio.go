@@ -98,12 +98,12 @@ func (s *Server) botConfigFor(ctx context.Context, accountID, cookie, ph string)
 	return cfg, nil
 }
 
-// withAccount runs fn with an account lease and resolved credentials, applying
-// the same account policy as the chat pipeline: an expired session is refreshed
-// and the call retried once, and a dead account is reported to the pool. Any
-// other upstream failure passes through untouched (owner ruling 2026-10: no
-// cooldown, no backoff). Non-account failures (bad voice, bad input) are
-// returned for the caller to map.
+// withAccount runs fn with an account lease and the stored session, applying
+// the same pass-through policy as the chat pipeline: an upstream failure —
+// auth expiry included — passes through to the caller untouched, with no pool
+// action and no local repair (owner ruling 2026-10: the hourly renew job owns
+// session freshness; a request never renews or logs in). Non-account failures
+// (bad voice, bad input) are returned for the caller to map.
 func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID string) error) error {
 	lease, err := s.pool.Acquire(ctx)
 	if err != nil {
@@ -123,20 +123,8 @@ func (s *Server) withAccount(ctx context.Context, fn func(cookie, ph, accountID 
 
 	switch {
 	case isAuthErr(err):
-		// One transparent renewal, then give up (SDD §2.3).
-		if rerr := s.refreshSession(ctx, lease.ID); rerr != nil {
-			s.logger.Printf("accounts: renewal for %s failed (%v) during audio call", lease.ID, rerr)
-			s.pool.ReportDisabled(lease.ID, rerr.Error(), false)
-			return err
-		}
-		cookie, ph, cerr := s.creds(ctx, lease.ID)
-		if cerr != nil {
-			return cerr
-		}
-		if err = fn(cookie, ph, lease.ID); err == nil {
-			s.pool.ReportSuccess(lease.ID)
-			return nil
-		}
+		// Upstream 401 during an audio call: pass through. The hourly renew
+		// job repairs the session; the request path never does.
 	case isRiskControl(err):
 		// 451/461 during an audio call: same fail-closed, non-permanent,
 		// recorded treatment as chat (SDD §4.5.2).

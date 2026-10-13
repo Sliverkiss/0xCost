@@ -46,11 +46,12 @@ services:
       - MIMO2API_API_KEYS=${MIMO2API_API_KEYS:-}
       - MIMO2API_DEFAULT_MODEL=${MIMO2API_DEFAULT_MODEL:-mimo-v2.6-pro}
       - MIMO2API_LOG_LEVEL=${MIMO2API_LOG_LEVEL:-info}
-      # Pinned policy, not left to a default that could drift:
-      #   a revoked credential heals in the background (ADR 0014) instead of
-      #   stopping the deployment, and starting a re-login must never spend an
-      #   SMS on its own — the operator finishes a human gate (ADR 0013).
-      - MIMO2API_SESSION_REFRESH_HOURS=${MIMO2API_SESSION_REFRESH_HOURS:-12}
+      # Pinned policy, not left to a default that could drift: session
+      # freshness is owned by the hourly renew job (owner ruling 2026-10-14 —
+      # "定时巡检比被调用接口造成问题要稳定"), never by a request path, and
+      # starting a re-login must never spend an SMS on its own — the operator
+      # finishes a human gate (ADR 0013).
+      - MIMO2API_RENEW_INTERVAL=${MIMO2API_RENEW_INTERVAL:-60}
       - MIMO2API_OTP_AUTO=${MIMO2API_OTP_AUTO:-false}
       # ADR 0019: a real client-facing budget, the per-turn/slot TTL, and the
       # conservative slot policy. Pinned so a default change cannot silently

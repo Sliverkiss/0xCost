@@ -60,14 +60,8 @@ func TestOTPSubmitClaimDeduplicatesConcurrentSubmits(t *testing.T) {
 	hs := httptest.NewServer(s.apiSrv.Handler())
 	t.Cleanup(hs.Close)
 
-	// Seed the challenge: one chat on the session-less account.
-	s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)
-	list := s.pendingList("sk-admin-test")
-	if len(list) != 1 {
-		t.Fatalf("pending = %d, want 1 after the triggering chat", len(list))
-	}
-	ch := list[0]
+	// Seed the challenge: the renew job's login on the dead passToken.
+	ch := s.seedOTPChallenge(t)
 	before := countVerifySubmits(s.passport)
 
 	var wg sync.WaitGroup
@@ -100,13 +94,7 @@ func TestOTPSubmitClaimRestoresOnWrongCode(t *testing.T) {
 	hs := httptest.NewServer(s.apiSrv.Handler())
 	t.Cleanup(hs.Close)
 
-	s.do(http.MethodPost, "/v1/chat/completions", "sk-admin-test",
-		`{"model":"mimo-v2.6-pro","messages":[{"role":"user","content":"hello"}]}`)
-	list := s.pendingList("sk-admin-test")
-	if len(list) != 1 {
-		t.Fatalf("pending = %d, want 1 after the triggering chat", len(list))
-	}
-	ch := list[0]
+	ch := s.seedOTPChallenge(t)
 
 	// Wrong code: rejected, and the challenge must still be there for a retry.
 	s.passport.OTPWrongCode = true
