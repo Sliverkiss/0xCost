@@ -1,0 +1,25 @@
+# build artifacts
+/richee2api
+/login
+/signin_bin
+/credit
+/trial_bin
+/activity_bin
+/stats
+*.test
+*.out
+
+# runtime state（含真实 token，绝不入库）
+/auths/
+/data/
+/state.json
+/server.log
+/.server.pid
+/config.json
+*_bin
+/acct
+/signin
+
+# local env
+.env
+.DS_Store

@@ -1,0 +1,19 @@
+services:
+  r2api:
+    build: .
+    container_name: richee2api
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "7863:7863"
+    volumes:
+      # auths 凭证卷：login.sh 在宿主机落盘 richee-<uid>.json（0600），容器网关以
+      # app(uid 10001) 读 + 回写（token 轮换走 tmp+rename，需目录写权限）。
+      # 跨 uid 部署读不到 → 账号数为 0。登录后把目录属主交给 10001：
+      #   chown -R 10001:10001 ./auths
+      - ./auths:/app/auths
+      # data 保持 bind mount。容器内写 state.json 报 permission denied 时：
+      #   chown -R 10001:10001 ./data
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
