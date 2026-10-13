@@ -676,6 +676,18 @@ func (p *MockPassport) LoginPageCallCount() int {
 	return len(p.LoginPageCalls)
 }
 
+// IdentityCallsSnapshot is a race-free copy of the recorded /identity/*
+// calls — same contract as Auth2CallCount, but returning the entries so a
+// test can count started OTP challenges (each StartOTP performs exactly one
+// /identity/list) while a background goroutine may still be appending.
+func (p *MockPassport) IdentityCallsSnapshot() []RecordedIdentityCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]RecordedIdentityCall, len(p.IdentityCalls))
+	copy(out, p.IdentityCalls)
+	return out
+}
+
 // serveAuth2 parses the form post, records it, and serves the scripted
 // response; the location inside is rewritten to this mock's STS endpoint.
 func (p *MockPassport) serveAuth2(w http.ResponseWriter, r *http.Request) {

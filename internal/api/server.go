@@ -29,6 +29,10 @@ type Server struct {
 	client   *mimo.Client
 	otp      *otpStore      // new-device OTP challenges (SDD §2.2 amendment)
 	recovery *recoveryState // asynchronous credential recovery (ADR 0014)
+	// logins is the per-account credential-resolution gate (BUGS-FOUND #2):
+	// one login chain at a time per account, shared by creds and the
+	// background recovery, so a burst cannot start a challenge per request.
+	logins *loginGate
 
 	apiKeys        [][]byte // parsed keys; empty slice = auth open (SDD §5.1)
 	defaultModel   string
@@ -360,6 +364,7 @@ func New(opts Options) *Server {
 		client:            opts.Client,
 		otp:               newOTPStore(),
 		recovery:          newRecoveryState(),
+		logins:            &loginGate{},
 		apiKeys:           keys,
 		defaultModel:      opts.DefaultModel,
 		replayCap:         opts.ReplayCap,

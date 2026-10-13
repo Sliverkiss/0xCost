@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yg/mimo2api/internal/accounts"
 	"github.com/yg/mimo2api/internal/adapter"
 	"github.com/yg/mimo2api/internal/mimo"
 	"github.com/yg/mimo2api/internal/pool"
@@ -697,17 +698,77 @@ func (p *chatPipeline) finishTurn(lease *pool.Lease, lastDialogID string) {
 // creds resolves the upstream cookie + ph for an account, performing
 // on-demand login when no cached session exists (SDD §4.7) and persisting
 // the result.
+//
+// The whole resolution — renewal fallback included — runs under the shared
+// per-account loginGate (BUGS-FOUND #2, recovery.go): a burst of requests
+// that all find the session missing runs ONE login chain, not one each, so
+// one new-device OTP challenge is started, not one per concurrent request.
+// creds holds a pool lease while it waits (the callers acquired one), which
+// the gate design accounts for: losers wait on the flight bounded by their
+// own request ctx, never by the winner's progress.
 func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string, err error) {
-	acct, ok := s.store.Get(accountID)
-	if !ok {
-		return "", "", fmt.Errorf("account %s not found in store", accountID)
+	for attempt := 0; attempt < 3; attempt++ {
+		// Fast path first, outside the gate: a cached session needs no login
+		// and must not queue behind one. The winner's flight ends only after
+		// it persisted (or failed to persist), so a loser re-entering the
+		// loop sees the store's final state — no TOCTOU on the session.
+		acct, ok := s.store.Get(accountID)
+		if !ok {
+			return "", "", fmt.Errorf("account %s not found in store", accountID)
+		}
+		if acct.Session != nil && acct.Session.Cookie != "" {
+			return acct.Session.Cookie, acct.Session.PH, nil
+		}
+		// A live new-device challenge means the account is already waiting on
+		// the operator: another login would auto-start a second challenge and
+		// a second SMS (BUGS-FOUND #2). This check is what makes the
+		// guarantee hold for a request that arrives after the winner's flight
+		// already ended, not only for one that waited on it.
+		if p := s.otp.pendingFor(accountID); p != nil {
+			return "", "", &mimo.ErrOTPPending{Challenge: p.Challenge}
+		}
+		if acct.Phone == "" || acct.Password == "" {
+			return "", "", fmt.Errorf("account %s has no session and no login credentials", accountID)
+		}
+
+		won, finish, werr := s.logins.acquire(ctx, accountID)
+		if werr != nil {
+			return "", "", werr
+		}
+		if !won {
+			// A concurrent resolution (another request, or the background
+			// recovery) finished while this request waited. Re-read what it
+			// left instead of running a login of our own: the session if it
+			// landed one, the pending challenge if it stopped at the
+			// new-device gate. Losers must not error and must not start
+			// another challenge (BUGS-FOUND #2).
+			acct, ok := s.store.Get(accountID)
+			if ok && acct.Session != nil && acct.Session.Cookie != "" {
+				return acct.Session.Cookie, acct.Session.PH, nil
+			}
+			if p := s.otp.pendingFor(accountID); p != nil {
+				return "", "", &mimo.ErrOTPPending{Challenge: p.Challenge}
+			}
+			if s.recovery.InFlight(accountID) {
+				// The ADR 0014 fail-fast: a background re-login is running;
+				// answer with account_action and let the caller retry.
+				return "", "", &mimo.ErrAccountAction{
+					Reason: "credential revoked; automated re-login in progress — retry in a few seconds",
+				}
+			}
+			continue // winner left nothing usable: become the next winner
+		}
+		cookie, ph, err = s.credsNow(ctx, accountID, acct)
+		finish()
+		return cookie, ph, err
 	}
-	if acct.Session != nil && acct.Session.Cookie != "" {
-		return acct.Session.Cookie, acct.Session.PH, nil
-	}
-	if acct.Phone == "" || acct.Password == "" {
-		return "", "", fmt.Errorf("account %s has no session and no login credentials", accountID)
-	}
+	return "", "", fmt.Errorf("account %s: credential resolution raced three times without a result", accountID)
+}
+
+// credsNow is the winner's half of creds: the renewal attempt and, when it
+// cannot renew, the password login — run while holding the account's login
+// flight, so exactly one request per account performs it per burst.
+func (s *Server) credsNow(ctx context.Context, accountID string, acct accounts.Account) (cookie, ph string, err error) {
 	// Renewal before password login: a stored passToken re-mints the session
 	// with no user interaction, while the password path re-runs the whole
 	// verification chain (new-device OTP = a human, SDD §2.3 / TDD LIVE-006).
@@ -752,8 +813,7 @@ func (s *Server) creds(ctx context.Context, accountID string) (cookie, ph string
 			}
 		}
 		return "", "", err
-	}
-	// Keep the stored identity when the flow could not harvest a fresh one
+	} // Keep the stored identity when the flow could not harvest a fresh one
 	// (the landing chain plants passToken only on some passport variants, and
 	// blanking it would break the next renewal); the device identity is merged
 	// the same way (session_apply.go).

@@ -158,13 +158,119 @@ func (s *Server) RecoverCredentialAsync(accountID, reason string) bool {
 	return true
 }
 
+// loginGate serializes the credential-resolution chain per account
+// (BUGS-FOUND #2, sweep 2026-10): one password login at a time per account,
+// shared by the foreground path (creds, chat.go) and this file's background
+// recovery, so the two can never run concurrent logins for the same account
+// (two password logins from one IP is exactly the pattern risk control
+// reacts to — same rule the recovery single-flight already enforces).
+//
+// Lock ordering, deliberately: g.mu is a leaf — it guards only the flight
+// map and is never held across I/O. What IS held across the login is the
+// flight itself, and a flight is always bounded by its winner's own context
+// (creds: the request budget; recovery: recoveryTimeout). Losers wait on
+// the flight's done channel with their own ctx in the select, so a recovery
+// goroutine holding a flight can never pin a foreground creds that holds a
+// pool slot forever — the loser gives up with its own deadline error. No
+// code path holds pool.mu while acquiring a flight, and the winner's pool
+// mutations (Enable/ReportDisabled) are leaf acquisitions released before
+// the flight ends, so no lock cycle exists.
+type loginGate struct {
+	mu      sync.Mutex
+	flights map[string]*loginFlight
+}
+
+// loginFlight is one in-flight credential resolution for one account. done
+// is closed (and the flight unregistered) by the winner when its attempt
+// ends; waiters already holding the pointer still wake on the close.
+type loginFlight struct {
+	done chan struct{}
+}
+
+// acquire reserves the account's login chain. The first caller wins: it must
+// run the resolution and call the returned finish exactly once. Concurrent
+// callers lose: they wait — bounded by their own ctx, never by the winner —
+// and re-read the state the winner left (see creds / recoverCredential).
+func (g *loginGate) acquire(ctx context.Context, accountID string) (won bool, finish func(), err error) {
+	g.mu.Lock()
+	if g.flights == nil {
+		g.flights = make(map[string]*loginFlight)
+	}
+	fl, ok := g.flights[accountID]
+	if !ok {
+		fl = &loginFlight{done: make(chan struct{})}
+		g.flights[accountID] = fl
+		g.mu.Unlock()
+		return true, func() { g.release(accountID, fl) }, nil
+	}
+	g.mu.Unlock()
+	select {
+	case <-fl.done:
+		return false, nil, nil
+	case <-ctx.Done():
+		return false, nil, ctx.Err()
+	}
+}
+
+// release ends a flight: the entry is dropped from the map BEFORE done is
+// closed, so a caller arriving after the close starts a fresh flight
+// instead of finding a finished one. Waiters that already hold the pointer
+// wake on the close regardless.
+func (g *loginGate) release(accountID string, fl *loginFlight) {
+	g.mu.Lock()
+	if g.flights[accountID] == fl {
+		delete(g.flights, accountID)
+	}
+	g.mu.Unlock()
+	close(fl.done)
+}
+
 // recoverCredential runs one password login and persists what it returns.
 //
 // A human gate (new-device OTP, captcha, cross-region consent) is not a
 // failure to retry: the identity is persisted, the account is taken out of
 // rotation with the reason, and the operator finishes it through the existing
 // admin flow.
+//
+// The login runs under the shared per-account loginGate (BUGS-FOUND #2): a
+// foreground creds that resolves the account while this recovery waits is
+// honoured instead of re-logged-in.
 func (s *Server) recoverCredential(ctx context.Context, accountID string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		won, finish, werr := s.logins.acquire(ctx, accountID)
+		if werr != nil {
+			return werr
+		}
+		if !won {
+			// A concurrent login (foreground creds, normally) resolved the
+			// account while this recovery waited: its outcome is on the
+			// store already.
+			acct, ok := s.store.Get(accountID)
+			if ok && acct.Session != nil && acct.Session.Cookie != "" {
+				// It landed a session — the account is recovered, done.
+				s.pool.Enable(accountID)
+				s.pool.ReportSuccess(accountID)
+				return nil
+			}
+			if p := s.otp.pendingFor(accountID); p != nil {
+				// It stopped at the new-device gate — the operator finishes
+				// that; this recovery has nothing left to do.
+				s.pool.ReportDisabled(accountID, "credential revoked; new-device OTP verification pending (operator: /v1/admin/otp/submit)", false)
+				s.logger.Printf("accounts: credential recovery for %s deferred — a concurrent login left an OTP challenge pending", accountID)
+				return nil
+			}
+			continue // winner left nothing reusable: become the next winner
+		}
+		defer finish() // the winner branch always returns immediately below
+		return s.recoverCredentialNow(ctx, accountID)
+	}
+	return errors.New("credential recovery raced twice without a result")
+}
+
+// recoverCredentialNow is the winner's half of recoverCredential: one
+// password login and its bookkeeping, run while holding the account's login
+// flight.
+func (s *Server) recoverCredentialNow(ctx context.Context, accountID string) error {
 	acct, ok := s.store.Get(accountID)
 	if !ok {
 		return errors.New("account not found in store")

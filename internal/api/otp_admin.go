@@ -58,6 +58,23 @@ func (o *otpStore) remove(id string) {
 	delete(o.items, id)
 }
 
+// pendingFor returns the account's live challenge, if any: the credential
+// resolution's losers use it to answer with the winner's pending error
+// instead of starting another login (BUGS-FOUND #2). At most one challenge
+// per account exists once creds is single-flighted, but the consent admin
+// path can also register one; any live entry is the answer either way.
+func (o *otpStore) pendingFor(accountID string) *otpPending {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sweepLocked()
+	for _, p := range o.items {
+		if p.AccountID == accountID {
+			return p
+		}
+	}
+	return nil
+}
+
 // list returns live challenges (oldest first).
 func (o *otpStore) list() []*otpPending {
 	o.mu.Lock()
