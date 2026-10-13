@@ -76,8 +76,12 @@ type Server struct {
 	// touching the upstream per request (M19 §3, model redirects).
 	redirects struct {
 		mu sync.Mutex
-		at time.Time
-		m  map[string]string
+		// refreshMu serializes catalog rebuilds (RefreshModelRedirects and the
+		// relearn floor): without it, a refusal burst can fan out into several
+		// concurrent catalog reads, each running creds per account (ADR 0011).
+		refreshMu sync.Mutex
+		at        time.Time
+		m         map[string]string
 		// ids is the set of model ids the account catalogs currently serve —
 		// the single source of truth for chat's model gate. Read from this
 		// snapshot, never fetched: a chat request that read a catalog could
@@ -121,6 +125,19 @@ func (s *Server) catalogIDs() map[string]bool {
 // main.go calls at startup and on its janitor tick, so the request paths never
 // pay for a catalog read.
 func (s *Server) RefreshModelRedirects(ctx context.Context) {
+	s.redirects.refreshMu.Lock()
+	defer s.redirects.refreshMu.Unlock()
+	s.refreshModelRedirectsLocked(ctx)
+}
+
+// refreshModelRedirectsLocked does the rebuild; the caller holds refreshMu.
+// That mutex is the anti-stampede gate: relearnModel zeroes `at` before
+// calling here, so a burst of concurrent refusals would otherwise every one of
+// them pass the TTL gate and pay for its own catalog read — a read that runs
+// creds per account and can trigger a login (ADR 0011). The gate is re-checked
+// under the mutex so the losers of the race wait for the winner's snapshot
+// instead of fetching their own.
+func (s *Server) refreshModelRedirectsLocked(ctx context.Context) {
 	s.redirects.mu.Lock()
 	if s.redirects.m != nil && time.Since(s.redirects.at) < s.catalogWindow() {
 		s.redirects.mu.Unlock()
@@ -129,15 +146,23 @@ func (s *Server) RefreshModelRedirects(ctx context.Context) {
 	s.redirects.mu.Unlock()
 
 	entries := s.catalogEntries(ctx)
+	if ctx.Err() != nil {
+		// A cancelled context reads every account as unreadable; caching that
+		// emptiness for a whole TTL would wipe a known-good snapshot. The map
+		// itself is left alone, but `at` is re-stamped so the floor still holds
+		// — otherwise every subsequent refusal would pay for another fetch
+		// this same cancellation just aborted.
+		s.redirects.mu.Lock()
+		if s.redirects.m != nil {
+			s.redirects.at = time.Now()
+		}
+		s.redirects.mu.Unlock()
+		return
+	}
 	m := s.redirectMapOf(entries)
 	ids := servedIDsOf(entries)
 	thinks := thinkingDefaultsOf(entries)
-	s.redirects.mu.Lock()
-	s.redirects.m = m
-	s.redirects.ids = ids
-	s.redirects.thinks = thinks
-	s.redirects.at = time.Now()
-	s.redirects.mu.Unlock()
+	s.storeSnapshot(m, ids, thinks)
 	if len(m) > 0 {
 		s.debugf("models: %d superseded ids will be resolved before they reach the upstream", len(m))
 	}
@@ -149,18 +174,21 @@ func (s *Server) RefreshModelRedirects(ctx context.Context) {
 // relearnModel is what a refusal teaches us: the map we hold was out of date, so
 // rebuild it (TTL bypassed) and resolve the id again. The floor keeps a burst of
 // refusals — several requests naming a model retired a moment ago — from
-// stampeding the catalog read.
+// stampeding the catalog read: the floor check, the TTL-bypassing expiry, and
+// the rebuild itself all happen under refreshMu, so one refusal wins the race
+// and the rest resolve against the snapshot it stored.
 func (s *Server) relearnModel(ctx context.Context, id string) string {
+	s.redirects.refreshMu.Lock()
+	defer s.redirects.refreshMu.Unlock()
 	s.redirects.mu.Lock()
 	tooSoon := !s.redirects.at.IsZero() && time.Since(s.redirects.at) < redirectRelearnFloor
-	s.redirects.mu.Unlock()
-	if tooSoon {
-		return adapter.ResolveRedirect(id, s.modelRedirects())
+	if !tooSoon {
+		s.redirects.at = time.Time{} // expire, so the refresh below cannot short-circuit
 	}
-	s.redirects.mu.Lock()
-	s.redirects.at = time.Time{} // expire, so the refresh below cannot short-circuit
 	s.redirects.mu.Unlock()
-	s.RefreshModelRedirects(ctx)
+	if !tooSoon {
+		s.refreshModelRedirectsLocked(ctx)
+	}
 	resolved := adapter.ResolveRedirect(id, s.modelRedirects())
 	if resolved != id {
 		s.debugf("model: the upstream refused %s, which is superseded by %s; retrying with %s", id, resolved, resolved)
