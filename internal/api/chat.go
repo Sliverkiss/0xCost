@@ -430,12 +430,9 @@ func (p *chatPipeline) execute(ctx context.Context, w http.ResponseWriter, lease
 			Model:            p.model,
 			Fastchat:         p.fastchat,
 			// Non-ultraspeed models ride the v3 react channel — the SPA's own
-			// routing (reactEnabled accounts, live 2026-10-15) and the one
-			// channel that is open while the v2 surface sits behind the 451
-			// channel block (BUGS-FOUND #7 correction). Fastchat wins when
-			// both flags apply; a deployment whose react route is gone falls
-			// back to v2 inside the client (SPA: `catch 404 → v2`).
-			React:            !p.fastchat,
+			// routing (Jy(): every non-ultra model on a reactEnabled account,
+			// docs/v3-endpoints.md). Fastchat is the ultraspeed model's
+			// own and only route (react answers those ids 模型名称错误).
 			ConversationID:   plan.conversationID,
 			PreviousDialogID: prev,
 			EnableThinking:   p.thinking,
@@ -690,9 +687,9 @@ func (p *chatPipeline) isEmptyResponse(err error) bool {
 const busyRetryAfterSeconds = 2
 
 // channelName names the upstream chat channel for logs (SDD §2.4). The
-// normal channel is the v3 react surface since 2026-10-15 (with the client's
-// 404→v2 fallback behind it), so that is the name a 451 report carries — the
-// operator needs to know which surface the refusal came from.
+// normal channel is the v3 react surface (docs/v3-endpoints.md, the only
+// v3 chat channel there is), so that is the name a 451 report carries —
+// the operator needs to know which surface the refusal came from.
 func channelName(fastchat bool) string {
 	if fastchat {
 		return "fastchat/ultraspeed"

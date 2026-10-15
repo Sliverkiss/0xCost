@@ -369,12 +369,12 @@ type chatPayload struct {
 type ChatRequest struct {
 	Query            string
 	Model            string // normalized upstream model id
-	Fastchat         bool   // route via /fastchat/open-apis/bot/chat (SDD §2.4)
-	// React routes the v3 channel /open-apis/react/chat — the same payload
-	// on a path that is open when the v2 surface is channel-blocked (live
-	// 2026-10-15, BUGS-FOUND #7 correction). Fastchat wins when both are set,
-	// mirroring the SPA's routing order.
-	React            bool   // route via /open-apis/react/chat
+	// Fastchat routes the ultraspeed model via /fastchat/open-apis/bot/chat —
+	// the SPA's own Jy() forces v2+viaFastchat for that id and the react
+	// channel refuses it (模型名称错误, live 2026-10-16). Every other model
+	// rides the v3 react channel /open-apis/react/chat, which is what Chat
+	// does when Fastchat is false.
+	Fastchat         bool
 	ConversationID   string // 32-hex; empty = mint fresh in Chat
 	PreviousDialogID string // chaining anchor; empty = null (first turn)
 	EnableThinking   bool
@@ -536,16 +536,18 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 		return nil, err
 	}
 
-	// Channel routing (SPA main.js module 73255 `bX`): viaFastchat wins first
-	// (the react channel refuses an ultraspeed model with 模型名称错误, live
-	// 2026-10-15), then React routes the v3 channel /open-apis/react/chat —
-	// identical payload, no fastchat prefix on that surface — else the v2
-	// studio path (SDD §2.4).
-	chatPath := "/open-apis/bot/chat"
+	// Channel routing (v3 endpoint inventory, docs/v3-endpoints.md): the
+	// upstream serves exactly two live chat surfaces for this deployment —
+	// the v3 react channel /open-apis/react/chat for every non-ultraspeed
+	// model, and /fastchat/open-apis/bot/chat for ultraspeed (the SPA's own
+	// Jy() forces "v2"+viaFastchat for the ultraspeed model, and the react
+	// channel refuses those ids with 模型名称错误, live 2026-10-16). The
+	// unprefixed v2 /open-apis/bot/chat is gone from the client: it is the
+	// 451-blocked surface and no v3 deployment needs it. No fallback exists
+	// by ruling — upstream is the only truth source.
+	chatPath := "/open-apis/react/chat"
 	if req.Fastchat {
 		chatPath = "/fastchat/open-apis/bot/chat"
-	} else if req.React {
-		chatPath = "/open-apis/react/chat"
 	}
 
 	// The stream runs under a cancellable child ctx so the idle watchdog
@@ -579,15 +581,6 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 	}
 
 	resp, err := c.postChat(streamCtx, chatPath, ph, body, cookie)
-	// SPA-faithful react fallback (SPA: `catch 404 → v2`): a 404 on the v3
-	// channel means the route is gone for this deployment, so the identical
-	// body is retried once against the v2 studio path. Any other failure —
-	// 451, 401, transport — passes through untouched: the upstream is the
-	// truth source and a retry would only burn a second call on a refusal.
-	if err == nil && resp.StatusCode == http.StatusNotFound && chatPath == "/open-apis/react/chat" {
-		resp.Body.Close()
-		resp, err = c.postChat(streamCtx, "/open-apis/bot/chat", ph, body, cookie)
-	}
 	if preHeader != nil {
 		preHeader.Stop()
 	}
@@ -641,8 +634,7 @@ func (c *Client) Chat(ctx context.Context, cookie, ph string, req ChatRequest) (
 // postChat performs one chat POST: the path's URL with the percent-encoded
 // xiaomichatbot_ph query param (the SPA's encodeURIComponent semantics), the
 // full browser header set, and the cookie. It returns the raw response —
-// status handling belongs to the caller, which is what lets the react 404
-// fallback replay the identical body against the v2 path.
+// status handling belongs to the caller.
 func (c *Client) postChat(ctx context.Context, path, ph string, body []byte, cookie string) (*http.Response, error) {
 	target := fmt.Sprintf("%s%s?xiaomichatbot_ph=%s", c.base, path, url.QueryEscape(ph))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))

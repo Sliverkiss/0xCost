@@ -9,21 +9,24 @@ import (
 	"github.com/yg/mimo2api/internal/testutil"
 )
 
-// The v3 react channel (/open-apis/react/chat) — live-verified 2026-10-15
-// during the 451 investigation (cmd/diag451, BUGS-FOUND #7 correction):
-// the v2 bot/chat surface is channel-blocked (451 ????/临时封禁) for this
-// account while react/chat answers 200 with an identical payload. The SPA
-// routes viaFastchat→fastchat, reactEnabled→react, else studio, and falls
-// back react→studio (v2) on a 404. These tests pin the client to that flow.
+// The v3 chat surface, per the full re-reverse of the live SPA
+// (docs/v3-endpoints.md, 2026-10-16): the upstream serves exactly two chat
+// channels for this deployment. Every non-ultraspeed model posts
+// /open-apis/react/chat (the SPA's Jy() routes them there on any
+// reactEnabled account, which a fresh session confirmed); the ultraspeed
+// model posts /fastchat/open-apis/bot/chat, its only route (react answers
+// those ids with 模型名称错误). The unprefixed v2 /open-apis/bot/chat is
+// not sent by this client at all — the owner ruling is v2-free, no
+// fallback. These tests pin that two-channel routing.
 
-// REACT-001: react routing — ChatRequest.React posts /open-apis/react/chat
-// with the same payload the v2 channel carries (the payload object is shared
-// between both branches in the SPA's module 12251).
+// CHAN-001: a non-ultraspeed model posts /open-apis/react/chat with the
+// shared chat payload (the SPA's module 12251 sends one payload object to
+// both of its completions clients).
 func TestChatReactRouting(t *testing.T) {
 	client, up := chatEnv(t)
 	up.Script(testPH, testutil.ScriptStep{Body: testutil.FixtureSSEReact})
 	res, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
-		Query: "hi", Model: "mimo-v2.6-flash", React: true,
+		Query: "hi", Model: "mimo-v2.6-flash",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,9 +38,8 @@ func TestChatReactRouting(t *testing.T) {
 	if reqs[0].Path != "/open-apis/react/chat" {
 		t.Errorf("path = %q, want /open-apis/react/chat", reqs[0].Path)
 	}
-	// Payload parity with v2: same fields, same defaults.
 	if reqs[0].Model != "mimo-v2.6-flash" || !strings.Contains(reqs[0].RawBody, `"multiMedias":[]`) {
-		t.Errorf("react payload diverged from v2: model=%q body=%s", reqs[0].Model, reqs[0].RawBody)
+		t.Errorf("react payload diverged: model=%q body=%s", reqs[0].Model, reqs[0].RawBody)
 	}
 	// Result: reasoning + content + citations + usage all assembled.
 	if res.Content != "Hello world" {
@@ -57,72 +59,42 @@ func TestChatReactRouting(t *testing.T) {
 	}
 }
 
-// REACT-002: React does not touch the fastchat routing — a fastchat request
-// keeps the /fastchat/open-apis/bot/chat path (the react channel answers an
-// ultraspeed model with 模型名称错误, live 2026-10-15, so the two flags are
-// mutually exclusive exactly as the SPA routes them).
-func TestChatReactDoesNotAffectFastchat(t *testing.T) {
-	client, up := chatEnv(t)
-	if _, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
-		Query: "hi", Model: "mimo-v2.6-pro-ultraspeed-studio", Fastchat: true, React: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	r := up.RequestsFor(testPH)[0]
-	if r.Path != "/fastchat/open-apis/bot/chat" {
-		t.Errorf("path = %q, want fastchat v2 path (fastchat wins, SPA routes it first)", r.Path)
-	}
-}
+// (Ultraspeed → /fastchat/open-apis/bot/chat is pinned by
+// TestChatFastchatRouting in client_test.go, which asserts both routing
+// directions: fastchat model under /fastchat/, normal model not.)
 
-// REACT-003: SPA-faithful fallback — a 404 on the react channel retries the
-// identical body once against the v2 studio path (SPA: `catch 404 → v2`).
-// The react path being gone must not fail the request.
-func TestChatReact404FallsBackToV2(t *testing.T) {
+// CHAN-003: no v2 fallback — a 404 on the react channel fails the turn.
+// The SPA keeps a `catch 404 → v2` retry for itself, but this client has no
+// v2 surface to retry onto (owner ruling: no compatibility, no fallback);
+// the 404 passes through like any other upstream refusal.
+func TestChatReact404IsAnError(t *testing.T) {
 	client, up := chatEnv(t)
-	up.Script(testPH,
-		testutil.ScriptStep{StatusCode: 404},
-		testutil.ScriptStep{Body: testutil.FixtureSSEBasic},
-	)
-	res, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
-		Query: "hi", Model: "mimo-v2.6-flash", React: true,
+	up.Script(testPH, testutil.ScriptStep{StatusCode: 404})
+	_, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
+		Query: "hi", Model: "mimo-v2.6-flash",
 	})
-	if err != nil {
-		t.Fatal(err)
+	var ue *UpstreamError
+	if err == nil || !asUpstreamError(err, &ue) || ue.StatusCode != 404 {
+		t.Fatalf("err = %v, want the 404 passthrough", err)
 	}
-	reqs := up.RequestsFor(testPH)
-	if len(reqs) != 2 {
-		t.Fatalf("requests = %d, want 2 (react 404 then v2 fallback)", len(reqs))
-	}
-	if reqs[0].Path != "/open-apis/react/chat" {
-		t.Errorf("first path = %q, want react", reqs[0].Path)
-	}
-	if reqs[1].Path != "/open-apis/bot/chat" {
-		t.Errorf("fallback path = %q, want v2 studio", reqs[1].Path)
-	}
-	// Same turn identity on the retry: the SPA replays the same payload.
-	if reqs[0].MsgID != reqs[1].MsgID || reqs[0].ConvID != reqs[1].ConvID {
-		t.Errorf("fallback must replay the same msgId/conversationId: %q/%q vs %q/%q",
-			reqs[0].MsgID, reqs[0].ConvID, reqs[1].MsgID, reqs[1].ConvID)
-	}
-	if res.Content != "Hello world" {
-		t.Errorf("content = %q, want the v2 fixture's text", res.Content)
+	if n := len(up.RequestsFor(testPH)); n != 1 {
+		t.Errorf("requests = %d, want 1 (no fallback)", n)
 	}
 }
 
-// REACT-004: a non-404 failure on react does NOT fall back — the upstream's
-// own refusal (451/401/…) passes through verbatim, same contract as v2.
+// CHAN-004: the upstream's own refusal (451/401/…) passes through verbatim.
 func TestChatReactNon404DoesNotFallBack(t *testing.T) {
 	client, up := chatEnv(t)
 	up.Script(testPH, testutil.ScriptStep{StatusCode: 451})
 	_, err := client.Chat(context.Background(), testCookie, testPH, ChatRequest{
-		Query: "hi", Model: "mimo-v2.6-flash", React: true,
+		Query: "hi", Model: "mimo-v2.6-flash",
 	})
 	var ue *UpstreamError
 	if err == nil || !asUpstreamError(err, &ue) || ue.StatusCode != 451 {
 		t.Fatalf("err = %v, want the 451 passthrough", err)
 	}
 	if n := len(up.RequestsFor(testPH)); n != 1 {
-		t.Errorf("requests = %d, want 1 (no fallback on a non-404)", n)
+		t.Errorf("requests = %d, want 1 (no fallback)", n)
 	}
 }
 

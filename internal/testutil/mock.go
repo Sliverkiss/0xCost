@@ -16,7 +16,7 @@ import (
 // MockUpstream records every request for assertions).
 type RecordedRequest struct {
 	Method         string
-	Path           string // /open-apis/bot/chat or /fastchat/open-apis/bot/chat
+	Path           string // /open-apis/react/chat or /fastchat/open-apis/bot/chat
 	PH             string // xiaomichatbot_ph query param
 	MsgID          string
 	ConvID         string
@@ -200,12 +200,12 @@ func (m *MockUpstream) RequestsFor(ph string) []RecordedRequest {
 	return out
 }
 
-// isChatPath matches the three chat endpoints the upstream serves: the v2
-// studio path, its fastchat-prefixed twin, and the v3 react path
-// (/open-apis/react/chat — no fastchat prefix exists upstream: the react
-// channel answers an ultraspeed model with 模型名称错误, live 2026-10-15).
+// isChatPath matches the two chat endpoints this client sends (the v3
+// inventory, docs/v3-endpoints.md): /open-apis/react/chat for every
+// non-ultraspeed model, and /fastchat/open-apis/bot/chat for ultraspeed
+// (react answers an ultraspeed model with 模型名称错误, live 2026-10-16).
 func isChatPath(p string) bool {
-	return strings.HasSuffix(p, "/bot/chat") || p == "/open-apis/react/chat"
+	return p == "/open-apis/react/chat" || p == "/fastchat/open-apis/bot/chat"
 }
 
 // ChatHits counts recorded chat POSTs.

@@ -296,3 +296,70 @@ stays on fastchat (the react channel refuses those ids with 模型名称错误 �
 the fastchat v2 path is still blocked, which is the one surface a different
 account or an unban would restore). Evidence: /tmp/react*.body captures
 (deleted after transcription into testdata/sse_react.txt).
+
+
+## 8. The v2→v3 migration — full re-reverse of the live SPA, 2026-10-16
+
+**Ruling** (owner, 2026-10-16, verbatim): “派claude清理掉所有旧的v2，全部换成
+v3的，不用搞什么兼容这些……需要扫描所有旧的路径，能用新的更新就用新的，
+很明显这些问题都是因为旧的路径导致的。我们需要重新进行一次深入全面的
+重新逆向，全部清洗换一套接口了。”
+
+**The re-reverse.** All 449 chunks of the live bundle (runtime-
+main.94df3f32.js + main.f4f92c2a.chunk.js + 448 async chunks) were
+downloaded and mined. The chat routing lives in module 82854:
+`Jy(e) = !isUltraModel(e) && s() ? "v3" : "v2"` (s() = reactEnabled from
+user/mi/get), and module 74420 `isUltraModel(e) = ultraspeedModelCode === e`
+(server value from bot/config `ultraspeedConfig.modelCode`). The full
+endpoint inventory is transcribed into `docs/v3-endpoints.md` — the
+authoritative table for every surface this client talks to.
+
+**The finding that re-scoped the migration.** The assumption “v2 → v3, so
+TTS/ASR/ultraspeed all have v3 paths too” is FALSE upstream. Exactly two
+v3 surfaces exist: `POST /open-apis/react/chat` and `POST
+/open-apis/react/dialog/list`. TTS has no v3 (`/open-apis/tts/v2/generate`
+IS the current interface), ASR has none (`/open-apis/asr/recognize`), and
+ultraspeed's web route IS the fastchat bot/chat path — the SPA's own Jy()
+forces `"v2"`+viaFastchat for the ultraspeed model, and the react channel
+refuses those ids with 模型名称错误 (live-verified twice). “v2” in
+`tts/v2` and `fastchat` is version branding, not a legacy protocol: there
+is nothing newer to migrate those onto.
+
+**The rewrite** (no patching, no compatibility, per the ruling): the chat
+client is two-channel and v2-free — non-ultraspeed models POST
+`/open-apis/react/chat` unconditionally (sceneType "QA"; the payload is the
+same object the SPA sends both channels), ultraspeed POSTs
+`/fastchat/open-apis/bot/chat`. The unprefixed `/open-apis/bot/chat` and
+the react-404→v2 fallback introduced in `a1e9660` are deleted outright.
+The `React` flag on ChatRequest is gone: react is the default, the only
+non-ultra route. Tests were rewritten to the two-channel contract (CHAN-
+001/003/004 replace REACT-001..004; the fallback test is deleted because
+the fallback is). Residue sweep: zero functional references to the
+unprefixed bot/chat path in internal/; deadcode clean.
+
+**Live acceptance (2026-10-16, docker compose up -d --build).**
+`/v1/models` lists 7 models. flash and pro chat: 200 with correct content
+through the react channel. ultraspeed: 451 临时封禁 — direct curl to the
+fastchat path with a freshly renewed session (the same cookie that gets
+200 on react/chat) reproduces the 451, so the route is correct and the
+refusal is the upstream's channel-level block on the fastchat surface for
+this account (BUGS-FOUND #7 correction); a different or unbanned account
+is the cure, not code. TTS: 451 `????` upstream on tts/v2/generate — same
+channel block class (verified by direct curl with the fresh session and
+full SPA headers; the path itself is the current upstream interface, no
+v3 exists). ASR: 451 `????` likewise. The 451s disable the account
+(risk-control fail-closed, by design); re-enabling state in the store
+restores react-chat service immediately — react is exempt from the block.
+
+**TTS live note for the record:** the acceptance target “TTS 200 with
+real RIFF bytes” cannot pass for this account on this upstream today —
+not a client defect. The full pipeline (payload shape, generateStatus
+polling, CDN download, RIFF check) is covered by the mock-upstream tests
+(audio_test.go TTS-001.., 200 + RIFF fixture).
+
+**Left as-is by the re-reverse, with reasons:** `tts/v2/generate`,
+`asr/recognize`, `conversation/save`, `bot/config`, upload-info endpoints
+— they are the current interfaces, verified against the bundle's module
+map (docs/v3-endpoints.md §"what stays"). The ThinkSplitter stays: the
+fastchat channel still emits NUL think markers (v2 dialect), and it is
+ultraspeed's only route.
