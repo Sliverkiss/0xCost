@@ -91,6 +91,14 @@ var (
 	// FixtureSSEFastchat: fastchat-shaped stream with repeated usage events
 	// (TDD SSE-012, LIVE-009 analogue).
 	FixtureSSEFastchat = mustFixture("sse_fastchat.txt")
+	// FixtureSSEReact: the v3 react channel's stream, captured live
+	// 2026-10-15 (/open-apis/react/chat, diag451 probe). Differences from v2:
+	// reasoning arrives as `messageType:"assistant"` frames with a
+	// `reasoningContent` field (NOT NUL think markers), tool traffic rides the
+	// same message event as `toolCalls`/`messageType:"tool" responses frames,
+	// and dialogId is a numeric string. The web_search/usage/finish shapes are
+	// byte-identical to v2's (REACT-001).
+	FixtureSSEReact = mustFixture("sse_react.txt")
 	// FixtureSSEStall: plain stream the mock serves with a deliberate
 	// mid-stream delay; byte content is sse_basic.txt (TDD API-019,
 	// SSE-014).

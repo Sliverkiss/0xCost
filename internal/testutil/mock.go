@@ -200,11 +200,19 @@ func (m *MockUpstream) RequestsFor(ph string) []RecordedRequest {
 	return out
 }
 
+// isChatPath matches the three chat endpoints the upstream serves: the v2
+// studio path, its fastchat-prefixed twin, and the v3 react path
+// (/open-apis/react/chat — no fastchat prefix exists upstream: the react
+// channel answers an ultraspeed model with 模型名称错误, live 2026-10-15).
+func isChatPath(p string) bool {
+	return strings.HasSuffix(p, "/bot/chat") || p == "/open-apis/react/chat"
+}
+
 // ChatHits counts recorded chat POSTs.
 func (m *MockUpstream) ChatHits() int {
 	n := 0
 	for _, r := range m.Requests() {
-		if strings.HasSuffix(r.Path, "/bot/chat") {
+		if isChatPath(r.Path) {
 			n++
 		}
 	}
@@ -241,7 +249,7 @@ func (m *MockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		m.serveValidate(w, r)
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/bot/chat") {
+	if isChatPath(r.URL.Path) {
 		m.serveChat(w, r)
 		return
 	}

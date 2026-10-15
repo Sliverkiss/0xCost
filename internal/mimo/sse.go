@@ -141,10 +141,19 @@ func newStreamer() *streamer {
 	return &streamer{splitter: adapter.NewThinkSplitter()}
 }
 
-// msgPayload is the data JSON of message/dialogId/finish events.
+// msgPayload is the data JSON of message/dialogId/finish events. The v2
+// channels carry `type`+`content`; the v3 react channel (/open-apis/react/chat,
+// live 2026-10-15) adds `messageType` and sends reasoning as a separate
+// `reasoningContent` field instead of NUL think markers, and tool traffic as
+// toolCalls / `messageType:"tool"` responses frames — all fields the v2
+// channels never populate, so one struct serves both dialects.
 type msgPayload struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
+	Type        string `json:"type"`
+	Content     string `json:"content"`
+	MessageType string `json:"messageType"`
+	Reasoning   string `json:"reasoningContent"`
+	ToolCalls   []any  `json:"toolCalls"`
+	Responses   []any  `json:"responses"`
 }
 
 // handleEvent processes one parsed event. Returns (done, err): done=true on
@@ -181,7 +190,26 @@ func (s *streamer) handleEvent(ev Event) (bool, error) {
 		if err := json.Unmarshal([]byte(ev.Data), &p); err != nil {
 			return false, nil // malformed delta: skip, never kill the stream
 		}
+		// React-channel tool frames (toolCalls / messageType:"tool" responses):
+		// no client-visible text rides on them (the search results arrive via
+		// the web_search event), so they neither emit pieces nor count as
+		// deltas. Dropping them here keeps one message case for both dialects.
+		if p.Reasoning == "" && p.Content == "" {
+			return false, nil
+		}
 		s.sawDeltas = true
+		// React dialect: reasoning arrives in its own field, already split from
+		// the answer — emit it directly, no NUL think markers to hunt for. The
+		// v2 dialect leaves Reasoning empty and falls through to the splitter.
+		if p.Reasoning != "" {
+			piece := adapter.Piece{Type: "reasoning", Text: p.Reasoning}
+			if s.onPiece != nil {
+				if err := s.onPiece(piece); err != nil {
+					return false, err
+				}
+			}
+			s.reason.WriteString(p.Reasoning)
+		}
 		for _, piece := range s.splitter.Push(p.Content) {
 			if s.onPiece != nil {
 				if err := s.onPiece(piece); err != nil {

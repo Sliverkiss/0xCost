@@ -1,0 +1,29 @@
+event:dialogId
+data:{"content":"17159858"}
+
+event:message
+data:{"messageType":"assistant","reasoningContent":"The user said hi. "}
+
+event:message
+data:{"messageType":"assistant","reasoningContent":"I should greet them."}
+
+event:message
+data:{"messageType":"assistant","toolCalls":[{"id":"call_34b9281289d24bd3b11e9526","type":"function","name":"search","arguments":"{\"queries\": [\"news\"]}"}]}
+
+event:message
+data:{"messageType":"tool","responses":[{"id":"call_34b9281289d24bd3b11e9526","name":"search","responseData":"[{\"url\":\"https://example.cn\",\"title\":\"示例\",\"summary\":\"摘要\"}]"}]}
+
+event:web_search
+data:[{"id":"2026-10-15_06ba9558733a39470695f490b6883afe_1","text":"页面正文","metadata":{},"name":"示例站点","url":"https://www.example.cn/post","displayUrl":"www.example.cn","snippet":"示例摘要。","usedContent":true}]
+
+event:message
+data:{"messageType":"assistant","content":"Hel"}
+
+event:message
+data:{"messageType":"assistant","content":"lo world"}
+
+event:usage
+data:{"promptTokens":7888,"completionTokens":1230,"totalTokens":9118,"nativeUsage":{"prompt_tokens":7888,"completion_tokens":1230,"total_tokens":9118,"prompt_tokens_details":{"cached_tokens":5120},"completion_tokens_details":{"reasoning_tokens":200}}}
+
+event:finish
+data:{"content":"[DONE]"}

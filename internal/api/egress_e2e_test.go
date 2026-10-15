@@ -118,7 +118,9 @@ func TestLabelledAccountTrafficLeavesThroughEgress(t *testing.T) {
 	if proxy.count() == 0 {
 		t.Fatal("no request left through the account's egress")
 	}
-	if !proxy.sawContains(t, "/open-apis/bot/chat") {
+	// EGRESS-003 pins "the chat call left through the egress"; the chat call
+	// is on the react channel since 2026-10-15 (non-ultraspeed routing).
+	if !proxy.sawContains(t, "/open-apis/react/chat") {
 		t.Errorf("the chat call did not leave through the egress: %v", proxy.hosts)
 	}
 	if !proxy.sawContains(t, "/open-apis/bot/config") {
