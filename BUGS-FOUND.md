@@ -231,7 +231,7 @@ finds only must-NOT-appear test assertions and ruling-mention comments;
 over-cap ultraspeed request returns the upstream's own refusal (400
 context_too_long via `upstreamTooLong` translation, account still available).
 
-## 7. The 2026-10-15 451s are an account ban, not a fingerprint failure — DOCUMENTED (2026-10-15)
+## 7. The 2026-10-15 451s are an account ban, not a fingerprint failure — DOCUMENTED (2026-10-15), **conclusion overturned same day**
 
 **Symptom:** every generation surface (chat incl. fastchat, TTS, ASR) returned
 451 with the literal 4-byte body `????` and `x-mife-upstream-status: 451`,
@@ -274,3 +274,25 @@ ui_after_send.png.
   ids track the upstream automatically.
 - `reactEnabled: false` for this account — the v3 react/chat path is not
   active; v2 `/open-apis/bot/chat` remains the correct route.
+
+**CORRECTION (2026-10-15, later the same day — the curl/JS trace):** the
+"account TEMPORARY ban, unfixable" conclusion above is **overturned**. The
+block is **channel-level, not account-level**: v2 `/open-apis/bot/chat` (and
+`/fastchat/open-apis/bot/chat`, which answers 451 `临时封禁` in plain JSON)
+is blocked, while **v3 `/open-apis/react/chat` — the same account, same
+cookies, same payload, same US egress IP — answers 200 SSE with full
+conversations**: multi-turn memory via `previousDialogueId`, thinking
+(`reasoningContent` deltas), and web search (`toolCalls` → `event:web_search`
+→ `messageType:"tool"` responses). `reactEnabled` in `user/mi/get` reads
+**true** (the earlier "false" observation is stale — the SPA's routing
+`reactEnabled ? react : studio` picks v3, which is why the user's own web
+chat works while every v2 replay 451s). No IP axis either: the US server IP
+was constant across the 451 (v2) and 200 (v3) responses.
+
+The fix (commit `a1e9660`): the Go client now routes non-ultraspeed models
+via `/open-apis/react/chat` with the SPA's own 404→v2 fallback; the react
+SSE dialect's `reasoningContent` frames and tool frames are parsed; ultraspeed
+stays on fastchat (the react channel refuses those ids with 模型名称错误 —
+the fastchat v2 path is still blocked, which is the one surface a different
+account or an unban would restore). Evidence: /tmp/react*.body captures
+(deleted after transcription into testdata/sse_react.txt).
