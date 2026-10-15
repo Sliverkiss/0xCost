@@ -230,3 +230,47 @@ finds only must-NOT-appear test assertions and ruling-mention comments;
 200, /v1/admin/pool has no in_flight/cooldown/consent markers, and an
 over-cap ultraspeed request returns the upstream's own refusal (400
 context_too_long via `upstreamTooLong` translation, account still available).
+
+## 7. The 2026-10-15 451s are an account ban, not a fingerprint failure — DOCUMENTED (2026-10-15)
+
+**Symptom:** every generation surface (chat incl. fastchat, TTS, ASR) returned
+451 with the literal 4-byte body `????` and `x-mife-upstream-status: 451`,
+while EnsureConversation (conversation/save) and the whole passport surface
+kept working. Suspected an outdated SDD §2.4 fingerprint.
+
+**Investigation (headless Chromium 156 + curl, no code changes made):**
+
+1. Frontend reversed from `runtime-main.94df3f32.js` → `main.f4f92c2a.chunk.js`.
+   The SPA's chat request set is UNCHANGED from what we send: same path
+   (`/open-apis/bot/chat`, `/fastchat/open-apis/bot/chat`), same body shape,
+   same headers (`Accept-Language`, `x-timeZone`, `Content-Type: application/json`),
+   same `xiaomichatbot_ph` query param, `credentials: same-origin`. No new
+   signature headers (no x-sign/x-nonce/x-mife) exist anywhere in the bundle.
+   Only difference: current Chrome is v156 (our stored UA says 153) — cosmetic.
+2. Loaded the real site with the account's cookie in headless Chromium. The SPA
+   itself shows the ban banner: "尊敬的用户，经平台监测当前账号存在异常使用行为，
+   部分功能暂不可用" — i.e. `user/mi/get` returns `bannedStatus: "TEMPORARY"`,
+   and the frontend's handleError maps 451→TEMPORARY / 461→PERMANENT bans and
+   renders exactly this banner. The chat input never even fires the request.
+3. A chat POST issued from inside the real browser (true Chrome-156 fingerprint,
+   real cookies) got **451 `????` — identical to our Go client**.
+4. Auth-vs-ban discrimination: garbage cookie → 401; valid cookie → 451. So
+   MiFE authenticates the account fine, then the upstream refuses generation
+   for it specifically. Read-adjacent writes still pass (conversation/save 200,
+   genTitle 200), and anonymous requests are 401 — the block is account-scoped,
+   generation-endpoint-scoped, and server-side.
+
+**Conclusion:** not IP-level, not fingerprint, not request construction. The
+single account in `data/accounts.json` (userId 2652042633) carries a
+TEMPORARY ban on the generation endpoints. No `client.go` change can fix it;
+the cure is a different (or unbanned) account. Evidence artifacts (not
+committed): /tmp/aistudio_diag/ — requests.json, usermi.json, botconfig.json,
+ui_after_send.png.
+
+**Unrelated findings while in there (FYI, no action taken):**
+- Current catalog (`bot/config`, open endpoint) now carries v2.6 model ids
+  (`mimo-v2.6-pro`, `mimo-v2.6-flash`, `mimo-v2.6-pro-ultraspeed-studio`) —
+  our `catalogEntries`/redirect layer already reads this list live, so model
+  ids track the upstream automatically.
+- `reactEnabled: false` for this account — the v3 react/chat path is not
+  active; v2 `/open-apis/bot/chat` remains the correct route.
