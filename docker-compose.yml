@@ -1,0 +1,15 @@
+services:
+  chatglm2api:
+    build: .
+    container_name: chatglm2api
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "7988:7988"
+    volumes:
+      # state.json holds the idle virgin stock: each identity serves exactly one
+      # request. Losing it only costs the prewarmed stock, never a half-used
+      # identity (those are never persisted).
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro

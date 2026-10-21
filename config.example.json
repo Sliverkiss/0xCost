@@ -1,0 +1,52 @@
+{
+  "listen": ":7988",
+  "api_key": "",
+  "state_file": "./data/state.json",
+  "base_url": "https://chatglm.cn",
+  "log_requests": true,
+
+  "admin": {
+    "enabled": false
+  },
+
+  "pool": {
+    "warm_size": 20,
+    "max_size": 512,
+    "acquire_concurrency": 4,
+    "persist_interval": "5s",
+    "max_rotate": 3,
+    "acquire_wait": "10s",
+    "breaker_threshold": 20,
+    "breaker_cooldown": "30s"
+  },
+
+  "pace": {
+    "global_qps": 5,
+    "acquire_qps": 2,
+    "acquire_interval": "500ms",
+    "acquire_jitter": "250ms"
+  },
+
+  "egress": {
+    "mode": "private",
+    "xff_fixed": "",
+    "xff_pool": []
+  },
+
+  "chat": {
+    "assistant_id": "65940acff94777010aa6b796",
+    "default_model": "glm-5.3-flash",
+    "networking": true,
+    "delete_conversations": true,
+    "replay_history": true,
+    "fc_mode": "prompt",
+    "strip_think_tags": true,
+    "first_flush_holdback": "500ms",
+    "models": [
+      { "id": "glm-5.3-flash", "upstream": "glm-5.3-flash" },
+      { "id": "glm-5.3", "upstream": "glm-5.3", "thinking": true },
+      { "id": "glm-4", "upstream": "glm-4" },
+      { "id": "auto", "upstream": "glm-5.3-flash" }
+    ]
+  }
+}

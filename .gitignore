@@ -1,0 +1,5 @@
+# chatglm2api
+/data/
+*.log
+config.json
+.server.pid
